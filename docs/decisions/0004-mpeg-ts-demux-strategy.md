@@ -36,8 +36,8 @@ validate `dvb-pes` golden bytes/PTS against.
 ## Consequences
 
 - `skyfire-ts` gains an upstream dependency on `dvb-pes` (path-dep during dev,
-  published before release). The `dvb-pes` crate itself is **rust-dvb work**, not
-  a Skyfire issue.
+  published before release). The `dvb-pes` crate itself is **rust-dvb work** —
+  tracked as upstream epic `fishloa/rust-dvb#249`, not a Skyfire issue.
 - Demux tests are golden: PTS values + first ES bytes from each fixture,
   cross-checked against a reference crate.
 - Epic #1 splits into channel-mapping (PSI) and ES-extraction (PES) work units.
