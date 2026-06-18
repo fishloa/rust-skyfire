@@ -29,8 +29,9 @@ the ledger and update the epic rollup in the same change.
 | Date | Issue | Epic | Model | Tokens in | Tokens out | Cost (USD) |
 |---|---|---|---|---|---|---|
 | 2026-06-18 | #20 channel map (dvb-si) | #1 | deepseek-v4-pro (flash research aborted) | ~141k | n/a¹ | 0.20 |
+| 2026-06-18 | #22 robust AudioClock | #4 | deepseek-v4-pro (M3 attempt aborted) | ~100k | n/a¹ | 0.08 |
 
-¹ crush reports a cumulative session `cost` ($0.20) but only last-turn token counts; cost is the reliable figure.
+¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
 ## Per-epic rollup
 
@@ -39,9 +40,9 @@ the ledger and update the epic rollup in the same change.
 | #1 demux | 1 | 0.20 |
 | #2 ac3 | 0 | 0.00 |
 | #3 video | 0 | 0.00 |
-| #4 sync | 0 | 0.00 |
+| #4 sync | 1 | 0.08 |
 | #5 wasm+shell | 0 | 0.00 |
 | #6 deinterlace | 0 | 0.00 |
 | #7 live/fallback | 0 | 0.00 |
 | #8 fixtures/CI/harness | 0 | 0.00 |
-| **Total** | **1** | **0.20** |
+| **Total** | **2** | **0.28** |
