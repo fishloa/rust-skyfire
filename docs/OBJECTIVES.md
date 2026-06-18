@@ -28,6 +28,15 @@ Claude writes spec briefs and verifies; delegated open models write the code.
 - The CI gate (fmt + clippy `-D warnings` + build + `nextest`) is green on every
   commit; behavioural tests decode real fixtures, not just compile.
 
+## First release (v1)
+
+**Chrome on macOS plays all three fixtures in-browser, full A/V, no issues** —
+H.264 video (WebCodecs) + AC-3/E-AC-3 audio (WASM) + audio-master sync, no crash /
+underrun / drift. localhost is a secure context, so the harness is a plain `bun`
+static server — no HTTPS/cert/tunnel. Spans epics #1–#5. Full detail:
+[ADR 0003](decisions/0003-first-release-and-test-harness.md). Delegation costs
+tracked in [COSTS.md](COSTS.md) ([ADR 0002](decisions/0002-delegation-working-practice.md)).
+
 ## Support scope
 
 Chrome/Edge, Safari, Firefox — desktop and mobile (iOS 17+ as one WebKit target,
@@ -48,7 +57,7 @@ delegable work units.
 | [#5](https://github.com/fishloa/rust-skyfire/issues/5) | skyfire-wasm, web/ | WASM bindings + browser shell | Open — sub-issues #12–#15 |
 | [#6](https://github.com/fishloa/rust-skyfire/issues/6) | web/ | Deinterlace + render (GPU weave shader) | Open |
 | [#7](https://github.com/fishloa/rust-skyfire/issues/7) | core, web/ | Live-edge, buffering, capability fallback | Open — sub-issues #16–#18 |
-| [#8](https://github.com/fishloa/rust-skyfire/issues/8) | fixtures, CI | Fixtures, conformance harness, CI/WASM build | Open |
+| [#8](https://github.com/fishloa/rust-skyfire/issues/8) | fixtures, CI | Fixtures, conformance harness, CI/WASM build | Open — harness #19 (v1 gate) |
 
 ## Current state (2026-06-18)
 

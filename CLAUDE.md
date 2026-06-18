@@ -42,17 +42,17 @@ server-side transcode. See `README.md` for the architecture.
 - **Cite or don't write** — every behavioural claim needs a spec section, a
   fixture, or "verified <date>".
 
-## Delegation workflow
+## Delegation workflow (ADR 0002)
 
-Work is **GitHub issues** under **epics**. To implement issue N:
+Work is **GitHub issues with exit gates**, under **epics**. Per issue N:
 
-```bash
-scripts/delegate.sh <N>            # model defaults to deepseek/deepseek-v4-pro
-```
-
-It fills `.delegate/SKYFIRE_BRIEF.tmpl` (`__N__` → N) into `.delegate/brief-N.txt`
-and runs it through `crush`. Then **you verify** against the CI gate below — do
-not trust the model's self-report; run the gate yourself.
+1. Write/confirm the issue as a *feature + verifiable exit criteria* (not steps).
+2. Delegate via the `delegate` skill (crush) — **not** `scripts/delegate.sh`.
+   Cheapest capable model, ramp on no-progress:
+   `deepseek-v4-flash` → `deepseek-v4-pro` → `minimax-m3` → `glm-5p2`.
+3. **You verify** against the CI gate below — never trust self-report.
+4. Record tokens + cost in `docs/COSTS.md` (per issue, rolled up per epic).
+5. Green → commit (no co-author) + `gh issue close N` with evidence.
 
 ## CI gate (must pass before any commit — CI runs these exactly)
 
