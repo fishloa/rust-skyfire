@@ -43,16 +43,15 @@ delegable work units.
 |---|---|---|---|
 | [#1](https://github.com/fishloa/rust-skyfire/issues/1) | skyfire-ts | MPEG-TS/HLS demux → ES + PTS (reuse `rust-dvb` PSI) | Open — stub, no sub-issues |
 | [#2](https://github.com/fishloa/rust-skyfire/issues/2) | skyfire-ac3 | WASM AC-3 / E-AC-3 decode → PCM | Open — stub, no sub-issues |
-| [#3](https://github.com/fishloa/rust-skyfire/issues/3) | web/ | WebCodecs video pipeline, HW H.264/H.265 | Open — must bake in ADR 0001 gating |
+| [#3](https://github.com/fishloa/rust-skyfire/issues/3) | web/ | WebCodecs video pipeline, HW H.264/H.265 | Open — sub-issues #9–#11 |
 | [#4](https://github.com/fishloa/rust-skyfire/issues/4) | skyfire-sync, core | Audio-master A/V sync engine | Open — stub, no sub-issues |
-| [#5](https://github.com/fishloa/rust-skyfire/issues/5) | skyfire-wasm, web/ | WASM bindings + browser shell | Open — touch UI for mobile |
+| [#5](https://github.com/fishloa/rust-skyfire/issues/5) | skyfire-wasm, web/ | WASM bindings + browser shell | Open — sub-issues #12–#15 |
 | [#6](https://github.com/fishloa/rust-skyfire/issues/6) | web/ | Deinterlace + render (GPU weave shader) | Open |
-| [#7](https://github.com/fishloa/rust-skyfire/issues/7) | core, web/ | Live-edge, buffering, capability fallback | Open — owns `isConfigSupported` probe |
+| [#7](https://github.com/fishloa/rust-skyfire/issues/7) | core, web/ | Live-edge, buffering, capability fallback | Open — sub-issues #16–#18 |
 | [#8](https://github.com/fishloa/rust-skyfire/issues/8) | fixtures, CI | Fixtures, conformance harness, CI/WASM build | Open |
 
 ## Current state (2026-06-18)
 
-Scaffold + contract-test stage. Six crate stubs (~229 lines total), 8 open epics,
-**no child issues yet**, `web/` empty. Next step: decompose epics (#3/#5/#7 first,
-to bake in the ADR 0001 capability-gating + iOS-17 floor) into concrete sub-issues
-for delegation.
+Scaffold + contract-test stage. Six crate stubs (~229 lines total), `web/` empty.
+Epics #3/#5/#7 decomposed into sub-issues #9–#18 (baking in ADR 0001 gating +
+iOS-17 floor), ready for delegation. Epics #1/#2/#4/#6/#8 still need decomposition.
