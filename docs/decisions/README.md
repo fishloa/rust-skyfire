@@ -11,6 +11,7 @@ ADR that supersedes the old one (and mark the old one `Superseded by NNNN`).
 | [0001](0001-browser-and-platform-support.md) | Browser & platform support, codec-gating policy | Accepted | 2026-06-18 |
 | [0002](0002-delegation-working-practice.md) | Delegation working practice (exit-gated issues, crush, cost ledger) | Accepted | 2026-06-18 |
 | [0003](0003-first-release-and-test-harness.md) | First release (v1) scope & test harness | Accepted | 2026-06-18 |
+| [0004](0004-mpeg-ts-demux-strategy.md) | MPEG-TS demux: reuse dvb-si + new dvb-pes crate | Accepted | 2026-06-18 |
 
 ## Format
 
