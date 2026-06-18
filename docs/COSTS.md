@@ -3,7 +3,7 @@
 Every delegate run is logged here: tokens in/out and USD cost, rolled up per epic.
 Required by [ADR 0002](decisions/0002-delegation-working-practice.md).
 
-_Last updated: 2026-06-18 (issue #24)._
+_Last updated: 2026-06-18 (issue #25)._
 
 ## How cost is recorded
 
@@ -32,6 +32,7 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-18 | #22 robust AudioClock | #4 | deepseek-v4-pro (M3 attempt aborted) | ~100k | n/a¹ | 0.08 |
 | 2026-06-18 | #23 present queue | #4 | deepseek-v4-pro | ~71k | n/a¹ | 0.04 |
 | 2026-06-18 | #24 E-AC-3 decode (oxideav-ac3) | #2 | deepseek-v4-pro | ~64k | n/a¹ | 0.06 |
+| 2026-06-18 | #25 skyfire-cli channel-map inspector | #8 | deepseek-v4-pro | ~30k | n/a¹ | 0.01 |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
@@ -46,5 +47,5 @@ the ledger and update the epic rollup in the same change.
 | #5 wasm+shell | 0 | 0.00 |
 | #6 deinterlace | 0 | 0.00 |
 | #7 live/fallback | 0 | 0.00 |
-| #8 fixtures/CI/harness | 0 | 0.00 |
-| **Total** | **4** | **0.38** |
+| #8 fixtures/CI/harness | 1 | 0.01 |
+| **Total** | **5** | **0.39** |
