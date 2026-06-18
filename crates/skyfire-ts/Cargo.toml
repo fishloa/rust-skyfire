@@ -1,0 +1,9 @@
+[package]
+name = "skyfire-ts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extraction. Planned: rust-dvb dvb-si for PSI."
+
+[dependencies]

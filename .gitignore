@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target
+
+# Delegate scratch workspace (briefs are regenerated from the template; logs are local)
+/.delegate/*.log
+/.delegate/brief-*.txt
+
+# Spec PDFs are NOT vendored (copyright / large binaries). Curated md in specs/md/ IS tracked.
+specs/pdf/
+specs/txt/
+
+# Web shell deps
+web/node_modules/
+web/dist/
+
+# Crush / local tool state
+/.crush

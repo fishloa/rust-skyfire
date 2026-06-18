@@ -1,0 +1,24 @@
+FEATURE: Implement GitHub issue #__N__ in this Rust/WASM in-browser-player workspace (Skyfire). Read the issue YOURSELF first: `gh issue view __N__` (and any issues/epic it links). Make it produce correct, spec-conformant behaviour.
+
+PROJECT: Skyfire plays live DVB TV in the browser by decoding raw MPEG-TS client-side — WebCodecs for HW video (H.264/H.265), a WASM AC-3/E-AC-3 decoder for audio, WebAudio for output, audio-master A/V sync. Zero server transcode. Sibling to the zenith DVB receiver. See README.md + CLAUDE.md.
+
+SOURCE OF TRUTH:
+- Specs: H.264 (ITU-T H.264), H.265 (ITU-T H.265), AC-3/E-AC-3 (ETSI TS 102 366), MPEG-TS (ISO/IEC 13818-1). WebCodecs + WebAudio per MDN/W3C. Follow the spec/section the issue names precisely.
+- TS/PSI parsing: REUSE `rust-dvb` crates (`dvb-si`, `dvb-common`) — do not re-implement PAT/PMT/PES parsing.
+- Cite what you implement against (spec section / fixture / API).
+
+CONTEXT (explore as needed):
+- crates: skyfire-ts (demux), skyfire-ac3 (audio decode), skyfire-sync (audio-master clock), skyfire-core (engine), skyfire-wasm (wasm-bindgen shell), skyfire-cli (native debug). Browser shell in web/.
+- Fixtures: fixtures/*.ts (real captured MPEG-TS with H.264 + AC-3/E-AC-3). Use them for decode/demux tests.
+- The audio-master sync model + frame-action logic already exist in skyfire-sync — mirror their structure.
+
+EXIT CRITERIA (loop build/test/fix until ALL hold; stdout is NOT evidence — judge by build+tests):
+1. CI gate clean (CI runs these exactly — run them yourself):
+   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` (zero warnings, fix lints properly), `cargo build --workspace` ZERO warnings.
+2. `cargo nextest run --workspace` — your new test(s) PASS and the WHOLE workspace stays green. Tests must prove BEHAVIOUR (decode a fixture, assert PIDs/PTS/PCM/golden bytes), not just compile or assert a status.
+3. The feature is spec-conformant for the section the issue names, and produces finite/bounded output (audio: no NaN/Inf; video frames: correct dimensions/PTS).
+4. For browser/WASM code that native CI can't execute, satisfy the concrete behavioural check the issue defines (fixture-driven, golden) — do not declare done on "it compiles".
+
+CONSTRAINTS: no `unsafe` unless the issue explicitly allows it. Touch only the crates this feature needs. Keep everything that passes today passing. Reuse rust-dvb for TS/PSI. Use `cargo nextest run` (fail-fast off, per-test timeout) as your loop runner.
+
+WHEN ALL CRITERIA HOLD: commit on the current branch (clear message, NO Co-Authored-By), then `gh issue close __N__` with a one-paragraph comment: what you implemented, which spec section, and the evidence (which tests/fixtures). Only then are you done. [run-tag:issue__N__]

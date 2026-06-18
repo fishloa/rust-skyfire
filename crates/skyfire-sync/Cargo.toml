@@ -1,0 +1,9 @@
+[package]
+name = "skyfire-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Audio-master A/V sync clock for Skyfire — drift-free media time from samples played; video chases it."
+
+[dependencies]

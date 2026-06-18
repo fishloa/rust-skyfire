@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skyfire-ts",
+    "crates/skyfire-ac3",
+    "crates/skyfire-sync",
+    "crates/skyfire-core",
+    "crates/skyfire-wasm",
+    "crates/skyfire-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.81"
+repository = "https://github.com/fishloa/rust-skyfire"
+
+# Skyfire — an in-browser DVB TV player: WebCodecs (HW video) + WASM (AC-3 audio).
+# Client decodes raw MPEG-TS; zero server-side transcode. Engine in Rust→WASM,
+# reusing rust-dvb for TS/PSI parsing. Research/learning + AI-orchestration experiment.
+[workspace.dependencies]
+thiserror = "2"
+skyfire-ts = { path = "crates/skyfire-ts" }
+skyfire-ac3 = { path = "crates/skyfire-ac3" }
+skyfire-sync = { path = "crates/skyfire-sync" }
+skyfire-core = { path = "crates/skyfire-core" }

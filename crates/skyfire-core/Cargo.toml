@@ -1,0 +1,12 @@
+[package]
+name = "skyfire-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Skyfire engine core — wires TS demux + AC-3 audio decode + audio-master A/V sync."
+
+[dependencies]
+skyfire-ts.workspace = true
+skyfire-ac3.workspace = true
+skyfire-sync.workspace = true

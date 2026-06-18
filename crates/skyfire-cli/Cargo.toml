@@ -1,0 +1,15 @@
+[package]
+name = "skyfire-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native debug CLI for Skyfire — inspect a captured .ts (PID histogram, AC-3 detection)."
+
+[[bin]]
+name = "skyfire"
+path = "src/main.rs"
+
+[dependencies]
+skyfire-ts.workspace = true
+skyfire-ac3.workspace = true
