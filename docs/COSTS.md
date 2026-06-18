@@ -3,7 +3,7 @@
 Every delegate run is logged here: tokens in/out and USD cost, rolled up per epic.
 Required by [ADR 0002](decisions/0002-delegation-working-practice.md).
 
-_Last updated: 2026-06-18 (issue #25)._
+_Last updated: 2026-06-18 (issue #21)._
 
 ## How cost is recorded
 
@@ -33,6 +33,7 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-18 | #23 present queue | #4 | deepseek-v4-pro | ~71k | n/a¹ | 0.04 |
 | 2026-06-18 | #24 E-AC-3 decode (oxideav-ac3) | #2 | deepseek-v4-pro | ~64k | n/a¹ | 0.06 |
 | 2026-06-18 | #25 skyfire-cli channel-map inspector | #8 | deepseek-v4-pro | ~30k | n/a¹ | 0.01 |
+| 2026-06-18 | #21 ES+PTS extraction (dvb-pes) | #1 | deepseek-v4-pro | ~50k | n/a¹ | 0.04 |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
@@ -40,7 +41,7 @@ the ledger and update the epic rollup in the same change.
 
 | Epic | Issues delegated | Total cost (USD) |
 |---|---|---|
-| #1 demux | 1 | 0.20 |
+| #1 demux | 2 | 0.24 |
 | #2 ac3 | 1 | 0.06 |
 | #3 video | 0 | 0.00 |
 | #4 sync | 2 | 0.12 |
@@ -48,4 +49,4 @@ the ledger and update the epic rollup in the same change.
 | #6 deinterlace | 0 | 0.00 |
 | #7 live/fallback | 0 | 0.00 |
 | #8 fixtures/CI/harness | 1 | 0.01 |
-| **Total** | **5** | **0.39** |
+| **Total** | **6** | **0.43** |
