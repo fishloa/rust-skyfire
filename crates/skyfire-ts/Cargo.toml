@@ -9,6 +9,7 @@ description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extr
 [dependencies]
 dvb-pes = "0.1.0"
 dvb-si = "7.3"
+h264-reader = "0.8"
 
 [dev-dependencies]
 skyfire-ac3 = { path = "../../crates/skyfire-ac3" }

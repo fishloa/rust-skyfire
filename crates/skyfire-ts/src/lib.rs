@@ -1,9 +1,12 @@
 //! MPEG-TS demux for Skyfire — PSI (PAT/PMT) channel probing via dvb-si,
-//! elementary-stream + PTS extraction via dvb-pes.
+//! elementary-stream + PTS extraction via dvb-pes, and H.264 decoder
+//! configuration (codec string + avcC) for WebCodecs.
 //!
 //! The browser receiver demuxes the raw TS served by an upstream DVB-S2
 //! receiver into per-ES streams (video / audio) tagged with PTS, then hands
 //! them to the WebCodecs video decoder and the WASM AC-3 audio decoder.
+
+pub mod h264_config;
 
 use dvb_pes::{PesAssembler, PesPacket};
 use dvb_si::demux::SiDemux;
