@@ -16,12 +16,13 @@ the ledger and update the epic rollup in the same change.
 | Model (`-m` flag) | $/M in | $/M out |
 |---|---|---|
 | `deepseek/deepseek-v4-flash` | 0.14 | 0.28 |
-| `deepseek/deepseek-v4-pro` | 0.44 | 0.87 |
-| `fireworks/.../minimax-m3` | 0.30 | 0.20 |
-| `fireworks/.../glm-5p2` | 0.40 | 0.40 |
+| `deepseek/deepseek-v4-pro` | 0.435 | 0.87 |
+| `fireworks/.../minimax-m3` | 0.30 | 1.20 |
+| `fireworks/.../glm-5p2` | 1.40 | 4.40 |
 
-> Source of truth for prices: `config/crush.json` in the agentic repo. Update both
-> if rates change.
+> Source of truth for prices: `~/.config/crush/crush.json` (verified 2026-06-18).
+> Note: coding is output-heavy, and DS Pro's output ($0.87/M) is cheaper than
+> M3's ($1.20/M) — prefer DS Pro over M3 for code unless vision is needed.
 
 ## Ledger
 
