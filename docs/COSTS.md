@@ -3,7 +3,7 @@
 Every delegate run is logged here: tokens in/out and USD cost, rolled up per epic.
 Required by [ADR 0002](decisions/0002-delegation-working-practice.md).
 
-_Last updated: 2026-06-18 (issue #20)._
+_Last updated: 2026-06-18 (issue #22)._
 
 ## How cost is recorded
 
