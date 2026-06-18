@@ -1,6 +1,6 @@
 # Skyfire test fixtures
 
-Real captured MPEG-TS slices (from the zenith DVB receiver) for demux/decode tests.
+Real captured MPEG-TS slices (from a DVB-S2 receiver) for demux/decode tests.
 
 | file | content |
 |---|---|

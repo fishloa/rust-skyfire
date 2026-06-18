@@ -1,7 +1,7 @@
 //! MPEG-TS demux for Skyfire — low-level packet framing today; PSI (PAT/PMT)
 //! and PES/PTS extraction to follow (planned: integrate rust-dvb `dvb-si`).
 //!
-//! The browser receiver demuxes the raw TS that zenith serves into per-ES
+//! The browser receiver demuxes the raw TS served by an upstream DVB-S2 receiver into per-ES
 //! streams (video / audio) tagged with PTS, then hands them to the WebCodecs
 //! video decoder and the WASM AC-3 audio decoder.
 
