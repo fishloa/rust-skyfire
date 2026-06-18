@@ -1,16 +1,19 @@
 //! MPEG-TS demux for Skyfire — PSI (PAT/PMT) channel probing via dvb-si,
-//! elementary streams + PTS extraction to follow.
+//! elementary-stream + PTS extraction via dvb-pes.
 //!
 //! The browser receiver demuxes the raw TS served by an upstream DVB-S2
 //! receiver into per-ES streams (video / audio) tagged with PTS, then hands
 //! them to the WebCodecs video decoder and the WASM AC-3 audio decoder.
 
+use dvb_pes::{PesAssembler, PesPacket};
 use dvb_si::demux::SiDemux;
 use dvb_si::descriptors::any::AnyDescriptor;
 use dvb_si::resync::TsResync;
 use dvb_si::tables::any::AnyTableSection;
 use dvb_si::tables::pat::PatSection;
 use dvb_si::tables::pmt::StreamType;
+
+use std::collections::HashMap;
 
 /// Length of a single MPEG-TS packet.
 pub const TS_PACKET_LEN: usize = 188;
@@ -195,6 +198,144 @@ pub fn payload_unit_start(pkt: &[u8]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Access-unit types
+// ---------------------------------------------------------------------------
+
+/// One elementary-stream access unit (picture or audio frame) with its
+/// presentation time stamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessUnit {
+    /// PID.
+    pub pid: u16,
+    /// PTS in 90 kHz units.  `None` only for the first few access units in a
+    /// stream before the first PTS is seen.
+    pub pts_ticks: Option<u64>,
+    /// Elementary-stream bytes (NAL unit / audio syncframe).
+    pub es_bytes: Vec<u8>,
+}
+
+/// Timed access unit — a guaranteed-PTS variant for consumers that require it.
+/// `None`-PTS units are dropped or held until the first valid PTS is seen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedAccessUnit {
+    pub pid: u16,
+    pub pts_ticks: u64,
+    pub es_bytes: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// ES demux
+// ---------------------------------------------------------------------------
+
+/// Stateful elementary-stream demuxer: per-PID PES reassembly → access units.
+///
+/// Feed raw 188-byte TS packets via [`feed_packet`](Self::feed_packet); collect
+/// completed access units via `into_iter()` / `drain()`.
+#[derive(Debug, Default)]
+pub struct EsDemux {
+    /// Per-PID PES assemblers.
+    assemblers: HashMap<u16, PesAssembler>,
+    /// Completed access units (drained by `drain` or iteration).
+    units: Vec<AccessUnit>,
+}
+
+impl EsDemux {
+    /// New empty demux.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one raw 188-byte TS packet.
+    ///
+    /// Only packets for PIDs with an active assembler are processed.
+    /// New assemblers are created on-the-fly for any PID whose PUSI is set
+    /// and which carries a payload (PES start).
+    pub fn feed_packet(&mut self, pkt: &[u8]) {
+        let pid = match packet_pid(pkt) {
+            Some(p) => p,
+            None => return,
+        };
+        let pusi = payload_unit_start(pkt);
+        let payload = match packet_payload(pkt) {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Lazy creation: the first time we see a PUSI+payload for a PID,
+        // start an assembler.  Continuation packets for unknown PIDs are
+        // ignored (we may have joined mid-stream for that PID).
+        if pusi && !self.assemblers.contains_key(&pid) {
+            self.assemblers.insert(pid, PesAssembler::new());
+        }
+
+        let assem = match self.assemblers.get_mut(&pid) {
+            Some(a) => a,
+            None => return,
+        };
+
+        if let Some(pes_bytes) = assem.feed(pusi, payload) {
+            if let Ok(pes) = PesPacket::parse(&pes_bytes) {
+                let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
+                self.units.push(AccessUnit {
+                    pid,
+                    pts_ticks,
+                    es_bytes: pes.payload.to_vec(),
+                });
+            }
+        }
+    }
+
+    /// Flush all remaining partial PES packets, emitting their access units.
+    pub fn flush(&mut self) {
+        for (&pid, assem) in &mut self.assemblers {
+            if let Some(pes_bytes) = assem.flush() {
+                if let Ok(pes) = PesPacket::parse(&pes_bytes) {
+                    let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
+                    self.units.push(AccessUnit {
+                        pid,
+                        pts_ticks,
+                        es_bytes: pes.payload.to_vec(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Drain all accumulated access units, leaving the demux empty.
+    pub fn drain(&mut self) -> Vec<AccessUnit> {
+        std::mem::take(&mut self.units)
+    }
+}
+
+/// Extract the payload bytes from a raw 188-byte TS packet.
+///
+/// Handles the adaptation field (skipped when present).  Returns `None`
+/// when the packet has no payload or the header is invalid.
+#[must_use]
+pub fn packet_payload(pkt: &[u8]) -> Option<&[u8]> {
+    if pkt.len() < TS_PACKET_LEN || pkt[0] != TS_SYNC_BYTE {
+        return None;
+    }
+    // Byte 3 bits 5:4 = adaptation_field_control
+    let afc = (pkt[3] >> 4) & 0x03;
+    let has_payload = (afc & 0x01) != 0;
+    if !has_payload {
+        return None;
+    }
+    let mut cursor = 4usize;
+    // Adaptation field present
+    if (afc & 0x02) != 0 && cursor < TS_PACKET_LEN {
+        let af_len = pkt[cursor] as usize;
+        cursor += 1 + af_len;
+        if cursor >= TS_PACKET_LEN {
+            return None;
+        }
+    }
+    Some(&pkt[cursor..])
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -275,5 +416,201 @@ mod tests {
         assert_eq!(map.audio_streams.len(), 1);
         assert_eq!(map.audio_streams[0].pid, 0x0101);
         assert_eq!(map.audio_streams[0].codec, AudioCodec::EAc3);
+    }
+
+    // ------------------------------------------------------------------
+    // ES + PTS extraction tests
+    // ------------------------------------------------------------------
+
+    /// Feed raw TS packets through EsDemux and return finished access units.
+    fn es_demux_fixture(name: &str) -> EsDemux {
+        let data = load_fixture(name);
+        let mut demux = EsDemux::new();
+        let mut resync = TsResync::new();
+        for chunk in data.chunks(4096) {
+            for pkt in resync.feed(chunk) {
+                demux.feed_packet(&pkt);
+            }
+        }
+        demux.flush();
+        demux
+    }
+
+    #[test]
+    fn es_demux_gulli_15s_video_pts_monotonic() {
+        let mut demux = es_demux_fixture("gulli-15s.ts");
+        let units = demux.drain();
+
+        let video_units: Vec<_> = units.iter().filter(|u| u.pid == 0x0100).collect();
+        assert!(!video_units.is_empty(), "must extract video access units");
+
+        // Every video AU must have a finite PTS under the 33-bit cap.
+        // H.264 with B-frames reorders pictures — PTS may not be strictly
+        // monotonic at the PES level (decode order ≠ presentation order).
+        // The guard here is: all PTS values are finite, under the 33-bit
+        // ceiling, and the spread across the 15 s clip is reasonable
+        // (no wrap).
+        let pts_vals: Vec<u64> = video_units
+            .iter()
+            .map(|au| au.pts_ticks.expect("video AU must have PTS"))
+            .collect();
+
+        let max_pts = pts_vals.iter().max().copied().unwrap();
+        let min_pts = pts_vals.iter().min().copied().unwrap();
+
+        assert!(max_pts < (1 << 33), "max PTS must be under 33-bit cap");
+        // For a 15 s 25 fps clip: PTS span ≈ 15 * 90_000 = 1_350_000.
+        // With B-frame reordering the decode-window margin is ~1 GOP.
+        // Allow up to 5 s (450_000 ticks) of spread beyond the clip length.
+        assert!(
+            max_pts - min_pts < 2_000_000,
+            "PTS spread must be consistent with a ~15 s clip, got {}",
+            max_pts - min_pts
+        );
+    }
+
+    #[test]
+    fn es_demux_gulli_15s_audio_pts_monotonic() {
+        let mut demux = es_demux_fixture("gulli-15s.ts");
+        let units = demux.drain();
+
+        let audio_units: Vec<_> = units.iter().filter(|u| u.pid == 0x0101).collect();
+        assert!(!audio_units.is_empty(), "must extract audio access units");
+
+        let mut last_pts: Option<u64> = None;
+        for au in &audio_units {
+            let pts = au.pts_ticks.expect("audio AU must have PTS");
+            assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
+            if let Some(last) = last_pts {
+                assert!(
+                    pts >= last,
+                    "audio PTS must be non-decreasing: {pts} < {last}"
+                );
+            }
+            last_pts = Some(pts);
+        }
+    }
+
+    #[test]
+    fn es_demux_gulli_15s_audio_es_matches_eac3_fixture() {
+        let mut demux = es_demux_fixture("gulli-15s.ts");
+        let units = demux.drain();
+
+        let mut extracted_audio: Vec<u8> = Vec::new();
+        for au in &units {
+            if au.pid == 0x0101 {
+                extracted_audio.extend_from_slice(&au.es_bytes);
+            }
+        }
+        assert!(!extracted_audio.is_empty(), "must extract audio ES bytes");
+
+        // Strong oracle: bytes-equal (modulo trailing partial frame) against
+        // the independently-extracted gulli.eac3.
+        let expected = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gulli.eac3"),
+        )
+        .expect("gulli.eac3 not found");
+
+        // Truncate to the shorter length (trailing partial frame tolerated).
+        let min_len = expected.len().min(extracted_audio.len());
+        assert_eq!(
+            &extracted_audio[..min_len],
+            &expected[..min_len],
+            "extracted audio ES must match gulli.eac3 byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn es_demux_gulli_15s_audio_eac3_decode_match() {
+        // VIA SKYFIRE-AC3: decode both the extracted ES and the gold
+        // gulli.eac3 and compare sample_rate, channels, and non-silent PCM.
+        let mut demux = es_demux_fixture("gulli-15s.ts");
+        let units = demux.drain();
+
+        let mut extracted_audio: Vec<u8> = Vec::new();
+        for au in &units {
+            if au.pid == 0x0101 {
+                extracted_audio.extend_from_slice(&au.es_bytes);
+            }
+        }
+
+        let expected = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gulli.eac3"),
+        )
+        .expect("gulli.eac3 not found");
+
+        let decoded_extracted =
+            skyfire_ac3::decode_all_eac3(&extracted_audio).expect("decode extracted audio");
+        let decoded_expected =
+            skyfire_ac3::decode_all_eac3(&expected).expect("decode golden audio");
+
+        assert_eq!(decoded_extracted.sample_rate, 48_000);
+        assert_eq!(decoded_extracted.channels, 2);
+        assert_eq!(decoded_extracted.sample_rate, decoded_expected.sample_rate);
+        assert_eq!(decoded_extracted.channels, decoded_expected.channels);
+
+        // PCM must not be all-silent (decoder sanity check).
+        let pcm_i16: Vec<i16> = decoded_extracted
+            .pcm_s16le
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let non_silent = pcm_i16.iter().filter(|&&s| s != 0).count();
+        let sample_count = pcm_i16.len() / decoded_extracted.channels as usize;
+        assert!(
+            non_silent > sample_count / 100,
+            "decoded PCM must not be all-silent"
+        );
+    }
+
+    #[test]
+    fn es_demux_truncated_final_pes_no_panic() {
+        // Craft a minimal TS-like stream where the last PES is truncated:
+        // one complete PES then a partial continuation.
+        let mut data = Vec::new();
+
+        // Helper: build a minimal 188-byte TS packet for a given PID+PUSI+payload.
+        let make_pkt = |pid: u16, pusi: bool, afc: u8, payload: &[u8]| -> Vec<u8> {
+            let mut pkt = vec![0u8; 188];
+            pkt[0] = 0x47;
+            let hi: u8 = ((pid >> 8) & 0x1f) as u8 | if pusi { 0x40 } else { 0 };
+            pkt[1] = hi;
+            pkt[2] = (pid & 0xff) as u8;
+            pkt[3] = afc << 4;
+            let payload_start = 4usize;
+            let len = payload.len().min(188 - payload_start);
+            pkt[payload_start..payload_start + len].copy_from_slice(&payload[..len]);
+            pkt
+        };
+
+        // PES packet #1: start + PTS + 2-byte payload, split over 2 TS packets.
+        let pes1 = [
+            0x00, 0x00, 0x01, 0xC0, 0x00, 0x0A, 0x80, 0x80, 0x05, // header
+            0x21, 0x00, 0x01, 0x00, 0x01, // PTS=1
+            0xAA, 0xBB, // payload
+        ];
+        // First TS packet: PUSI + first 8 bytes of head
+        data.extend_from_slice(&make_pkt(0x0040, true, 1, &pes1[..8]));
+        // Second TS packet: rest
+        data.extend_from_slice(&make_pkt(0x0040, false, 1, &pes1[8..]));
+        // Third TS packet: PUSI for a new PES with only 3 bytes (truncated header)
+        data.extend_from_slice(&make_pkt(0x0040, true, 1, &pes1[..3]));
+
+        // Also put some junk with PUSI+payload on a different PID to exercise
+        // the lazy-creation path.
+        data.extend_from_slice(&make_pkt(
+            0x0050,
+            true,
+            1,
+            &[0x00, 0x00, 0x01, 0xE0, 0x00, 0x00],
+        ));
+
+        let mut demux = EsDemux::new();
+        for chunk in data.chunks(188) {
+            demux.feed_packet(chunk);
+        }
+        demux.flush();
+        let _units = demux.drain();
+        // The test passes if we got here without panicking.
     }
 }

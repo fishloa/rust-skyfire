@@ -109,12 +109,22 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "dvb-common"
-version = "7.3.0"
+version = "7.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20197d84cf95b8e642f129c07b9738f9347a0d0c119ff50e21a845c25f4918ab"
+checksum = "6a04670857e3f2152549655cd601947e2557558f5a460698b9c92a9f7acef50d"
 dependencies = [
  "chrono",
  "libm",
+]
+
+[[package]]
+name = "dvb-pes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "475194f76f9c3559d5d0fe09ea7662d725a5b88ec45e77a1f82455dbd012fc83"
+dependencies = [
+ "dvb-common",
+ "thiserror",
 ]
 
 [[package]]
@@ -482,7 +492,9 @@ version = "0.0.1"
 name = "skyfire-ts"
 version = "0.0.1"
 dependencies = [
+ "dvb-pes",
  "dvb-si",
+ "skyfire-ac3",
 ]
 
 [[package]]
