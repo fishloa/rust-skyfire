@@ -57,7 +57,11 @@ mod tests {
 
     #[test]
     fn media_time_advances_with_samples() {
-        let c = AudioClock { anchor_pts_us: 1_000_000, sample_rate: 48_000, samples_played: 48_000 };
+        let c = AudioClock {
+            anchor_pts_us: 1_000_000,
+            sample_rate: 48_000,
+            samples_played: 48_000,
+        };
         assert_eq!(c.media_time_us(), 2_000_000); // anchor + exactly 1 s
     }
 
