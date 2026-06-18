@@ -35,4 +35,26 @@ fn main() {
     for (pid, n) in &hist {
         println!("  PID {pid:#06x}: {n}");
     }
+
+    println!();
+    match skyfire_ts::probe(&data) {
+        Some(map) => {
+            println!(
+                "Channel map: video PID {vp:#06x} ({vc:?})",
+                vp = map.video_pid,
+                vc = map.video_codec,
+            );
+            for a in &map.audio_streams {
+                println!(
+                    "  audio PID {pid:#06x} ({codec:?})",
+                    pid = a.pid,
+                    codec = a.codec,
+                );
+            }
+        }
+        None => {
+            eprintln!("error: no PAT/PMT channel map found in input");
+            std::process::exit(1);
+        }
+    }
 }
