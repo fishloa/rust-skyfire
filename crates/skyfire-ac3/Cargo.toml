@@ -7,3 +7,4 @@ repository.workspace = true
 description = "AC-3 / E-AC-3 audio decoder for Skyfire (→ PCM for WebAudio). The codec browsers refuse; cheap in WASM."
 
 [dependencies]
+oxideav-ac3 = "0.0.9"
