@@ -8,10 +8,10 @@ production code yourself** (same model as the sibling project `rust-ac4`).
 ## What this is
 
 **Skyfire** — an in-browser DVB TV player. The client decodes the raw MPEG-TS
-that [zenith](https://github.com/fishloa/zenith) serves: **WebCodecs** for
-hardware video (H.264/H.265), a **WASM AC-3/E-AC-3 decoder** for the audio
-browsers refuse, **WebAudio** for output, and an **audio-master A/V sync clock**.
-Zero server-side transcode. See `README.md` for the architecture.
+served by an upstream DVB-S2 receiver: **WebCodecs** for hardware video
+(H.264/H.265), a **WASM AC-3/E-AC-3 decoder** for the audio browsers refuse,
+**WebAudio** for output, and an **audio-master A/V sync clock**. Zero
+server-side transcode. See `README.md` for the architecture.
 
 ## The crates
 

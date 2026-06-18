@@ -1,9 +1,9 @@
 # rust-skyfire — an in-browser DVB TV player, built by delegated open models
 
 **Skyfire** plays live satellite TV **in the browser** by decoding the raw
-MPEG-TS on the client — no server-side transcoding. It is the sibling client to
-[zenith](https://github.com/fishloa/zenith) (the DVB-S2 receiver): zenith serves
-clean per-channel TS/HLS, Skyfire decodes and renders it.
+MPEG-TS on the client — no server-side transcoding. It consumes the clean
+per-channel MPEG-TS/HLS produced by an upstream DVB-S2 receiver and decodes and
+renders it entirely in the browser.
 
 ## What this project is
 
