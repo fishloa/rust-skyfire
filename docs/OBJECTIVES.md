@@ -1,0 +1,58 @@
+# Skyfire — objectives & roadmap
+
+> Single source of truth for **what** we're building and **where it stands**.
+> Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
+> when an epic's state changes, update its row in the same change.
+
+_Last updated: 2026-06-18._
+
+## Primary objective
+
+Play the full DVB satellite lineup **in any supported browser with zero
+server-side transcode** — the client decodes raw MPEG-TS end to end:
+
+- **Video** → WebCodecs `VideoDecoder` (HW H.264 universal, H.265 where capable).
+- **Audio** → WASM AC-3 / E-AC-3 decoder → PCM → WebAudio `AudioWorklet`.
+- **A/V sync** → audio is the master clock; video chases it (drift-free).
+- **Container** → MPEG-TS / HLS demux, reusing `rust-dvb` for PSI parsing.
+
+Secondary objective: serve as an experiment in AI-orchestrated engineering —
+Claude writes spec briefs and verifies; delegated open models write the code.
+
+## Success criteria
+
+- A supported browser plays a live channel: correct video, in-sync AC-3 audio,
+  no server transcode.
+- Codec selection is capability-probed, with an H.264 fallback that always works
+  (see [ADR 0001](decisions/0001-browser-and-platform-support.md)).
+- The CI gate (fmt + clippy `-D warnings` + build + `nextest`) is green on every
+  commit; behavioural tests decode real fixtures, not just compile.
+
+## Support scope
+
+Chrome/Edge, Safari, Firefox — desktop and mobile (iOS 17+ as one WebKit target,
+Android). H.265 gated per-stream with H.264 fallback. Full detail and rationale:
+[ADR 0001](decisions/0001-browser-and-platform-support.md).
+
+## Roadmap (epics)
+
+Tracked as GitHub EPIC issues. Status here mirrors reality; sub-issues are the
+delegable work units.
+
+| Epic | Crate(s) | Objective | Status |
+|---|---|---|---|
+| [#1](https://github.com/fishloa/rust-skyfire/issues/1) | skyfire-ts | MPEG-TS/HLS demux → ES + PTS (reuse `rust-dvb` PSI) | Open — stub, no sub-issues |
+| [#2](https://github.com/fishloa/rust-skyfire/issues/2) | skyfire-ac3 | WASM AC-3 / E-AC-3 decode → PCM | Open — stub, no sub-issues |
+| [#3](https://github.com/fishloa/rust-skyfire/issues/3) | web/ | WebCodecs video pipeline, HW H.264/H.265 | Open — must bake in ADR 0001 gating |
+| [#4](https://github.com/fishloa/rust-skyfire/issues/4) | skyfire-sync, core | Audio-master A/V sync engine | Open — stub, no sub-issues |
+| [#5](https://github.com/fishloa/rust-skyfire/issues/5) | skyfire-wasm, web/ | WASM bindings + browser shell | Open — touch UI for mobile |
+| [#6](https://github.com/fishloa/rust-skyfire/issues/6) | web/ | Deinterlace + render (GPU weave shader) | Open |
+| [#7](https://github.com/fishloa/rust-skyfire/issues/7) | core, web/ | Live-edge, buffering, capability fallback | Open — owns `isConfigSupported` probe |
+| [#8](https://github.com/fishloa/rust-skyfire/issues/8) | fixtures, CI | Fixtures, conformance harness, CI/WASM build | Open |
+
+## Current state (2026-06-18)
+
+Scaffold + contract-test stage. Six crate stubs (~229 lines total), 8 open epics,
+**no child issues yet**, `web/` empty. Next step: decompose epics (#3/#5/#7 first,
+to bake in the ADR 0001 capability-gating + iOS-17 floor) into concrete sub-issues
+for delegation.

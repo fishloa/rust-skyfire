@@ -13,6 +13,12 @@ served by an upstream DVB-S2 receiver: **WebCodecs** for hardware video
 **WebAudio** for output, and an **audio-master A/V sync clock**. Zero
 server-side transcode. See `README.md` for the architecture.
 
+## Docs (keep current)
+
+- `docs/decisions/` — ADRs (why). Numbered, immutable once Accepted; supersede, don't edit. Update the index in same change.
+- `docs/OBJECTIVES.md` — objectives + epic status. Update the row when state changes.
+- ADR 0001 fixes support scope (browsers, iOS-17, H.265 gate + H.264 fallback). Honour it.
+
 ## The crates
 
 - `skyfire-ts` — MPEG-TS/HLS demux → ES + PTS. Reuse `rust-dvb` (`dvb-si`,
