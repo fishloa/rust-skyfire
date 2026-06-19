@@ -64,7 +64,7 @@ class SkyfirePcmProcessor extends AudioWorkletProcessor {
     for (let ch = 0; ch < chCount; ch++) {
       const chOut = out[ch];
       for (let i = 0; i < frameLen; i++) {
-        const srcIdx = this.playhead * this.channels + ch;
+        const srcIdx = (this.playhead + i) * this.channels + ch;
         if (srcIdx < this.buffer.length) {
           chOut[i] = this.buffer[srcIdx];
         } else {

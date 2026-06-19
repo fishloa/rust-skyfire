@@ -183,6 +183,31 @@ function enqueueVideoFrame(frame, ptsTicks) {
   scheduleRender();
 }
 
+// ── NAL unit scanner for Annex-B key-frame detection ──────────────────────
+
+/**
+ * Scan H.264 Annex-B access unit bytes for NAL unit types.
+ * Returns true if the AU contains SPS (7) or PPS (8) — an open-GOP
+ * random-access point suitable for `type: "key"`.
+ */
+function containsSpsOrPps(bytes) {
+  const len = bytes.length;
+  for (let i = 0; i < len - 4; i++) {
+    if (bytes[i] === 0x00 && bytes[i + 1] === 0x00) {
+      if (bytes[i + 2] === 0x01) {
+        const nalType = bytes[i + 3] & 0x1f;
+        if (nalType === 7 || nalType === 8) return true;
+        i += 3;
+      } else if (bytes[i + 2] === 0x00 && bytes[i + 3] === 0x01) {
+        const nalType = bytes[i + 4] & 0x1f;
+        if (nalType === 7 || nalType === 8) return true;
+        i += 4;
+      }
+    }
+  }
+  return false;
+}
+
 // ── video decoder ─────────────────────────────────────────────────────────
 
 function configureVideoDecoder(codec, _description) {
@@ -214,8 +239,8 @@ function feedVideoAccessUnits(engine) {
     const ptsTicks = BigInt(ptsRaw);
     const timestampUs = Number(ptsTicks) * 1_000_000 / PTS_TICKS_PER_SEC;
 
-    // First AU marks the stream start (contains SPS/PPS+IDR).
-    const chunkType = i === 0 ? "key" : "delta";
+    // Detect open-GOP random-access points: AU containing SPS(7) or PPS(8).
+    const chunkType = containsSpsOrPps(au.bytes) ? "key" : "delta";
 
     const chunk = new EncodedVideoChunk({
       type: chunkType,
