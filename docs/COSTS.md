@@ -3,7 +3,7 @@
 Every delegate run is logged here: tokens in/out and USD cost, rolled up per epic.
 Required by [ADR 0002](decisions/0002-delegation-working-practice.md).
 
-_Last updated: 2026-06-19 (issue #15)._
+_Last updated: 2026-06-19 (issue #12)._
 
 ## How cost is recorded
 
@@ -38,6 +38,7 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-19 | #17 catch-up/stall/latency (2 hangs, fixed) | #4 | deepseek-v4-pro | n/a | n/a¹ | 0.07 |
 | 2026-06-19 | #26 skyfire-core engine wiring | #5 | deepseek-v4-pro | ~60k | n/a¹ | 0.05 |
 | 2026-06-19 | #15 wasm32 CI build lane | #8 | deepseek-v4-pro | ~30k | n/a¹ | 0.01 |
+| 2026-06-19 | #12 wasm-bindgen expose engine | #5 | deepseek-v4-pro | ~40k | n/a¹ | 0.03 |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
@@ -49,8 +50,8 @@ the ledger and update the epic rollup in the same change.
 | #2 ac3 | 1 | 0.06 |
 | #3 video | 1 | 0.05 |
 | #4 sync | 3 | 0.19 |
-| #5 wasm+shell | 1 | 0.05 |
+| #5 wasm+shell | 2 | 0.08 |
 | #6 deinterlace | 0 | 0.00 |
 | #7 live/fallback | 0 | 0.00 |
 | #8 fixtures/CI/harness | 2 | 0.02 |
-| **Total** | **10** | **0.61** |
+| **Total** | **11** | **0.64** |
