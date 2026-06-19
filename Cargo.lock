@@ -560,6 +560,7 @@ name = "skyfire-wasm"
 version = "0.0.1"
 dependencies = [
  "skyfire-core",
+ "wasm-bindgen",
 ]
 
 [[package]]
