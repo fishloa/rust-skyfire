@@ -12,6 +12,7 @@ specs/txt/
 # Web shell deps
 web/node_modules/
 web/dist/
+web/pkg/
 
 # Crush / local tool state
 /.crush

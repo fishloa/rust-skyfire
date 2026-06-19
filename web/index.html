@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyfire — DVB Player</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; color: #ccc; font: 14px/1.5 system-ui, sans-serif; overflow: hidden; }
+  #overlay {
+    position: fixed; top: 0; left: 0; z-index: 10;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.7);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  #canvas {
+    display: block; width: 100vw; height: 100vh;
+    object-fit: contain;
+  }
+  #error {
+    display: none;
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+    padding: 12px;
+    background: rgba(200,0,0,0.85);
+    color: #fff;
+    white-space: pre-wrap;
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="overlay"></div>
+<div id="error"></div>
+<script type="module" src="./player.js"></script>
+</body>
+</html>
