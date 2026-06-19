@@ -535,6 +535,7 @@ dependencies = [
 name = "skyfire-core"
 version = "0.0.1"
 dependencies = [
+ "dvb-si",
  "skyfire-ac3",
  "skyfire-sync",
  "skyfire-ts",

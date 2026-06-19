@@ -10,3 +10,4 @@ description = "Skyfire engine core — wires TS demux + AC-3 audio decode + audi
 skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-sync.workspace = true
+dvb-si = "7.3"
