@@ -1,2 +1,5 @@
 [profile.default]
 fail-fast = false
+# Kill and FAIL a runaway/infinite-loop test instead of hanging the run (and any
+# delegate looping on it, and CI). 15s × 2 = hard terminate at 30s.
+slow-timeout = { period = "15s", terminate-after = 2 }
