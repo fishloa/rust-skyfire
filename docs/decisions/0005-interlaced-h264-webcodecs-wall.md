@@ -23,7 +23,8 @@ Two independent WebCodecs constraints, both proven:
 2. **Cannot decode interlaced H.264 at all.** m6 has a valid IDR at AU0, fed as
    key, and still yields 0 frames — the only differentiator from the working
    progressive fixture is `frame_mbs_only_flag = 0`. This matches Chrome's known
-   WebCodecs limitation (no field/MBAFF/PAFF support).
+   WebCodecs limitation (no field/MBAFF/PAFF support). Upstream reference
+   (owner-supplied, login-gated): Chromium issuetracker 456919096.
 
 Virtually all DVB HD is 1080i interlaced H.264, so constraint #2 is fatal for the
 core use case — and **re-encoding is off the table** (project premise + owner
