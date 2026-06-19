@@ -185,19 +185,20 @@ function enqueueVideoFrame(frame, ptsTicks) {
 
 // ── video decoder ─────────────────────────────────────────────────────────
 
-function configureVideoDecoder(codec, description) {
+function configureVideoDecoder(codec, _description) {
+  // Do NOT pass avcC description — the engine produces Annex-B access units.
+  // WebCodecs: description → AVCC data; no description → Annex-B data.
   return new Promise((resolve, reject) => {
     videoDecoder = new VideoDecoder({
       output(frame) {
-        // timestamp is in microseconds from EncodedVideoChunk.timestamp.
         const ptsTicks = BigInt(Math.round(frame.timestamp * PTS_TICKS_PER_SEC / 1_000_000));
         enqueueVideoFrame(frame, ptsTicks);
       },
       error(e) { fatal("VideoDecoder error", e); },
     });
 
-    videoDecoder.configure({ codec, description, optimizeForLatency: false });
-    status(`VideoDecoder configured: ${codec}`);
+    videoDecoder.configure({ codec, optimizeForLatency: false });
+    status(`VideoDecoder configured: ${codec} (Annex-B)`);
     resolve();
   });
 }
@@ -213,8 +214,11 @@ function feedVideoAccessUnits(engine) {
     const ptsTicks = BigInt(ptsRaw);
     const timestampUs = Number(ptsTicks) * 1_000_000 / PTS_TICKS_PER_SEC;
 
+    // First AU marks the stream start (contains SPS/PPS+IDR).
+    const chunkType = i === 0 ? "key" : "delta";
+
     const chunk = new EncodedVideoChunk({
-      type: "key",
+      type: chunkType,
       timestamp: timestampUs,
       duration: 0,
       data: au.bytes,
@@ -235,10 +239,13 @@ async function initAudio(pcm, sampleRate, channels) {
     outputChannelCount: [channels],
   });
 
-  const bytes = new Uint8Array(pcm);
+  // Copy PCM out of wasm heap into a fresh ArrayBuffer for transfer.
+  const wasmView = new Uint8Array(pcm);
+  const pcmCopy = new ArrayBuffer(wasmView.byteLength);
+  new Uint8Array(pcmCopy).set(wasmView);
   audioWorkletNode.port.postMessage(
-    { type: "init", pcm: bytes.buffer, sampleRate, channels },
-    [bytes.buffer]
+    { type: "init", pcm: pcmCopy, sampleRate, channels },
+    [pcmCopy]
   );
   audioWorkletNode.connect(audioCtx.destination);
   status(`Audio: ${sampleRate} Hz, ${channels} ch, ${pcm.length} bytes`);
@@ -281,15 +288,15 @@ async function main() {
 
   if (engine.has_video()) {
     const codec = engine.video_config_codec();
-    const desc = engine.video_config_description();
 
-    const support = await VideoDecoder.isConfigSupported({ codec, description: desc });
+    // Probe without description — Annex-B mode.
+    const support = await VideoDecoder.isConfigSupported({ codec });
     if (!support.supported) {
       fatal(`Video codec not supported: ${codec}`);
       return;
     }
 
-    await configureVideoDecoder(codec, desc);
+    await configureVideoDecoder(codec);
     startPlayback();
     feedVideoAccessUnits(engine);
   } else {
