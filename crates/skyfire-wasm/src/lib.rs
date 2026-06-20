@@ -277,6 +277,9 @@ pub struct WasmVideoFrame {
     pub width: u32,
     /// Luma height in samples.
     pub height: u32,
+    /// Presentation timestamp in 90 kHz ticks (`-1` if unknown). Frames
+    /// are emitted in display order, so this drives A/V sync.
+    pub pts_ticks: f64,
     /// I420 planar bytes (Y, then U, then V), tightly packed.
     #[wasm_bindgen(getter_with_clone)]
     pub data: Vec<u8>,
@@ -353,6 +356,7 @@ fn video_frame_to_i420(vf: &oxideav_core::VideoFrame) -> WasmVideoFrame {
     WasmVideoFrame {
         width: w as u32,
         height: h as u32,
+        pts_ticks: vf.pts.map(|p| p as f64).unwrap_or(-1.0),
         data,
     }
 }
