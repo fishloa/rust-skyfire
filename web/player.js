@@ -1,4 +1,4 @@
-import init, { WasmEngine } from "./pkg/skyfire_wasm.js";
+import init, { WasmEngine, WasmVideoDecoder } from "./pkg/skyfire_wasm.js";
 
 const overlay = document.getElementById("overlay");
 const errorEl = document.getElementById("error");
@@ -65,6 +65,10 @@ function drawFrame(frame) {
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     videoFramesDrawn++;
   } finally {
@@ -72,7 +76,7 @@ function drawFrame(frame) {
   }
 }
 
-// ── WebGL quad program ────────────────────────────────────────────────────
+// ── WebGL quad program (RGBA path) ────────────────────────────────────────
 
 const vsSrc = `#version 300 es
 in vec2 a_pos;
@@ -114,6 +118,127 @@ gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 gl.bindTexture(gl.TEXTURE_2D, null);
 
+// ── WebGL YUV program (software I420 path, BT.709 limited-range) ─────────
+//
+// Three R8 textures: Y (width×height), U (width/2 × height/2),
+// V (width/2 × height/2).  BT.709 limited-range matrix:
+//   Y'  ∈ [16,235], Cb/Cr ∈ [16,240]
+//   y = (Y-16)/219, u = (U-128)/224, v = (V-128)/224
+//   R = y + 1.5748*v
+//   G = y - 0.1873*u - 0.4681*v
+//   B = y + 1.8556*u
+
+const vsYuvSrc = `#version 300 es
+in vec2 a_pos;
+out vec2 v_tex;
+void main() {
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+  v_tex = a_pos * 0.5 + 0.5;
+}`;
+const fsYuvSrc = `#version 300 es
+precision highp float;
+in vec2 v_tex;
+out vec4 outColor;
+uniform sampler2D u_y;
+uniform sampler2D u_u;
+uniform sampler2D u_v;
+void main() {
+  float yRaw = texture(u_y, v_tex).r;
+  float uRaw = texture(u_u, v_tex).r;
+  float vRaw = texture(u_v, v_tex).r;
+  float y = (yRaw * 255.0 - 16.0) / 219.0;
+  float u = (uRaw * 255.0 - 128.0) / 224.0;
+  float v = (vRaw * 255.0 - 128.0) / 224.0;
+  float r = y + 1.5748 * v;
+  float g = y - 0.1873 * u - 0.4681 * v;
+  float b = y + 1.8556 * u;
+  outColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
+}`;
+
+const progYuv = gl.createProgram();
+gl.attachShader(progYuv, compile(gl.VERTEX_SHADER, vsYuvSrc));
+gl.attachShader(progYuv, compile(gl.FRAGMENT_SHADER, fsYuvSrc));
+gl.linkProgram(progYuv);
+if (!gl.getProgramParameter(progYuv, gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(progYuv));
+
+// Cache uniform/attrib locations for the YUV program.
+const aPosYuv = gl.getAttribLocation(progYuv, "a_pos");
+const uLocY = gl.getUniformLocation(progYuv, "u_y");
+const uLocU = gl.getUniformLocation(progYuv, "u_u");
+const uLocV = gl.getUniformLocation(progYuv, "u_v");
+
+// Three persistent R8 textures reused across frames.
+let yuvTexY = null, yuvTexU = null, yuvTexV = null;
+let yuvTexW = 0, yuvTexH = 0;
+
+function ensureYuvTextures(w, h) {
+  if (yuvTexW === w && yuvTexH === h) return;
+
+  if (yuvTexY) { gl.deleteTexture(yuvTexY); gl.deleteTexture(yuvTexU); gl.deleteTexture(yuvTexV); }
+
+  function makeR8(tw, th) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, tw, th, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    return t;
+  }
+
+  yuvTexY = makeR8(w, h);
+  yuvTexU = makeR8(w >> 1, h >> 1);
+  yuvTexV = makeR8(w >> 1, h >> 1);
+  yuvTexW = w;
+  yuvTexH = h;
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+}
+
+/**
+ * Draw an I420 frame (from the software decoder present queue).
+ * entry: { width, height, ptsTicks, y: Uint8Array, u: Uint8Array, v: Uint8Array }
+ */
+function drawFrameYuv(entry) {
+  const { width: w, height: h, y, u, v } = entry;
+  ensureYuvTextures(w, h);
+
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, yuvTexY);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, y);
+
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, yuvTexU);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w >> 1, h >> 1, gl.RED, gl.UNSIGNED_BYTE, u);
+
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, yuvTexV);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w >> 1, h >> 1, gl.RED, gl.UNSIGNED_BYTE, v);
+
+  gl.useProgram(progYuv);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+  gl.enableVertexAttribArray(aPosYuv);
+  gl.vertexAttribPointer(aPosYuv, 2, gl.FLOAT, false, 0, 0);
+
+  gl.uniform1i(uLocY, 0);
+  gl.uniform1i(uLocU, 1);
+  gl.uniform1i(uLocV, 2);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  videoFramesDrawn++;
+  window.__sfStats = { decoded: videoFramesDecoded, drawn: videoFramesDrawn, w, h, path: "sw" };
+}
+
 // ── sync: audio-master clock ──────────────────────────────────────────────
 
 const presentQueue = [];
@@ -140,6 +265,90 @@ function scheduleRender() {
   requestAnimationFrame(onRaf);
 }
 
+// ── software decode state ─────────────────────────────────────────────────
+
+// Set to true in main() when using the WASM software decoder.
+let useSwDecode = false;
+// WASM software decoder instance (WasmVideoDecoder).
+let swDecoder = null;
+// Array of all access-unit objects from the engine, to be consumed lazily.
+let swAuQueue = [];
+// Index into swAuQueue for the next AU to send.
+let swAuIndex = 0;
+// True when all AUs have been sent and dec.flush() called.
+let swFlushed = false;
+// Maximum decoded frames to hold in presentQueue before pausing decode.
+const SW_QUEUE_MAX = 8;
+// How many AUs to process per incremental batch.
+const SW_BATCH_SIZE = 4;
+
+/**
+ * Drain decoded frames from the WASM decoder into presentQueue (as I420
+ * plain-object copies so wasm memory is released immediately).
+ */
+function drainSwDecoder() {
+  let f;
+  while ((f = swDecoder.receive()) !== undefined) {
+    const w = f.width;
+    const h = f.height;
+    const ptsTicks = f.pts_ticks;
+    const yLen = w * h;
+    const cLen = (w >> 1) * (h >> 1);
+
+    // Slice and copy each plane out of the wasm Uint8Array.
+    const y = f.data.slice(0, yLen);
+    const u = f.data.slice(yLen, yLen + cLen);
+    const v = f.data.slice(yLen + cLen, yLen + 2 * cLen);
+    f.free();
+
+    videoFramesDecoded++;
+    if (syncFirstVideoPts === null) syncFirstVideoPts = ptsTicks;
+    presentQueue.push({ width: w, height: h, ptsTicks, y, u, v });
+  }
+}
+
+/**
+ * Process a small batch of access units from swAuQueue, then drain decoded
+ * frames.  Reschedules itself via setTimeout(0) until all AUs are consumed and
+ * flushed.  Back-pressure: if presentQueue is already at SW_QUEUE_MAX, yields
+ * without consuming more AUs.
+ */
+function swDecodeTick() {
+  if (!swDecoder) return;
+
+  // Back-pressure: wait for the render loop to consume some frames first.
+  if (presentQueue.length >= SW_QUEUE_MAX) {
+    scheduleRender();
+    setTimeout(swDecodeTick, 16);
+    return;
+  }
+
+  // Send a batch of AUs to the decoder.
+  let sent = 0;
+  while (swAuIndex < swAuQueue.length && sent < SW_BATCH_SIZE) {
+    const au = swAuQueue[swAuIndex++];
+    if (!au) continue;
+    const pts = au.pts_ticks != null ? Number(au.pts_ticks) : 0;
+    swDecoder.send(au.bytes, pts);
+    sent++;
+  }
+
+  // If all AUs sent and not yet flushed, flush to drain reordered frames.
+  if (swAuIndex >= swAuQueue.length && !swFlushed) {
+    swDecoder.flush();
+    swFlushed = true;
+  }
+
+  // Collect any newly decoded frames.
+  drainSwDecoder();
+  scheduleRender();
+
+  // Keep going if there are more AUs to process.
+  if (!swFlushed || swAuIndex < swAuQueue.length) {
+    setTimeout(swDecodeTick, 0);
+  }
+}
+
 function onRaf() {
   renderScheduled = false;
   if (!audioCtx) return;
@@ -159,10 +368,17 @@ function onRaf() {
 
     presentQueue.shift();
     if (delta < -0.100) {
-      entry.frame.close();
+      // Frame is more than 100ms late — drop it (no close() needed for I420
+      // plain objects; WebCodecs VideoFrame objects have .close()).
+      if (entry.frame) entry.frame.close();
       continue;
     }
-    drawFrame(entry.frame);
+
+    if (useSwDecode) {
+      drawFrameYuv(entry);
+    } else {
+      drawFrame(entry.frame);
+    }
   }
 
   // Status line updated ~1 Hz.
@@ -170,7 +386,8 @@ function onRaf() {
     lastStatusUpdate = now;
     const q = presentQueue.length;
     const aState = audioWorkletNode ? "playing" : (audioCtx ? "init" : "none");
-    status(`decoded ${videoFramesDecoded} video | drawn ${videoFramesDrawn} | queue ${q} | audio ${aState}`);
+    const path = useSwDecode ? "sw" : "wc";
+    status(`decoded ${videoFramesDecoded} video | drawn ${videoFramesDrawn} | queue ${q} | audio ${aState} | path ${path}`);
   }
 
   if (!next && presentQueue.length > 0) scheduleRender();
@@ -314,16 +531,34 @@ async function main() {
   if (engine.has_video()) {
     const codec = engine.video_config_codec();
 
-    // Probe without description — Annex-B mode.
-    const support = await VideoDecoder.isConfigSupported({ codec });
-    if (!support.supported) {
-      fatal(`Video codec not supported: ${codec}`);
-      return;
-    }
+    if (engine.video_is_interlaced()) {
+      // ── Software path: WASM H.264 decoder for interlaced (1080i) ──────────
+      status(`Interlaced video detected — using software decoder (${codec})`);
+      useSwDecode = true;
 
-    await configureVideoDecoder(codec);
-    startPlayback();
-    feedVideoAccessUnits(engine);
+      // Collect all access units from the engine up front, then decode lazily.
+      const count = engine.video_unit_count();
+      for (let i = 0; i < count; i++) {
+        const au = engine.video_unit(i);
+        if (au && au.pts_ticks != null) swAuQueue.push(au);
+      }
+
+      swDecoder = new WasmVideoDecoder();
+      startPlayback();
+      // Begin incremental decode (yields via setTimeout to keep page responsive).
+      setTimeout(swDecodeTick, 0);
+    } else {
+      // ── WebCodecs path: progressive / hardware-decoded ────────────────────
+      const support = await VideoDecoder.isConfigSupported({ codec });
+      if (!support.supported) {
+        fatal(`Video codec not supported: ${codec}`);
+        return;
+      }
+
+      await configureVideoDecoder(codec);
+      startPlayback();
+      feedVideoAccessUnits(engine);
+    }
   } else {
     status("No video stream found");
   }
