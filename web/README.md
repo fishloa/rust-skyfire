@@ -13,7 +13,9 @@ In-browser DVB player: WebCodecs (HW video) + WASM (AC-3/E-AC-3 audio) + AudioWo
 ```bash
 # From repo root, with the Rust toolchain PATH prefix:
 export PATH="$HOME/.cargo/bin:$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
-wasm-pack build crates/skyfire-wasm --target web --out-dir ../../web/pkg
+# --release is REQUIRED for usable software-decode speed (debug wasm is
+# ~10-30x slower; 1080i decode crawls without it).
+wasm-pack build crates/skyfire-wasm --target web --out-dir ../../web/pkg --release
 ```
 
 ## Run

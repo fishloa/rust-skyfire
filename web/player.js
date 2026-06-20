@@ -1,4 +1,4 @@
-import init, { WasmEngine, WasmVideoDecoder } from "./pkg/skyfire_wasm.js";
+import init, { WasmEngine } from "./pkg/skyfire_wasm.js";
 
 const overlay = document.getElementById("overlay");
 const errorEl = document.getElementById("error");
@@ -267,86 +267,112 @@ function scheduleRender() {
 
 // ── software decode state ─────────────────────────────────────────────────
 
-// Set to true in main() when using the WASM software decoder.
+// Set to true in main() when using the WASM software decoder (worker path).
 let useSwDecode = false;
-// WASM software decoder instance (WasmVideoDecoder).
-let swDecoder = null;
-// Array of all access-unit objects from the engine, to be consumed lazily.
-let swAuQueue = [];
-// Index into swAuQueue for the next AU to send.
-let swAuIndex = 0;
-// True when all AUs have been sent and dec.flush() called.
-let swFlushed = false;
-// Maximum decoded frames to hold in presentQueue before pausing decode.
-const SW_QUEUE_MAX = 8;
-// How many AUs to process per incremental batch.
-const SW_BATCH_SIZE = 4;
+
+// Web Worker that owns the WasmVideoDecoder.
+let swWorker = null;
+
+// Pending AUs that could not be posted yet because the worker is not ready
+// or because back-pressure is active.
+let swPendingAus = [];
+
+// True once the worker has replied { type: "ready" }.
+let swWorkerReady = false;
+
+// True once we have posted { type: "flush" } to the worker.
+let swFlushSent = false;
+
+// Maximum frames allowed in presentQueue before we stop sending AUs.
+const SW_QUEUE_MAX = 6;
 
 /**
- * Drain decoded frames from the WASM decoder into presentQueue (as I420
- * plain-object copies so wasm memory is released immediately).
+ * Attempt to send as many pending AUs to the worker as back-pressure allows.
+ * Called after enqueuing AUs, after receiving frames, and on worker-ready.
  */
-function drainSwDecoder() {
-  let f;
-  while ((f = swDecoder.receive()) !== undefined) {
-    const w = f.width;
-    const h = f.height;
-    const ptsTicks = f.pts_ticks;
-    const yLen = w * h;
-    const cLen = (w >> 1) * (h >> 1);
+function swDrainPending() {
+  if (!swWorkerReady || swFlushSent) return;
 
-    // Slice and copy each plane out of the wasm Uint8Array.
-    const y = f.data.slice(0, yLen);
-    const u = f.data.slice(yLen, yLen + cLen);
-    const v = f.data.slice(yLen + cLen, yLen + 2 * cLen);
-    f.free();
+  while (swPendingAus.length > 0 && presentQueue.length < SW_QUEUE_MAX) {
+    const au = swPendingAus.shift();
+    // Transfer the underlying ArrayBuffer — zero copy into the worker.
+    const buf = au.bytes.buffer;
+    swWorker.postMessage({ type: "au", bytes: buf, pts: Number(au.pts_ticks ?? 0) }, [buf]);
+  }
 
-    videoFramesDecoded++;
-    if (syncFirstVideoPts === null) syncFirstVideoPts = ptsTicks;
-    presentQueue.push({ width: w, height: h, ptsTicks, y, u, v });
+  // If all pending AUs have been flushed to the worker, send flush.
+  if (swPendingAus.length === 0 && !swFlushSent) {
+    swWorker.postMessage({ type: "flush" });
+    swFlushSent = true;
   }
 }
 
 /**
- * Process a small batch of access units from swAuQueue, then drain decoded
- * frames.  Reschedules itself via setTimeout(0) until all AUs are consumed and
- * flushed.  Back-pressure: if presentQueue is already at SW_QUEUE_MAX, yields
- * without consuming more AUs.
+ * Initialise the decode worker and wire up its message handler.
+ * Returns the Worker so main() can hold a reference.
  */
-function swDecodeTick() {
-  if (!swDecoder) return;
+function createSwWorker() {
+  const w = new Worker("./decode-worker.js", { type: "module" });
 
-  // Back-pressure: wait for the render loop to consume some frames first.
-  if (presentQueue.length >= SW_QUEUE_MAX) {
-    scheduleRender();
-    setTimeout(swDecodeTick, 16);
-    return;
-  }
+  w.onmessage = (evt) => {
+    const msg = evt.data;
 
-  // Send a batch of AUs to the decoder.
-  let sent = 0;
-  while (swAuIndex < swAuQueue.length && sent < SW_BATCH_SIZE) {
-    const au = swAuQueue[swAuIndex++];
-    if (!au) continue;
-    const pts = au.pts_ticks != null ? Number(au.pts_ticks) : 0;
-    swDecoder.send(au.bytes, pts);
-    sent++;
-  }
+    switch (msg.type) {
+      case "ready": {
+        swWorkerReady = true;
+        swDrainPending();
+        break;
+      }
 
-  // If all AUs sent and not yet flushed, flush to drain reordered frames.
-  if (swAuIndex >= swAuQueue.length && !swFlushed) {
-    swDecoder.flush();
-    swFlushed = true;
-  }
+      case "frame": {
+        // msg.buf is a transferred I420 ArrayBuffer.
+        // Split it into Y/U/V views on the main side (no extra copy).
+        const { width: w, height: h, ptsTicks, buf } = msg;
+        const yLen = w * h;
+        const cLen = (w >> 1) * (h >> 1);
+        const raw = new Uint8Array(buf);
+        const y = raw.subarray(0, yLen);
+        const u = raw.subarray(yLen, yLen + cLen);
+        const v = raw.subarray(yLen + cLen, yLen + 2 * cLen);
 
-  // Collect any newly decoded frames.
-  drainSwDecoder();
-  scheduleRender();
+        videoFramesDecoded++;
+        if (syncFirstVideoPts === null) syncFirstVideoPts = ptsTicks;
+        presentQueue.push({ width: w, height: h, ptsTicks, y, u, v });
+        window.__sfStats = {
+          decoded: videoFramesDecoded,
+          drawn: videoFramesDrawn,
+          w,
+          h,
+          path: "sw",
+        };
+        scheduleRender();
 
-  // Keep going if there are more AUs to process.
-  if (!swFlushed || swAuIndex < swAuQueue.length) {
-    setTimeout(swDecodeTick, 0);
-  }
+        // Back-pressure lifted — try posting more AUs.
+        swDrainPending();
+        break;
+      }
+
+      case "done": {
+        // All frames have been posted; nothing more to do.
+        console.log("[player] worker done");
+        break;
+      }
+
+      case "dbg": {
+        console.log("[worker]", msg.msg);
+        break;
+      }
+
+      default:
+        console.warn("[player] unknown worker message:", msg.type);
+    }
+  };
+
+  w.onerror = (e) => {
+    fatal("decode-worker error", e);
+  };
+
+  return w;
 }
 
 function onRaf() {
@@ -532,21 +558,23 @@ async function main() {
     const codec = engine.video_config_codec();
 
     if (engine.video_is_interlaced()) {
-      // ── Software path: WASM H.264 decoder for interlaced (1080i) ──────────
+      // ── Software path: WASM H.264 decoder off-main-thread (worker) ────────
       status(`Interlaced video detected — using software decoder (${codec})`);
       useSwDecode = true;
 
-      // Collect all access units from the engine up front, then decode lazily.
+      // Collect all access units from the engine into swPendingAus.
+      // The worker will consume them as fast as back-pressure allows.
       const count = engine.video_unit_count();
       for (let i = 0; i < count; i++) {
         const au = engine.video_unit(i);
-        if (au && au.pts_ticks != null) swAuQueue.push(au);
+        if (au) swPendingAus.push(au);
       }
 
-      swDecoder = new WasmVideoDecoder();
+      // Start the worker; it will call back with "ready" when the WASM
+      // module is initialised, then swDrainPending() will begin streaming AUs.
+      swWorker = createSwWorker();
+      swWorker.postMessage({ type: "init" });
       startPlayback();
-      // Begin incremental decode (yields via setTimeout to keep page responsive).
-      setTimeout(swDecodeTick, 0);
     } else {
       // ── WebCodecs path: progressive / hardware-decoded ────────────────────
       const support = await VideoDecoder.isConfigSupported({ codec });
