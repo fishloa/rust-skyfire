@@ -9,6 +9,10 @@ pub struct VideoConfig {
     pub codec: String,
     /// `AVCDecoderConfigurationRecord` bytes (`avcC` box).
     pub description: Vec<u8>,
+    /// True when the SPS has `frame_mbs_only_flag == 0` — i.e. the stream
+    /// is interlaced / field-coded (PAFF or MBAFF). WebCodecs cannot
+    /// decode this; the shell must route it through the software decoder.
+    pub interlaced: bool,
 }
 
 /// Build a WebCodecs `VideoDecoder` config by extracting SPS/PPS from
@@ -68,6 +72,14 @@ fn build_video_config(sps_bytes: &[u8], pps_bytes: &[u8]) -> Option<VideoConfig>
 
     let codec = sps.rfc6381().to_string();
 
+    // §7.4.2.1.1 — frame_mbs_only_flag == 0 ⇒ the stream may carry
+    // field/MBAFF pictures (interlaced). h264_reader models this as
+    // `FrameMbsFlags::Fields { .. }`.
+    let interlaced = matches!(
+        sps.frame_mbs_flags,
+        h264_reader::nal::sps::FrameMbsFlags::Fields { .. }
+    );
+
     let description = build_avcc_description(
         sps.profile_idc.into(),
         sps.constraint_flags.into(),
@@ -76,7 +88,11 @@ fn build_video_config(sps_bytes: &[u8], pps_bytes: &[u8]) -> Option<VideoConfig>
         pps_bytes,
     );
 
-    Some(VideoConfig { codec, description })
+    Some(VideoConfig {
+        codec,
+        description,
+        interlaced,
+    })
 }
 
 /// Build an AVCDecoderConfigurationRecord per ISO/IEC 14496-15.
