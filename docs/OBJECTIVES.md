@@ -8,42 +8,46 @@ _Last updated: 2026-06-21._
 
 ## Primary objective
 
-Play the full DVB satellite lineup **in any supported browser with minimal
-server-side transcode — video deinterlace only, audio never re-encoded**
-([ADR 0006](decisions/0006-server-side-deinterlace-for-mobile.md), supersedes the
-original "zero transcode" goal). On-device probing proved no browser hardware-
-decodes interlaced 1080i H.264 and software decode is desktop-only, so 1080i is
-deinterlaced to progressive on the server; codecs are otherwise preserved:
+Play the full DVB satellite lineup **in any supported browser**, via a **GPU
+transcode-to-HLS server + a thin client**
+([ADR 0007](decisions/0007-transcode-to-hls-server-thin-client.md), building on
+[0006](decisions/0006-server-side-deinterlace-for-mobile.md)). On-device probing
+proved no browser hardware-decodes interlaced 1080i and software decode is
+desktop-only — so the server normalises every channel to **standard HLS
+(progressive H.264 + AAC)**, the universally playable combination, and the client
+is a thin native/`hls.js` player.
 
-- **Video** → server deinterlace → progressive H.264, then HW decode at the edge
-  (iOS native HLS; desktop WebCodecs / `hls.js` MSE). Progressive channels pass
-  through untouched. Zero-transcode WASM software decode (`oxideav-h264`) retained
-  as a desktop-only opt-in.
-- **Audio** → **never re-encoded.** iOS decodes E-AC-3 natively via HLS; desktop
-  uses the WASM AC-3 / E-AC-3 decoder → PCM → WebAudio `AudioWorklet`.
-- **A/V sync** → audio is the master clock; video chases it (drift-free).
-- **Container** → MPEG-TS / HLS demux, reusing `rust-dvb` for PSI parsing.
+- **Server** (in-process libav\*, **no subprocess**, on zelkova's RTX A2000):
+  `h264_cuvid`/`hevc_cuvid`/`mpeg2_cuvid` (NVDEC) → `yadif_cuda` deinterlace
+  → 50p → `h264_nvenc` (High@4.2); E-AC-3/AC-3 → **AAC-LC**; libavformat HLS mux.
+- **Client (thin):** iOS/Safari → native `<video>` HLS; desktop Chrome/Firefox →
+  `hls.js` (MSE). No WASM, no custom decoders, no custom sync — the media element
+  handles A/V.
+- **Zero-transcode WASM path** (`oxideav-h264` + WebCodecs + audio-master sync) is
+  retained as an **optional desktop mode** and conformance asset, off the mainline.
+- **Container** → libavformat demux; `rust-dvb` PSI logic kept for source-codec
+  routing reference.
 
 Secondary objective: serve as an experiment in AI-orchestrated engineering —
 Claude writes spec briefs and verifies; delegated open models write the code.
 
 ## Success criteria
 
-- A supported browser plays a live channel: correct video, in-sync AC-3 audio,
-  no server transcode.
-- Codec selection is capability-probed, with an H.264 fallback that always works
-  (see [ADR 0001](decisions/0001-browser-and-platform-support.md)).
+- The transcode server turns a real DVB 1080i channel into standard HLS
+  (progressive H.264 + AAC), in-process (no subprocess), on zelkova's GPU.
+- That HLS plays end-to-end with correct in-sync A/V on **both** iOS Safari
+  (native `<video>`) and desktop Chrome/Firefox (`hls.js`).
 - The CI gate (fmt + clippy `-D warnings` + build + `nextest`) is green on every
-  commit; behavioural tests decode real fixtures, not just compile.
+  commit; the GPU transcode crate is target-gated and verified on zelkova
+  (golden HLS: `ffprobe` shows progressive H.264 + AAC, IDR-aligned segments).
 
 ## First release (v1)
 
-**Chrome on macOS plays all three fixtures in-browser, full A/V, no issues** —
-H.264 video (WebCodecs) + AC-3/E-AC-3 audio (WASM) + audio-master sync, no crash /
-underrun / drift. localhost is a secure context, so the harness is a plain `bun`
-static server — no HTTPS/cert/tunnel. Spans epics #1–#5. Full detail:
-[ADR 0003](decisions/0003-first-release-and-test-harness.md). Delegation costs
-tracked in [COSTS.md](COSTS.md) ([ADR 0002](decisions/0002-delegation-working-practice.md)).
+**A DVB 1080i fixture transcoded by the server (in-process libav, NVDEC →
+yadif_cuda → NVENC + AAC) plays as standard HLS on iOS Safari native and desktop
+`hls.js`, full A/V, no crash / underrun / drift.** Superseded the original
+WebCodecs+WASM v1 (see ADR 0007). Costs tracked in
+[COSTS.md](COSTS.md) ([ADR 0002](decisions/0002-delegation-working-practice.md)).
 
 ## Support scope
 
@@ -55,6 +59,13 @@ Android). H.265 gated per-stream with H.264 fallback. Full detail and rationale:
 
 Tracked as GitHub EPIC issues. Status here mirrors reality; sub-issues are the
 delegable work units.
+
+> **ADR 0007 reframe (2026-06-21):** the mainline is now a transcode-to-HLS
+> **server** + thin client. Client epics #2–#6 are **superseded** for the mainline
+> (kept only for the optional zero-transcode WASM desktop mode / as conformance
+> assets). New mainline work: **#E1 transcode server** (in-process libav GPU
+> pipeline → H.264+AAC HLS, on zelkova) and **#E2 thin client** (native + hls.js).
+> Rows below are pre-pivot status, retained for history until re-issued.
 
 | Epic | Crate(s) | Objective | Status |
 |---|---|---|---|
