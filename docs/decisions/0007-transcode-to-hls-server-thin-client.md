@@ -65,3 +65,17 @@ Skyfire's product is **a GPU transcode-to-HLS server + a thin client.**
   NVIDIA + libav). Feature/target-gate it; its behavioural check runs on zelkova —
   golden HLS: `ffprobe` confirms progressive H.264 + AAC, IDR-aligned segments,
   and it plays on iOS native + `hls.js`.
+
+## Implementation note (2026-06-21)
+
+The transcode does **not** live in a new skyfire crate — it lands **in zenith**,
+which already owns DVB ingest, descramble, per-channel TS fan-out, and a
+(shelved) CMAF browser-player subsystem. The work is to **revive zenith's parked
+`archive/in-browser-player` branch** (pure-Rust `dvb-pes` demux, `rsmpeg`
+AC-3/E-AC-3/MP2→AAC audio transcode, pure-Rust fMP4/CMAF muxer, `/hls/cmaf/*`
+serving) and add the one stage it lacked: **video deinterlace + H.264 re-encode**
+(`h264_cuvid -deint 2` → `h264_nvenc`, in-process via `rsmpeg`). Output is CMAF/
+fMP4 (not TS-HLS) — plays on iOS native fMP4-HLS + desktop MSE. This reverses
+zenith's "Don't add in-browser playback" rule. Tracked as **zenith#986**
+(`backend-builder`). Skyfire keeps the thin-client intent + the `oxideav-h264`
+zero-transcode opt-in / conformance asset.
