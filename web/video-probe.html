@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Native HLS 1080i Probe</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      color: #ddd;
+      font-family: monospace;
+      font-size: 20px;
+      line-height: 1.6;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 22px;
+      color: #fff;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #444;
+      padding-bottom: 8px;
+    }
+    #log {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .entry {
+      padding: 8px 12px;
+      border-radius: 4px;
+      background: #1a1a1a;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .entry.info   { border-left: 4px solid #555; }
+    .entry.ok     { border-left: 4px solid #4caf50; color: #a5d6a7; }
+    .entry.warn   { border-left: 4px solid #ff9800; color: #ffe082; }
+    .entry.error  { border-left: 4px solid #f44336; color: #ef9a9a; }
+    .entry.result-ok {
+      border-left: 6px solid #4caf50;
+      background: #1b2e1b;
+      color: #a5d6a7;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .entry.result-fail {
+      border-left: 6px solid #f44336;
+      background: #2e1b1b;
+      color: #ef9a9a;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .step-head {
+      color: #90caf9;
+      font-weight: bold;
+    }
+    #video-container {
+      margin: 16px 0;
+    }
+    #probe-video {
+      width: 100%;
+      max-width: 640px;
+      height: auto;
+      background: #000;
+      display: block;
+      border: 1px solid #333;
+      border-radius: 4px;
+    }
+    #audio-btn {
+      display: block;
+      width: 100%;
+      max-width: 640px;
+      margin: 12px 0;
+      padding: 18px 12px;
+      background: #1a3a1a;
+      color: #a5d6a7;
+      font-family: monospace;
+      font-size: 24px;
+      font-weight: bold;
+      border: 2px solid #4caf50;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: center;
+    }
+    #audio-btn:active {
+      background: #2a4a2a;
+    }
+    #timecode {
+      padding: 6px 12px;
+      background: #1a1a1a;
+      border-left: 4px solid #555;
+      border-radius: 4px;
+      color: #aaa;
+      font-size: 18px;
+      min-height: 36px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Native HLS 1080i Probe (AVFoundation)</h1>
+  <div id="video-container">
+    <div id="timecode">currentTime: —</div>
+    <video id="probe-video" playsinline muted autoplay controls></video>
+    <button id="audio-btn">&#9654; Tap to play with sound (E-AC-3 check)</button>
+  </div>
+  <div id="log"></div>
+  <script src="./video-probe.js"></script>
+</body>
+</html>
