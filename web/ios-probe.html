@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebCodecs Interlaced H.264 Probe</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      color: #ddd;
+      font-family: monospace;
+      font-size: 20px;
+      line-height: 1.6;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 22px;
+      color: #fff;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #444;
+      padding-bottom: 8px;
+    }
+    #log {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .entry {
+      padding: 8px 12px;
+      border-radius: 4px;
+      background: #1a1a1a;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .entry.info   { border-left: 4px solid #555; }
+    .entry.ok     { border-left: 4px solid #4caf50; color: #a5d6a7; }
+    .entry.warn   { border-left: 4px solid #ff9800; color: #ffe082; }
+    .entry.error  { border-left: 4px solid #f44336; color: #ef9a9a; }
+    .entry.result-ok    {
+      border-left: 6px solid #4caf50;
+      background: #1b2e1b;
+      color: #a5d6a7;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .entry.result-fail  {
+      border-left: 6px solid #f44336;
+      background: #2e1b1b;
+      color: #ef9a9a;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .step-head {
+      color: #90caf9;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>WebCodecs Interlaced H.264 Probe</h1>
+  <div id="log"></div>
+  <script type="module" src="./ios-probe.js"></script>
+</body>
+</html>
