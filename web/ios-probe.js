@@ -75,10 +75,12 @@ async function runProbe() {
   }
   log("WASM ready.", "ok");
 
-  log("Fetching /fixtures/gulli-15s.ts ...");
+  log("Fetching fixtures/gulli-15s.ts ...");
   let tsBytes;
   try {
-    const resp = await fetch("/fixtures/gulli-15s.ts");
+    // Relative path so it works both under the local /ios-probe.html and
+    // when served at a subpath (e.g. tv.icomb.place/skyfire-probe/).
+    const resp = await fetch("fixtures/gulli-15s.ts");
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const buf = await resp.arrayBuffer();
     tsBytes = new Uint8Array(buf);
