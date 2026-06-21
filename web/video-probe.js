@@ -136,9 +136,11 @@ function runProbe() {
     timecodeEl.textContent = "currentTime: " + video.currentTime.toFixed(2) + "s";
   });
 
-  // Set source and play.
-  log("Setting src → fixtures/gulli.m3u8");
-  video.src = "fixtures/gulli.m3u8";
+  // Set source and play. Override with ?src= to test other playlists
+  // (e.g. ?src=fixtures/gulli-prog.m3u8 for the deinterlaced progressive remux).
+  const src = new URLSearchParams(location.search).get("src") || "fixtures/gulli.m3u8";
+  log("Setting src → " + src);
+  video.src = src;
 
   video.play().catch(function (e) {
     log("play() rejected: " + (e && e.message ? e.message : String(e)), "warn");

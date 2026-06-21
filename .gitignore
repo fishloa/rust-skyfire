@@ -21,3 +21,5 @@ web/pkg/
 # Generated HLS remux artifacts (probe-only, regenerate via ffmpeg -c copy)
 fixtures/gulli.m3u8
 fixtures/g*.ts
+fixtures/gulli-prog.m3u8
+fixtures/p*.ts
