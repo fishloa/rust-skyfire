@@ -4,15 +4,23 @@
 > Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
 > when an epic's state changes, update its row in the same change.
 
-_Last updated: 2026-06-18._
+_Last updated: 2026-06-21._
 
 ## Primary objective
 
-Play the full DVB satellite lineup **in any supported browser with zero
-server-side transcode** — the client decodes raw MPEG-TS end to end:
+Play the full DVB satellite lineup **in any supported browser with minimal
+server-side transcode — video deinterlace only, audio never re-encoded**
+([ADR 0006](decisions/0006-server-side-deinterlace-for-mobile.md), supersedes the
+original "zero transcode" goal). On-device probing proved no browser hardware-
+decodes interlaced 1080i H.264 and software decode is desktop-only, so 1080i is
+deinterlaced to progressive on the server; codecs are otherwise preserved:
 
-- **Video** → WebCodecs `VideoDecoder` (HW H.264 universal, H.265 where capable).
-- **Audio** → WASM AC-3 / E-AC-3 decoder → PCM → WebAudio `AudioWorklet`.
+- **Video** → server deinterlace → progressive H.264, then HW decode at the edge
+  (iOS native HLS; desktop WebCodecs / `hls.js` MSE). Progressive channels pass
+  through untouched. Zero-transcode WASM software decode (`oxideav-h264`) retained
+  as a desktop-only opt-in.
+- **Audio** → **never re-encoded.** iOS decodes E-AC-3 natively via HLS; desktop
+  uses the WASM AC-3 / E-AC-3 decoder → PCM → WebAudio `AudioWorklet`.
 - **A/V sync** → audio is the master clock; video chases it (drift-free).
 - **Container** → MPEG-TS / HLS demux, reusing `rust-dvb` for PSI parsing.
 

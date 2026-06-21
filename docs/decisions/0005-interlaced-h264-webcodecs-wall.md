@@ -1,6 +1,10 @@
 # 0005 — Interlaced H.264 is the real WebCodecs wall; software-decode it in WASM
 
-- **Status:** Accepted
+- **Status:** Superseded by [0006](0006-server-side-deinterlace-for-mobile.md) — the
+  WebCodecs/interlaced findings here still hold, but the *playback strategy*
+  (WASM software decode as the answer) is replaced by server-side deinterlace
+  after on-device probing showed no in-browser HW path for interlaced on any
+  platform and software decode being desktop-only.
 - **Date:** 2026-06-19
 
 ## Context

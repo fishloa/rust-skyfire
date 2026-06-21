@@ -12,7 +12,8 @@ ADR that supersedes the old one (and mark the old one `Superseded by NNNN`).
 | [0002](0002-delegation-working-practice.md) | Delegation working practice (exit-gated issues, crush, cost ledger) | Accepted | 2026-06-18 |
 | [0003](0003-first-release-and-test-harness.md) | First release (v1) scope & test harness | Accepted | 2026-06-18 |
 | [0004](0004-mpeg-ts-demux-strategy.md) | MPEG-TS demux: reuse dvb-si + new dvb-pes crate | Accepted | 2026-06-18 |
-| [0005](0005-interlaced-h264-webcodecs-wall.md) | Interlaced H.264 needs WASM software decode (oxideav-h264) | Accepted | 2026-06-19 |
+| [0005](0005-interlaced-h264-webcodecs-wall.md) | Interlaced H.264 needs WASM software decode (oxideav-h264) | Superseded by 0006 | 2026-06-19 |
+| [0006](0006-server-side-deinterlace-for-mobile.md) | Server-side deinterlace — only universal in-browser path for 1080i | Accepted | 2026-06-21 |
 
 ## Format
 
