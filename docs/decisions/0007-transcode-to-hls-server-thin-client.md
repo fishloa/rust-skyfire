@@ -1,6 +1,9 @@
 # 0007 — Skyfire is a GPU transcode-to-HLS server with a thin client
 
-- **Status:** Accepted (builds on [0006](0006-server-side-deinterlace-for-mobile.md))
+- **Status:** Superseded by [0008](0008-video-only-transcode-wasm-bridge.md) — the
+  AAC transcode + thin-client decision is reversed: audio stays bit-exact
+  (untouched AC-3/E-AC-3, WASM-decoded) and the skyfire WASM bridge client returns.
+  The H.264 video deinterlace+re-encode decision still holds.
 - **Date:** 2026-06-21
 
 ## Context

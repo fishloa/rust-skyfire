@@ -14,7 +14,8 @@ ADR that supersedes the old one (and mark the old one `Superseded by NNNN`).
 | [0004](0004-mpeg-ts-demux-strategy.md) | MPEG-TS demux: reuse dvb-si + new dvb-pes crate | Accepted | 2026-06-18 |
 | [0005](0005-interlaced-h264-webcodecs-wall.md) | Interlaced H.264 needs WASM software decode (oxideav-h264) | Superseded by 0006 | 2026-06-19 |
 | [0006](0006-server-side-deinterlace-for-mobile.md) | Server-side deinterlace — only universal in-browser path for 1080i | Accepted | 2026-06-21 |
-| [0007](0007-transcode-to-hls-server-thin-client.md) | GPU transcode-to-HLS server (H.264+AAC, in-process libav) + thin client | Accepted | 2026-06-21 |
+| [0007](0007-transcode-to-hls-server-thin-client.md) | GPU transcode-to-HLS server (H.264+AAC, in-process libav) + thin client | Superseded by 0008 | 2026-06-21 |
+| [0008](0008-video-only-transcode-wasm-bridge.md) | Video-only server transcode (TS) + skyfire WASM bridge client | Accepted | 2026-06-22 |
 
 ## Format
 
