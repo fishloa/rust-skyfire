@@ -40,6 +40,7 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-19 | #15 wasm32 CI build lane | #8 | deepseek-v4-pro | ~30k | n/a¹ | 0.01 |
 | 2026-06-19 | #12 wasm-bindgen expose engine | #5 | deepseek-v4-pro | ~40k | n/a¹ | 0.03 |
 | 2026-06-22 | #28 skyfire-ts demux + PSI track enum | #27 | **claude-sonnet** (Anthropic subagent) | ~100k total² | — | ~0.30² |
+| 2026-06-22 | #29 skyfire-wasm streaming bridge API | #27 | claude-sonnet (Anthropic subagent) | ~80k total² | — | ~0.24² |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
