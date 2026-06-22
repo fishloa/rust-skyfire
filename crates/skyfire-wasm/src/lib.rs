@@ -143,12 +143,18 @@ impl WasmEngine {
                 "Ac3" => skyfire_core::ts::AudioCodec::Ac3,
                 _ => skyfire_core::ts::AudioCodec::EAc3,
             };
-            streams.push(skyfire_core::ts::AudioStream { pid, codec: ac });
+            streams.push(skyfire_core::ts::AudioStream {
+                pid,
+                codec: ac,
+                language: None,
+            });
         }
         let channel = skyfire_core::ts::ChannelMap {
             video_pid,
             video_codec: vc,
             audio_streams: streams,
+            subtitle_streams: Vec::new(),
+            pcr_pid: video_pid,
         };
         self.engine = Some(Engine::with_channel(channel));
     }
@@ -341,7 +347,7 @@ impl WasmVideoDecoder {
 fn video_frame_to_i420(vf: &oxideav_core::VideoFrame) -> WasmVideoFrame {
     let y = &vf.planes[0];
     let w = y.stride;
-    let h = if w == 0 { 0 } else { y.data.len() / w };
+    let h = y.data.len().checked_div(w).unwrap_or(0);
     let cw = w / 2;
     let ch = h / 2;
     let mut data = Vec::with_capacity(w * h + 2 * cw * ch);

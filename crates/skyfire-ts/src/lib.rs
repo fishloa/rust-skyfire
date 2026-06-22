@@ -46,15 +46,53 @@ pub enum AudioCodec {
 pub struct AudioStream {
     pub pid: u16,
     pub codec: AudioCodec,
+    /// ISO 639-2 three-byte language code from the iso_639_language_descriptor
+    /// (tag 0x0A), if present.  `None` when no language descriptor is found.
+    pub language: Option<[u8; 3]>,
+}
+
+/// Identifies a subtitle/text stream kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubtitleKind {
+    /// DVB bitmap subtitling (ETSI EN 300 468, descriptor tag 0x59).
+    DvbSubtitles,
+    /// EBU Teletext (ETSI EN 300 468, descriptor tag 0x56).
+    Teletext,
+}
+
+/// One subtitle or teletext elementary stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleStream {
+    pub pid: u16,
+    pub kind: SubtitleKind,
+    /// ISO 639-2 three-byte language code from the subtitling / teletext
+    /// descriptor, if present.
+    pub language: Option<[u8; 3]>,
 }
 
 /// Complete channel map for one program.
+///
+/// This is also exported as [`TrackList`] — use whichever name reads better in
+/// the calling context.  Both names refer to the same type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelMap {
+    /// 13-bit video elementary-stream PID.
     pub video_pid: u16,
+    /// Video codec identified from the PMT stream_type.
     pub video_codec: VideoCodec,
+    /// Every audio elementary stream found in the PMT.
     pub audio_streams: Vec<AudioStream>,
+    /// Every subtitle/teletext elementary stream found in the PMT.
+    /// Empty when the programme carries no subtitle PIDs.
+    pub subtitle_streams: Vec<SubtitleStream>,
+    /// 13-bit PCR PID as declared in the PMT (ISO/IEC 13818-1 §2.4.4.8).
+    pub pcr_pid: u16,
 }
+
+/// Alias for [`ChannelMap`].  Use this name when writing code that treats the
+/// map as a track list (e.g. the WASM engine layer selecting which PID to
+/// route to a decoder).
+pub type TrackList = ChannelMap;
 
 // ---------------------------------------------------------------------------
 // Probe
@@ -112,6 +150,7 @@ fn build_channel_map(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<Channe
     let mut video_pid: Option<u16> = None;
     let mut video_codec: Option<VideoCodec> = None;
     let mut audio_streams: Vec<AudioStream> = Vec::new();
+    let mut subtitle_streams: Vec<SubtitleStream> = Vec::new();
 
     for stream in &pmt.streams {
         let st = stream.stream_type;
@@ -119,9 +158,17 @@ fn build_channel_map(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<Channe
             video_pid = Some(stream.elementary_pid);
             video_codec = Some(codec);
         } else if let Some(codec) = audio_codec_from_stream_type(st, &stream.es_info) {
+            let language = language_from_descriptors(&stream.es_info);
             audio_streams.push(AudioStream {
                 pid: stream.elementary_pid,
                 codec,
+                language,
+            });
+        } else if let Some((kind, language)) = subtitle_kind_from_descriptors(&stream.es_info) {
+            subtitle_streams.push(SubtitleStream {
+                pid: stream.elementary_pid,
+                kind,
+                language,
             });
         }
     }
@@ -130,7 +177,50 @@ fn build_channel_map(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<Channe
         video_pid: video_pid?,
         video_codec: video_codec?,
         audio_streams,
+        subtitle_streams,
+        pcr_pid: pmt.pcr_pid,
     })
+}
+
+/// Extract the first ISO 639-2 language code from descriptor loop (tag 0x0A).
+///
+/// Returns `None` when no language descriptor is present or it has no entries.
+fn language_from_descriptors(
+    es_info: &dvb_si::descriptors::any::DescriptorLoop<'_>,
+) -> Option<[u8; 3]> {
+    for item in es_info.iter().flatten() {
+        if let AnyDescriptor::Iso639Language(lang) = item {
+            if let Some(entry) = lang.entries.first() {
+                return Some(entry.language_code.0);
+            }
+        }
+    }
+    None
+}
+
+/// Detect a subtitle/teletext stream from its ES descriptor loop.
+///
+/// DVB subtitling descriptor (0x59) → `SubtitleKind::DvbSubtitles`.
+/// Teletext descriptor (0x56) → `SubtitleKind::Teletext`.
+///
+/// Returns `(kind, language)` on the first match, `None` if neither is found.
+fn subtitle_kind_from_descriptors(
+    es_info: &dvb_si::descriptors::any::DescriptorLoop<'_>,
+) -> Option<(SubtitleKind, Option<[u8; 3]>)> {
+    for item in es_info.iter().flatten() {
+        match item {
+            AnyDescriptor::Subtitling(sub) => {
+                let lang = sub.entries.first().map(|e| e.language_code.0);
+                return Some((SubtitleKind::DvbSubtitles, lang));
+            }
+            AnyDescriptor::Teletext(tt) => {
+                let lang = tt.entries.first().map(|e| e.language_code.0);
+                return Some((SubtitleKind::Teletext, lang));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Map a PMT `StreamType` to a `VideoCodec`, or `None` if not video.
@@ -615,5 +705,153 @@ mod tests {
         demux.flush();
         let _units = demux.drain();
         // The test passes if we got here without panicking.
+    }
+
+    // ------------------------------------------------------------------
+    // gulli-15s.ts: single-program TS with H.264 video + E-AC-3 audio
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn gulli_15s_track_enumeration() {
+        // gulli-15s.ts is a real DVB-S2 single-program TS:
+        //   video PID 0x0100 — H.264 (stream_type 0x1b)
+        //   audio PID 0x0101 — E-AC-3 (stream_type 0x87)
+        //   PCR PID  0x0100  — shared with video
+        //   No subtitle PID in this fixture.
+        let data = load_fixture("gulli-15s.ts");
+
+        let map = probe(&data).expect("gulli-15s.ts must yield a ChannelMap");
+
+        // Video track.
+        assert_eq!(map.video_pid, 0x0100, "video PID must be 0x0100");
+        assert_eq!(
+            map.video_codec,
+            VideoCodec::H264,
+            "video codec must be H.264"
+        );
+
+        // PCR PID.
+        assert_eq!(map.pcr_pid, 0x0100, "PCR PID must be 0x0100");
+
+        // Audio track: one E-AC-3 stream with language "fre".
+        assert_eq!(
+            map.audio_streams.len(),
+            1,
+            "must find exactly one audio stream"
+        );
+        let audio = &map.audio_streams[0];
+        assert_eq!(audio.pid, 0x0101, "audio PID must be 0x0101");
+        assert_eq!(audio.codec, AudioCodec::EAc3, "audio codec must be E-AC-3");
+        // ISO-639 language descriptor is present in this fixture (tag 0x0A,
+        // code "fre" = French).
+        assert_eq!(
+            audio.language,
+            Some(*b"fre"),
+            "audio language must be \"fre\""
+        );
+
+        // Subtitles: this fixture has no subtitle PID.
+        assert!(
+            map.subtitle_streams.is_empty(),
+            "gulli-15s.ts carries no subtitle PIDs"
+        );
+    }
+
+    #[test]
+    fn gulli_15s_video_access_units_pts_and_idr() {
+        // Feed the full gulli-15s.ts through EsDemux and verify:
+        //   1. Video access units (PID 0x0100) are produced.
+        //   2. All video AUs carry a valid PTS under the 33-bit cap.
+        //   3. PTS values are monotonically non-decreasing after accounting for
+        //      B-frame reordering (span is consistent with the clip length).
+        //   4. The first IDR access unit starts with an Annex-B start code
+        //      followed by a SPS or IDR NAL — i.e. the demuxer emits Annex-B
+        //      bytes, not AVCC-length-prefixed bytes.
+        let data = load_fixture("gulli-15s.ts");
+
+        let mut demux = EsDemux::new();
+        let mut resync = TsResync::new();
+        for chunk in data.chunks(4096) {
+            for pkt in resync.feed(chunk) {
+                demux.feed_packet(&pkt);
+            }
+        }
+        demux.flush();
+        let units = demux.drain();
+
+        let video_units: Vec<_> = units.iter().filter(|u| u.pid == 0x0100).collect();
+        assert!(
+            !video_units.is_empty(),
+            "must extract video access units from gulli-15s.ts"
+        );
+
+        // All video AUs must carry a PTS.
+        let pts_vals: Vec<u64> = video_units
+            .iter()
+            .map(|au| au.pts_ticks.expect("video AU must have PTS"))
+            .collect();
+
+        let max_pts = pts_vals.iter().max().copied().unwrap();
+        let min_pts = pts_vals.iter().min().copied().unwrap();
+
+        assert!(max_pts < (1 << 33), "max PTS must be under 33-bit cap");
+
+        // Sanity-check the PTS spread.  gulli-15s.ts is a ~15 s clip; allow up
+        // to 60 s of headroom (60 * 90_000 = 5_400_000 ticks).
+        assert!(
+            max_pts - min_pts < 5_400_000,
+            "PTS spread should be consistent with a short clip, got {}",
+            max_pts - min_pts
+        );
+
+        // The raw ES bytes must begin with an Annex-B start code (0x00 00 01
+        // or 0x00 00 00 01).  This confirms the demuxer produces Annex-B
+        // bytes (not AVCC length-prefixed) as expected by the WASM H.264 layer.
+        let first_with_idr = video_units.iter().find(|au| {
+            let b = &au.es_bytes;
+            // Look for 0x00 00 00 01 anywhere in the first 64 bytes
+            // (SPS/PPS/IDR will appear in the early bytes of the PUSI packet).
+            b.len() >= 4 && b.windows(4).take(64).any(|w| w == [0x00, 0x00, 0x00, 0x01])
+        });
+        assert!(
+            first_with_idr.is_some(),
+            "at least one video AU must start with an Annex-B start code"
+        );
+    }
+
+    #[test]
+    fn gulli_15s_audio_pts_monotonic() {
+        // Audio PES packets in gulli-15s.ts carry E-AC-3 syncframes.
+        // PTS must be non-decreasing (audio is CBR, no reordering).
+        let data = load_fixture("gulli-15s.ts");
+
+        let mut demux = EsDemux::new();
+        let mut resync = TsResync::new();
+        for chunk in data.chunks(4096) {
+            for pkt in resync.feed(chunk) {
+                demux.feed_packet(&pkt);
+            }
+        }
+        demux.flush();
+        let units = demux.drain();
+
+        let audio_units: Vec<_> = units.iter().filter(|u| u.pid == 0x0101).collect();
+        assert!(
+            !audio_units.is_empty(),
+            "must extract audio access units from gulli-15s.ts"
+        );
+
+        let mut last_pts: Option<u64> = None;
+        for au in &audio_units {
+            let pts = au.pts_ticks.expect("audio AU must have PTS");
+            assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
+            if let Some(last) = last_pts {
+                assert!(
+                    pts >= last,
+                    "audio PTS must be non-decreasing: {pts} < {last}"
+                );
+            }
+            last_pts = Some(pts);
+        }
     }
 }

@@ -115,9 +115,9 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "dvb-common"
-version = "7.4.0"
+version = "7.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a04670857e3f2152549655cd601947e2557558f5a460698b9c92a9f7acef50d"
+checksum = "7f320e84bcdbfb0393628c896d0107c96f15c27314c3acfdd57f0fda3bdf8d40"
 dependencies = [
  "chrono",
  "libm",
@@ -125,9 +125,9 @@ dependencies = [
 
 [[package]]
 name = "dvb-pes"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "475194f76f9c3559d5d0fe09ea7662d725a5b88ec45e77a1f82455dbd012fc83"
+checksum = "ac8b63124353e283d071e7344ac65e31ed3a25f7dd50fa0749baa6facf56a0b5"
 dependencies = [
  "dvb-common",
  "thiserror",
@@ -135,9 +135,9 @@ dependencies = [
 
 [[package]]
 name = "dvb-si"
-version = "7.3.0"
+version = "7.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601e68ff59c0ef7adc3fd16d6e602194eb771dddbb0838324baf5f19c4dd4f91"
+checksum = "11d0b9833d32b99fefa049b6294429c0d0330eafefe40fabed6ef0a4eab55a4f"
 dependencies = [
  "bytes",
  "chrono",
