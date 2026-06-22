@@ -565,9 +565,11 @@ dependencies = [
 name = "skyfire-wasm"
 version = "0.0.1"
 dependencies = [
+ "dvb-si",
  "oxideav-core",
  "oxideav-h264",
  "skyfire-core",
+ "skyfire-ts",
  "wasm-bindgen",
 ]
 

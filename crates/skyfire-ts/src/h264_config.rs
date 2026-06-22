@@ -267,6 +267,7 @@ mod tests {
         let units: Vec<crate::AccessUnit> = vec![crate::AccessUnit {
             pid: 0x0100,
             pts_ticks: Some(0),
+            dts_ticks: None,
             es_bytes: vec![0x00, 0x00, 0x00, 0x01, 0x41, 0x9a], // non-IDR slice, no SPS/PPS
         }];
         assert!(h264_decoder_config(&units).is_none());

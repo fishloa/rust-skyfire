@@ -146,6 +146,13 @@ fn collect_pmt_pids(pat: &PatSection) -> Vec<u16> {
 }
 
 /// Build a `ChannelMap` from a fully parsed PMT section.
+///
+/// Public for use by `skyfire-wasm`'s streaming bridge, which feeds PMT
+/// sections incrementally via its own `SiDemux` instance.
+pub fn build_channel_map_from_pmt(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<ChannelMap> {
+    build_channel_map(pmt)
+}
+
 fn build_channel_map(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<ChannelMap> {
     let mut video_pid: Option<u16> = None;
     let mut video_codec: Option<VideoCodec> = None;
@@ -303,6 +310,9 @@ pub struct AccessUnit {
     /// PTS in 90 kHz units.  `None` only for the first few access units in a
     /// stream before the first PTS is seen.
     pub pts_ticks: Option<u64>,
+    /// DTS in 90 kHz units.  `None` when no DTS is present in the PES header
+    /// (audio streams and most progressive-video streams omit DTS).
+    pub dts_ticks: Option<u64>,
     /// Elementary-stream bytes (NAL unit / audio syncframe).
     pub es_bytes: Vec<u8>,
 }
@@ -370,9 +380,11 @@ impl EsDemux {
         if let Some(pes_bytes) = assem.feed(pusi, payload) {
             if let Ok(pes) = PesPacket::parse(&pes_bytes) {
                 let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
+                let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
                 self.units.push(AccessUnit {
                     pid,
                     pts_ticks,
+                    dts_ticks,
                     es_bytes: pes.payload.to_vec(),
                 });
             }
@@ -385,9 +397,11 @@ impl EsDemux {
             if let Some(pes_bytes) = assem.flush() {
                 if let Ok(pes) = PesPacket::parse(&pes_bytes) {
                     let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
+                    let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
                     self.units.push(AccessUnit {
                         pid,
                         pts_ticks,
+                        dts_ticks,
                         es_bytes: pes.payload.to_vec(),
                     });
                 }
