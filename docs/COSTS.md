@@ -43,6 +43,9 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-22 | #29 skyfire-wasm streaming bridge API | #27 | claude-sonnet (Anthropic subagent) | ~80k total² | — | ~0.24² |
 | 2026-06-22 | #30 WebCodecs video path + browser verify | #27 | orchestrator-driven (no delegate)³ | — | — | — |
 | 2026-06-22 | cleanup: remove dead SW H.264 path | — | orchestrator-driven (no delegate)³ | — | — | — |
+| 2026-06-22 | #31 bridge AC-3→PCM decode | #27 | claude-sonnet (subagent) | ~83k total² | — | ~0.25² |
+| 2026-06-22 | #32 bridge flush() (tail AU) | #27 | claude-sonnet (subagent) | ~49k total² | — | ~0.15² |
+| 2026-06-22 | #34 DVB subtitle PES parse | #27 | claude-sonnet (subagent) | ~103k total² | — | ~0.31² |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
