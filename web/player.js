@@ -198,7 +198,9 @@ async function ensureAudio(sampleRate, channels) {
       schedulePresent();   // wake the present loop on each clock tick
     }
   };
-  audioNode.connect(audioCtx.destination);
+  audioGain = audioCtx.createGain();
+  audioGain.gain.value = muted ? 0 : 1;
+  audioNode.connect(audioGain).connect(audioCtx.destination);
   audioNode.port.postMessage({ type: "config", sampleRate, channels });
   audioNode.port.postMessage({ type: "play" });
   // Autoplay policy: resume if a user gesture has been granted; otherwise it
@@ -236,9 +238,84 @@ window.addEventListener("pointerdown", startAudio, { once: true });
 window.addEventListener("keydown", startAudio, { once: true });
 window.sfStartAudio = startAudio; // exposed for the Playwright/iOS verifier
 
+// ── UI: track pickers + transport controls (#35) ────────────────────────────
+
+const audioSelect = document.getElementById("audio-select");
+const subSelect = document.getElementById("sub-select");
+const playPauseBtn = document.getElementById("playpause");
+const muteBtn = document.getElementById("mute");
+const subsEl = document.getElementById("subs");
+
+let playing = true;
+let muted = false;
+let uiWired = false;
+
+function langLabel(code) { return code ? code : ""; }
+
+function populateTracks(tl) {
+  // Audio picker.
+  audioSelect.innerHTML = "";
+  tl.audio.forEach((a, i) => {
+    const o = document.createElement("option");
+    o.value = String(a.pid);
+    o.textContent = `${langLabel(a.language) || "track " + (i + 1)} · ${a.codec}`;
+    audioSelect.appendChild(o);
+  });
+  // Subtitle picker (keep the leading "Off").
+  while (subSelect.options.length > 1) subSelect.remove(1);
+  tl.subtitles.forEach((s) => {
+    const o = document.createElement("option");
+    o.value = String(s.pid);
+    o.textContent = `${langLabel(s.language) || "sub"} · ${s.kind}`;
+    subSelect.appendChild(o);
+  });
+}
+
+function wireControls() {
+  if (uiWired) return;
+  uiWired = true;
+
+  audioSelect.addEventListener("change", () => {
+    bridge.select_audio(parseInt(audioSelect.value, 10));
+    status(`audio → pid ${audioSelect.value}`);
+  });
+
+  subSelect.addEventListener("change", () => {
+    const v = subSelect.value;
+    bridge.select_subtitle(v === "" ? undefined : parseInt(v, 10));
+    subsEl.replaceChildren(); // clear current cue on switch/off
+  });
+
+  playPauseBtn.addEventListener("click", () => {
+    playing = !playing;
+    bridge.set_playing(playing);
+    if (audioNode) audioNode.port.postMessage({ type: playing ? "play" : "pause" });
+    if (playing) startAudio();
+    playPauseBtn.textContent = playing ? "⏸ Pause" : "▶ Play";
+  });
+
+  muteBtn.addEventListener("click", () => {
+    muted = !muted;
+    if (audioGain) audioGain.gain.value = muted ? 0 : 1;
+    muteBtn.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
+  });
+}
+
+// Drain parsed subtitle cues into the overlay. The cue bitmap layout is defined
+// by the bridge (#34); render is finalised once that lands.
+function pumpSubtitles() {
+  if (!bridge.take_subtitle_cues) return;
+  for (const cue of bridge.take_subtitle_cues()) {
+    stats.subCues = (stats.subCues || 0) + 1;
+    // TODO(#34 render): decode cue.bytes → bitmap region → draw into #subs.
+    cue.free?.();
+  }
+}
+
 // ── bridge + stream ─────────────────────────────────────────────────────────
 
 let bridge = null;
+let audioGain = null;
 
 async function main() {
   status("Loading WASM…");
@@ -279,13 +356,14 @@ async function main() {
       const tl = bridge.track_list();
       if (tl) {
         trackLogged = true;
-        status(`track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio`);
-        // TODO(#31): select_audio + WASM AC-3 → WebAudio.
-        // TODO(#34): select_subtitle + DVB-subtitle overlay.
+        status(`track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`);
+        populateTracks(tl);
+        wireControls();
       }
     }
     pumpVideo();
     await pumpAudio();
+    pumpSubtitles();
 
     // Back-pressure: video presents at the audio (realtime) pace, so cap how
     // far decode runs ahead — otherwise the whole clip's frames queue as open
