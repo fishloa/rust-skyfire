@@ -23,3 +23,6 @@ fixtures/gulli.m3u8
 fixtures/g*.ts
 fixtures/gulli-prog.m3u8
 fixtures/p*.ts
+web/test-results/
+web/playwright-report/
+.playwright-mcp/
