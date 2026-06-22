@@ -75,6 +75,29 @@ work units.
 > client epics #2–#6** below. Server transcode lives in zenith (zenith#986), not a
 > skyfire crate. Rows below are pre-pivot, retained for history.
 
+### Client build status — epic [#27](https://github.com/fishloa/rust-skyfire/issues/27) (2026-06-22)
+
+| # | Item | State |
+|---|---|---|
+| #28 | skyfire-ts demux + PSI track enumeration | ✅ done (nextest) |
+| #29 | skyfire-wasm streaming bridge API | ✅ done (nextest) |
+| #30 | video AUs → WebCodecs → canvas | ✅ browser-verified (Chromium e2e) |
+| #31 | AC-3/E-AC-3 → WASM → WebAudio | ✅ browser-verified (PCM played) |
+| #32 | audio-master A/V sync | ✅ browser-verified (skew < 120 ms) |
+| — | remove dead SW H.264 path | ✅ done |
+| #33 | runtime audio-track flip | code done (select_audio+reset); A/B verify needs a multi-audio fixture |
+| #34 | DVB subtitle PES parse → cues | Rust done (nextest); JS bitmap render + verify need a sub fixture |
+| #35 | UI shell: pickers + controls + overlay | ✅ done (exercised by e2e); bitmap-sub render pending |
+| #36 | hold-open + reconnect stream loop | ✅ done (e2e); live zenith endpoint verify pending |
+| #37 | E2E Playwright spec | ✅ done — 3/3 green in Chromium (`bunx playwright test`) |
+| #38 | PsF decoder oracle (zenith gate) | harness done + PASS-proven; **open** for a real zenith PsF sample |
+
+**v1 (core A/V) is browser-verified:** TS → WASM-bridge demux → WebCodecs HW video
++ WASM AC-3 audio → audio-master sync, on real 1080p deinterlaced content, 3/3 e2e
+green. Remaining gaps are external-resource-gated: a DVB-subtitle / multi-audio
+capture, a live zenith `/skyfire` endpoint, an iOS 17 device, and the zenith PsF
+sample for the #38 gate.
+
 | Epic | Crate(s) | Objective | Status |
 |---|---|---|---|
 | [#1](https://github.com/fishloa/rust-skyfire/issues/1) | skyfire-ts | MPEG-TS/HLS demux → ES + PTS (reuse `rust-dvb` PSI) | In progress — #20 done ✅, #21 blocked on rust-dvb#249 |
