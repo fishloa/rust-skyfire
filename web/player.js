@@ -332,24 +332,64 @@ async function main() {
   // 0008). Override with ?src= to point at the live /skyfire/<slug> endpoint or
   // another fixture.
   const src = new URLSearchParams(location.search).get("src") || "/fixtures/h264-25fps.ts";
-  status(`Streaming ${src} …`);
+  // `?live=1` marks a continuous endpoint (zenith /skyfire/<slug>): the fetch is
+  // held open and the body should never "end" — so a clean end or a drop both
+  // trigger a bounded reconnect. A finite fixture (no ?live) just plays to EOS.
+  const live = new URLSearchParams(location.search).has("live");
+  const MAX_RECONNECT = 5;
+  let attempt = 0;
 
-  let resp;
-  try {
-    resp = await fetch(src);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  } catch (e) {
-    fatal("fetch failed", e);
-    return;
+  for (;;) {
+    try {
+      await consumeStream(src);   // returns on clean EOS, throws on fetch/IO error
+    } catch (e) {
+      if (live && attempt < MAX_RECONNECT) {
+        attempt++;
+        status(`stream dropped — reconnecting (${attempt}/${MAX_RECONNECT})…`);
+        sawKeyframe = false;                       // re-acquire a keyframe
+        await sleep(Math.min(1500 * attempt, 8000));
+        continue;
+      }
+      fatal("stream failed", e);
+      return;
+    }
+    if (live && attempt < MAX_RECONNECT) {
+      attempt++;
+      status(`stream ended — reconnecting (${attempt}/${MAX_RECONNECT})…`);
+      sawKeyframe = false;
+      await sleep(1000);
+      continue;
+    }
+    break;
   }
 
+  // End of stream — flush the bridge (emits the final buffered AU/PCM), drain,
+  // then flush the decoder so its reordered tail frames come out.
+  bridge.flush();
+  pumpVideo();
+  await pumpAudio();
+  pumpSubtitles();
+  if (videoDecoder && decoderConfigured) {
+    try { await videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
+  }
+
+  status(`done — video ${stats.decoded}f/${stats.drawn}drawn, audio ${stats.audioChunks} chunks / ${stats.audioSamples} samples, played ${stats.audioSec.toFixed(1)}s`);
+  window.__sfStats = { ...stats, done: true };
+}
+
+// Consume one fetch of the source TS: hold the connection open (shows "tuning…"
+// until the first bytes arrive — do NOT poll, per the zenith contract), then feed
+// each chunk to the bridge and drain video/audio/subtitle outputs with back-pressure.
+async function consumeStream(src) {
+  status(`tuning ${src} …`);
+  const resp = await fetch(src);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const reader = resp.body.getReader();
   let trackLogged = false;
 
-  // Streaming read loop: feed each chunk, then drain video AUs.
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) return;
     bridge.feed(value);
 
     if (!trackLogged) {
@@ -365,26 +405,13 @@ async function main() {
     await pumpAudio();
     pumpSubtitles();
 
-    // Back-pressure: video presents at the audio (realtime) pace, so cap how
-    // far decode runs ahead — otherwise the whole clip's frames queue as open
-    // VideoFrames at once. (Bounded buffering is refined in #36.)
+    // Back-pressure: video presents at the audio (realtime) pace, so cap how far
+    // decode runs ahead — otherwise the whole clip queues as open VideoFrames.
     while (presentQueue.length > 60) {
       // eslint-disable-next-line no-await-in-loop
       await sleep(40);
     }
   }
-
-  // Stream ended — flush the bridge (emits the final buffered AU/PCM), drain,
-  // then flush the decoder so its reordered tail frames come out.
-  bridge.flush();
-  pumpVideo();
-  await pumpAudio();
-  if (videoDecoder && decoderConfigured) {
-    try { await videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
-  }
-
-  status(`done — video ${stats.decoded}f/${stats.drawn}drawn, audio ${stats.audioChunks} chunks / ${stats.audioSamples} samples, played ${stats.audioSec.toFixed(1)}s`);
-  window.__sfStats = { ...stats, done: true };
 }
 
 main().catch((err) => fatal("startup failed", err));
