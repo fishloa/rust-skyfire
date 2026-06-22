@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyfire — PsF re-signal decoder oracle (#38)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; padding: 16px; }
+  h1 { font-size: 16px; margin-bottom: 8px; }
+  p { color: #999; margin-bottom: 12px; max-width: 70ch; }
+  #verdict { font-size: 22px; font-weight: 700; padding: 12px; border-radius: 6px; margin: 12px 0; }
+  .pass { background: #143d14; color: #7fe07f; }
+  .fail { background: #4a1414; color: #ff8a8a; }
+  .pending { background: #333; color: #ccc; }
+  #log { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: #bbb; }
+  canvas { display: block; margin-top: 12px; max-width: 480px; border: 1px solid #333; }
+</style>
+</head>
+<body>
+<h1>PsF re-signal decoder oracle</h1>
+<p>Gate for zenith's no-GPU PsF SPS+slice-header re-signal (zenith#999/#986). Pass a
+re-signaled progressive TS via <code>?src=…</code>; this confirms WebCodecs decodes
+it cleanly (frames out, no <code>PIPELINE_ERROR_DECODE</code>) on this browser.
+Run on real Chrome and iOS 17 Safari before the re-signal path ships.</p>
+<div id="verdict" class="pending">⏳ waiting…</div>
+<div id="log"></div>
+<canvas id="canvas"></canvas>
+<script type="module" src="./psf-oracle.js"></script>
+</body>
+</html>
