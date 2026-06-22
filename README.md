@@ -1,19 +1,22 @@
 # rust-skyfire — an in-browser DVB TV player, built by delegated open models
 
-**Skyfire** plays live satellite TV **in the browser** by decoding the raw
-MPEG-TS on the client — no server-side transcoding. It consumes the clean
-per-channel MPEG-TS/HLS produced by an upstream DVB-S2 receiver and decodes and
-renders it entirely in the browser.
+**Skyfire** plays live satellite TV **in the browser**. The upstream server
+(zenith) re-encodes **video only** — deinterlacing true-1080i to progressive
+H.264 — and re-muxes MPEG-TS with **audio, subtitles, SI and timing untouched**.
+Skyfire's WASM bridge then demuxes that TS and decodes it in the browser:
+WebCodecs for the (now progressive) video, WASM for the AC-3/E-AC-3 audio.
 
 ## What this project is
 
 Two things at once:
 
 1. **A real in-browser player.** The goal is to play the full satellite lineup
-   (H.264 + H.265 video, AC-3 / E-AC-3 audio, MPEG-TS) in any modern browser,
-   **with zero server transcode** — the client does the work. This is the way
-   around the "browser can't play this" problem (no MSE codec support for AC-3,
-   no clean path for 1080i/PsF), without re-encoding on the server.
+   (H.264 video, AC-3 / E-AC-3 audio, DVB subtitles, MPEG-TS) in any modern
+   browser. The server re-encodes **only** the one thing the browser truly can't
+   handle — interlaced 1080i video (deinterlace → progressive H.264) — and leaves
+   audio, subtitles and timing bit-exact. The browser then does the rest: WebCodecs
+   decodes the progressive video, a WASM decoder handles AC-3 (which no browser
+   plays natively except Safari). Audio is never re-encoded.
 
 2. **An experiment in AI-orchestrated engineering** (same model as `rust-ac4`):
    [Claude Code](https://claude.com/claude-code) orchestrates — it writes
@@ -35,8 +38,11 @@ The browser has a HW video decoder but refuses AC-3 audio. So:
 - **A/V sync → audio is the master clock**: media time comes from PCM samples
   actually played (drift-free); video frames are presented / dropped / held
   against it.
-- **Interlace** is mostly moot — most channels are progressive/PsF and decode
-  clean; the few true-1080i ones get a GPU weave-deinterlace shader, no re-encode.
+- **Interlace** is handled **server-side**: true-1080i is deinterlaced to
+  progressive H.264 (NVENC) before the browser ever sees it — no browser
+  hardware-decodes interlaced H.264, so this is the only universal path. The
+  client only ever receives progressive video. (See
+  [ADR 0008](docs/decisions/0008-video-only-transcode-wasm-bridge.md).)
 
 ## Workspace
 

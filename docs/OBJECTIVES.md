@@ -4,68 +4,76 @@
 > Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
 > when an epic's state changes, update its row in the same change.
 
-_Last updated: 2026-06-21._
+_Last updated: 2026-06-22._
 
 ## Primary objective
 
-Play the full DVB satellite lineup **in any supported browser**, via a **GPU
-transcode-to-HLS server + a thin client**
-([ADR 0007](decisions/0007-transcode-to-hls-server-thin-client.md), building on
+Play the full DVB satellite lineup **in any supported browser** via a **skyfire
+WASM bridge client** fed a **video-only-transcoded MPEG-TS** from the server
+([ADR 0008](decisions/0008-video-only-transcode-wasm-bridge.md), superseding the
+HLS/thin-client direction of 0007; keeps the deinterlace decision of
 [0006](decisions/0006-server-side-deinterlace-for-mobile.md)). On-device probing
-proved no browser hardware-decodes interlaced 1080i and software decode is
-desktop-only — so the server normalises every channel to **standard HLS
-(progressive H.264 + AAC)**, the universally playable combination, and the client
-is a thin native/`hls.js` player.
+proved no browser hardware-decodes interlaced 1080i — so the server re-encodes
+**video only** (deinterlace → progressive H.264) and re-muxes TS; everything else
+is carried untouched. The client reuses skyfire's WebCodecs + WASM + sync.
 
-- **Server** (in-process libav\*, **no subprocess**, on zelkova's RTX A2000):
-  `h264_cuvid`/`hevc_cuvid`/`mpeg2_cuvid` (NVDEC) → `yadif_cuda` deinterlace
-  → 50p → `h264_nvenc` (High@4.2); E-AC-3/AC-3 → **AAC-LC**; libavformat HLS mux.
-- **Client (thin):** iOS/Safari → native `<video>` HLS; desktop Chrome/Firefox →
-  `hls.js` (MSE). No WASM, no custom decoders, no custom sync — the media element
-  handles A/V.
-- **Zero-transcode WASM path** (`oxideav-h264` + WebCodecs + audio-master sync) is
-  retained as an **optional desktop mode** and conformance asset, off the mainline.
-- **Container** → libavformat demux; `rust-dvb` PSI logic kept for source-codec
-  routing reference.
+- **Server** (zenith — in-process `rsmpeg`, **no subprocess**, on zelkova's RTX
+  A2000): per-channel video-transcode adaptor `h264_cuvid -deint` → `h264_nvenc`
+  (High@4.2, 50p) → re-mux TS. **Audio (AC-3/E-AC-3), DVB-subtitle/teletext, SI
+  PIDs, PCR/PTS all passthrough untouched.** On-demand per viewer (GPU-scarce).
+  Endpoint `GET /skyfire/<serviceSlug>` — chunked single-program TS.
+- **Client (skyfire WASM bridge):** demux TS; hand progressive H.264 AUs to
+  **WebCodecs** (HW video); decode the selected AC-3/E-AC-3 PID in **WASM** →
+  PCM → WebAudio; parse **DVB subtitles** → cues; **audio-master sync** off
+  PCR/PTS. Browser owns canvas/WebAudio/overlay/controls; WASM is the bridge.
+- **Audio is never re-encoded.** Only video is touched, and only when interlaced.
+- **`oxideav-h264` is dropped from the browser** (server delivers progressive);
+  kept upstream as a conformance asset only.
 
-Secondary objective: serve as an experiment in AI-orchestrated engineering —
-Claude writes spec briefs and verifies; delegated open models write the code.
+Secondary objective: an experiment in AI-orchestrated engineering — cross-project
+coordination between the skyfire and zenith Claude sessions over a shared GitHub
+"bus" ([epic #27](https://github.com/fishloa/rust-skyfire/issues/27)).
 
 ## Success criteria
 
-- The transcode server turns a real DVB 1080i channel into standard HLS
-  (progressive H.264 + AAC), in-process (no subprocess), on zelkova's GPU.
-- That HLS plays end-to-end with correct in-sync A/V on **both** iOS Safari
-  (native `<video>`) and desktop Chrome/Firefox (`hls.js`).
+- A **zenith video-only-transcoded TS** (progressive H.264 + untouched AC-3/E-AC-3
+  + DVB subs + preserved PCR/PTS) plays in-browser via the skyfire WASM bridge:
+  **HW video (WebCodecs) + WASM AC-3 audio, A/V in sync**, on desktop Chrome and
+  iOS 17+ Safari.
+- **Audio-track flip** works at runtime from a browser command; **DVB subtitles**
+  render as a toggleable overlay.
 - The CI gate (fmt + clippy `-D warnings` + build + `nextest`) is green on every
-  commit; the GPU transcode crate is target-gated and verified on zelkova
-  (golden HLS: `ffprobe` shows progressive H.264 + AAC, IDR-aligned segments).
+  commit; behavioural tests decode real fixtures, not just compile.
 
 ## First release (v1)
 
-**A DVB 1080i fixture transcoded by the server (in-process libav, NVDEC →
-yadif_cuda → NVENC + AAC) plays as standard HLS on iOS Safari native and desktop
-`hls.js`, full A/V, no crash / underrun / drift.** Superseded the original
-WebCodecs+WASM v1 (see ADR 0007). Costs tracked in
-[COSTS.md](COSTS.md) ([ADR 0002](decisions/0002-delegation-working-practice.md)).
+**A zenith `/skyfire/<slug>` stream (progressive H.264 + untouched AC-3 + DVB subs)
+plays in desktop Chrome and iOS 17+ Safari via the skyfire WASM bridge — HW video,
+WASM AC-3 audio, in sync, with working audio-flip + subtitle overlay.** Tracked as
+[epic #27](https://github.com/fishloa/rust-skyfire/issues/27); server side is
+zenith#986. Supersedes both the original WebCodecs+WASM v1 and the ADR 0007
+HLS/thin-client v1. Costs in [COSTS.md](COSTS.md)
+([ADR 0002](decisions/0002-delegation-working-practice.md)).
 
 ## Support scope
 
 Chrome/Edge, Safari, Firefox — desktop and mobile (iOS 17+ as one WebKit target,
-Android). H.265 gated per-stream with H.264 fallback. Full detail and rationale:
+Android). Server normalises every channel to progressive H.264, so the WebCodecs
+video path is universal. Full detail:
 [ADR 0001](decisions/0001-browser-and-platform-support.md).
 
 ## Roadmap (epics)
 
 Tracked as GitHub EPIC issues. Status here mirrors reality; sub-issues are the
-delegable work units.
+work units.
 
-> **ADR 0007 reframe (2026-06-21):** the mainline is now a transcode-to-HLS
-> **server** + thin client. Client epics #2–#6 are **superseded** for the mainline
-> (kept only for the optional zero-transcode WASM desktop mode / as conformance
-> assets). New mainline work: **#E1 transcode server** (in-process libav GPU
-> pipeline → H.264+AAC HLS, on zelkova) and **#E2 thin client** (native + hls.js).
-> Rows below are pre-pivot status, retained for history until re-issued.
+> **ADR 0008 reframe (2026-06-22):** mainline is now a **video-only server
+> transcode (zenith) + skyfire WASM bridge client**. The client epic is
+> **[#27](https://github.com/fishloa/rust-skyfire/issues/27)** (WebCodecs video +
+> WASM AC-3 + DVB subs over zenith's video-only TS), which carries the
+> zenith↔skyfire stream contract and a 10-item sub-issue backlog. It **supersedes
+> client epics #2–#6** below. Server transcode lives in zenith (zenith#986), not a
+> skyfire crate. Rows below are pre-pivot, retained for history.
 
 | Epic | Crate(s) | Objective | Status |
 |---|---|---|---|

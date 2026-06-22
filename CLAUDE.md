@@ -7,11 +7,18 @@ production code yourself** (same model as the sibling project `rust-ac4`).
 
 ## What this is
 
-**Skyfire** — an in-browser DVB TV player. The client decodes the raw MPEG-TS
-served by an upstream DVB-S2 receiver: **WebCodecs** for hardware video
-(H.264/H.265), a **WASM AC-3/E-AC-3 decoder** for the audio browsers refuse,
-**WebAudio** for output, and an **audio-master A/V sync clock**. Zero
-server-side transcode. See `README.md` for the architecture.
+**Skyfire** — an in-browser DVB TV player. The server (zenith) re-encodes
+**video only** — deinterlaces true-1080i → progressive H.264 (NVENC) and re-muxes
+TS; **audio (AC-3/E-AC-3), DVB-subtitle/teletext, SI PIDs and PCR/PTS pass through
+untouched**. The client is the **skyfire WASM bridge**: it demuxes the TS, hands
+progressive H.264 to **WebCodecs** (HW video), decodes the selected AC-3/E-AC-3
+PID in **WASM** → **WebAudio**, parses **DVB subtitles** → cues, and runs an
+**audio-master A/V sync clock** off PCR/PTS. The browser owns the canvas, WebAudio,
+subtitle overlay and controls; WASM is the bridge. **Audio is never re-encoded;
+`oxideav-h264` is not used in the browser.** Authoritative architecture:
+[ADR 0008](docs/decisions/0008-video-only-transcode-wasm-bridge.md) + the client
+epic [#27](https://github.com/fishloa/rust-skyfire/issues/27) (carries the
+zenith↔skyfire stream contract). Server transcode lives in zenith (zenith#986).
 
 ## Docs (keep current)
 
@@ -26,10 +33,12 @@ server-side transcode. See `README.md` for the architecture.
 - `skyfire-ac3` — AC-3 / E-AC-3 decode → interleaved PCM.
 - `skyfire-sync` — audio-master clock (`AudioClock`, `FrameAction`).
 - `skyfire-core` — engine wiring.
-- `skyfire-wasm` — `wasm-bindgen`/`web-sys` boundary for the browser shell.
+- `skyfire-wasm` — the **bridge** API: `wasm-bindgen`/`web-sys` boundary; commands
+  in (`selectAudio`/`selectSubtitle`/play), events out (video AUs, PCM, subtitle
+  cues, track-list, clock). Reuses `rust-dvb` `dvb-subtitle` for DVB-SUB.
 - `skyfire-cli` — native debug harness over the demux/decode crates.
-- `web/` — JS/TS shell: WebCodecs `VideoDecoder`, `AudioWorklet`, canvas + a
-  GPU deinterlace shader.
+- `web/` — JS/TS shell: WebCodecs `VideoDecoder`, `AudioWorklet`, canvas, subtitle
+  overlay, controls. (No deinterlace shader — the server delivers progressive.)
 
 ## Source of truth
 

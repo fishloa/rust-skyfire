@@ -1,6 +1,10 @@
 # 0003 — First release (v1) scope & test harness
 
-- **Status:** Accepted
+- **Status:** Superseded by [0008](0008-video-only-transcode-wasm-bridge.md) for the
+  *v1 scope* — v1 is now "play zenith's `/skyfire/<slug>` progressive-TS in Chrome +
+  iOS 17 via the WASM bridge" (see ADR 0008 / epic #27), not "Chrome WebCodecs+WASM
+  on the three local fixtures". The localhost-`bun`-harness test approach here still
+  applies.
 - **Date:** 2026-06-18
 
 ## Context
