@@ -383,14 +383,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxideav-h264"
-version = "0.1.6"
-dependencies = [
- "oxideav-core",
- "thiserror",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -566,8 +558,6 @@ name = "skyfire-wasm"
 version = "0.0.1"
 dependencies = [
  "dvb-si",
- "oxideav-core",
- "oxideav-h264",
  "skyfire-core",
  "skyfire-ts",
  "wasm-bindgen",

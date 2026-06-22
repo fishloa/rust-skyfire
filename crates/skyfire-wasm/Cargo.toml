@@ -14,8 +14,3 @@ skyfire-core.workspace = true
 skyfire-ts.workspace = true
 dvb-si = "7.9"
 wasm-bindgen = "0.2"
-# Software H.264 decoder for 1080i/PAFF interlaced content that WebCodecs
-# cannot decode. Path dep on the local fix branch for now; the PR will
-# switch to a git/published dependency once oxideav-h264 is released.
-oxideav-h264 = { path = "../../../oxideav-h264" }
-oxideav-core = "0.1"

@@ -9,8 +9,6 @@
 //! Data-in/data-out only — no `web-sys` DOM/WebCodecs/AudioWorklet calls.
 //! The browser shell in `web/` drives those APIs with the data surfaced here.
 
-use oxideav_core::{CodecId, Decoder as _, Frame, Packet, TimeBase};
-use oxideav_h264::h264_decoder::H264CodecDecoder;
 use skyfire_core::Engine;
 use wasm_bindgen::prelude::*;
 
@@ -260,8 +258,10 @@ impl WasmEngine {
     }
 
     /// True when the video stream is interlaced (SPS `frame_mbs_only_flag
-    /// == 0`). WebCodecs cannot decode such streams; the shell must route
-    /// them through the [`WasmVideoDecoder`] software path.
+    /// == 0`). WebCodecs cannot decode such streams — under ADR 0008 the
+    /// server (zenith) deinterlaces to progressive before the browser sees
+    /// it, so this should report `false` on a `/skyfire/<slug>` stream;
+    /// kept as a diagnostic.
     #[wasm_bindgen]
     pub fn video_is_interlaced(&self) -> bool {
         self.engine
@@ -269,116 +269,6 @@ impl WasmEngine {
             .and_then(|e| e.video_config())
             .map(|c| c.interlaced)
             .unwrap_or(false)
-    }
-}
-
-// ── software H.264 video decoder (interlaced / 1080i path) ───────────────────
-
-/// A decoded video frame as I420 (planar YUV 4:2:0): the Y plane
-/// (`width * height` bytes) followed by the U and V planes
-/// (`(width/2) * (height/2)` bytes each), tightly packed.
-#[wasm_bindgen]
-pub struct WasmVideoFrame {
-    /// Luma width in samples.
-    pub width: u32,
-    /// Luma height in samples.
-    pub height: u32,
-    /// Presentation timestamp in 90 kHz ticks (`-1` if unknown). Frames
-    /// are emitted in display order, so this drives A/V sync.
-    pub pts_ticks: f64,
-    /// I420 planar bytes (Y, then U, then V), tightly packed.
-    #[wasm_bindgen(getter_with_clone)]
-    pub data: Vec<u8>,
-}
-
-/// Software H.264 decoder exposed to JS for content WebCodecs cannot
-/// handle — chiefly **1080i / PAFF interlaced** broadcast H.264. Feed
-/// Annex-B access units with [`send`](WasmVideoDecoder::send), then drain
-/// decoded frames with [`receive`](WasmVideoDecoder::receive) until it
-/// returns `null`. The output is progressive (fields already woven).
-#[wasm_bindgen]
-pub struct WasmVideoDecoder {
-    dec: H264CodecDecoder,
-}
-
-impl Default for WasmVideoDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[wasm_bindgen]
-impl WasmVideoDecoder {
-    /// Create a new software H.264 decoder.
-    #[wasm_bindgen(constructor)]
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            dec: H264CodecDecoder::new(CodecId::new("h264")),
-        }
-    }
-
-    /// Feed one Annex-B access unit. `pts_ticks` is the 90 kHz PTS.
-    #[wasm_bindgen]
-    pub fn send(&mut self, au: &[u8], pts_ticks: f64) {
-        let pkt = Packet::new(0, TimeBase::new(1, 90_000), au.to_vec()).with_pts(pts_ticks as i64);
-        let _ = self.dec.send_packet(&pkt);
-    }
-
-    /// Signal end-of-stream so buffered (reordered) frames can drain.
-    #[wasm_bindgen]
-    pub fn flush(&mut self) {
-        let _ = self.dec.flush();
-    }
-
-    /// Pull the next decoded frame as I420, or `null` if none is ready.
-    /// Call repeatedly until it returns `null`.
-    #[wasm_bindgen]
-    pub fn receive(&mut self) -> Option<WasmVideoFrame> {
-        match self.dec.receive_frame() {
-            Ok(Frame::Video(vf)) => Some(video_frame_to_i420(&vf)),
-            _ => None,
-        }
-    }
-}
-
-/// Pack an `oxideav_core::VideoFrame` (whose planes may be strided) into
-/// tightly-packed I420 bytes.
-fn video_frame_to_i420(vf: &oxideav_core::VideoFrame) -> WasmVideoFrame {
-    let y = &vf.planes[0];
-    let w = y.stride;
-    let h = y.data.len().checked_div(w).unwrap_or(0);
-    let cw = w / 2;
-    let ch = h / 2;
-    let mut data = Vec::with_capacity(w * h + 2 * cw * ch);
-    pack_plane(&mut data, &y.data, y.stride, w, h);
-    if vf.planes.len() >= 3 {
-        pack_plane(&mut data, &vf.planes[1].data, vf.planes[1].stride, cw, ch);
-        pack_plane(&mut data, &vf.planes[2].data, vf.planes[2].stride, cw, ch);
-    } else {
-        // Monochrome fallback: neutral chroma.
-        data.resize(w * h + 2 * cw * ch, 128);
-    }
-    WasmVideoFrame {
-        width: w as u32,
-        height: h as u32,
-        pts_ticks: vf.pts.map(|p| p as f64).unwrap_or(-1.0),
-        data,
-    }
-}
-
-/// Copy `rows` rows of `cols` bytes out of a strided plane into `dst`.
-fn pack_plane(dst: &mut Vec<u8>, src: &[u8], stride: usize, cols: usize, rows: usize) {
-    if stride == cols {
-        dst.extend_from_slice(&src[..(cols * rows).min(src.len())]);
-    } else {
-        for r in 0..rows {
-            let start = r * stride;
-            let end = start + cols;
-            if end <= src.len() {
-                dst.extend_from_slice(&src[start..end]);
-            }
-        }
     }
 }
 
@@ -904,64 +794,6 @@ mod tests {
         let audio_codecs = ch.audio_codecs();
         assert!(!audio_pids.is_empty());
         assert_eq!(audio_pids.len(), audio_codecs.len());
-    }
-
-    /// Software H.264 path: feed gulli-15s.ts video AUs through the
-    /// `WasmVideoDecoder` and confirm it produces non-black I420 frames
-    /// of the expected dimensions. This is the 1080i/PAFF path that
-    /// WebCodecs cannot handle.
-    #[test]
-    fn software_decode_gulli_15s() {
-        let we = engine_for_fixture("gulli-15s.ts");
-        eprintln!(
-            "gulli-15s.ts interlaced={} units={}",
-            we.video_is_interlaced(),
-            we.video_unit_count()
-        );
-
-        let mut dec = WasmVideoDecoder::new();
-        let n = we.video_unit_count();
-        let mut frames = 0usize;
-        let mut first_dims = None;
-        let mut any_non_black = false;
-
-        let drain = |dec: &mut WasmVideoDecoder,
-                     frames: &mut usize,
-                     first_dims: &mut Option<(u32, u32)>,
-                     any_non_black: &mut bool| {
-            while let Some(f) = dec.receive() {
-                assert!(f.width >= 320 && f.height >= 240, "frame too small");
-                assert_eq!(
-                    f.data.len(),
-                    (f.width as usize * f.height as usize) * 3 / 2,
-                    "I420 byte length mismatch"
-                );
-                if first_dims.is_none() {
-                    *first_dims = Some((f.width, f.height));
-                }
-                // Luma plane not all one value ⇒ real picture.
-                let y = &f.data[..(f.width as usize * f.height as usize)];
-                if y.iter().any(|&p| p != y[0]) {
-                    *any_non_black = true;
-                }
-                *frames += 1;
-            }
-        };
-
-        // Cap at the first ~40 access units — enough to clear the open-GOP
-        // leading pictures and decode several real frames without making
-        // the unit test decode all 672 1080i pictures in software.
-        for i in 0..n.min(40) {
-            let au = we.video_unit(i).expect("au");
-            dec.send(&au.bytes, au.pts_ticks().map(|p| p as f64).unwrap_or(0.0));
-            drain(&mut dec, &mut frames, &mut first_dims, &mut any_non_black);
-        }
-        dec.flush();
-        drain(&mut dec, &mut frames, &mut first_dims, &mut any_non_black);
-
-        eprintln!("software-decoded {frames} frames, first_dims={first_dims:?}");
-        assert!(frames > 0, "software decoder must produce frames");
-        assert!(any_non_black, "decoded frames must not be uniform/black");
     }
 
     #[test]
