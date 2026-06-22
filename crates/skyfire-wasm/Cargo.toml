@@ -12,5 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 skyfire-core.workspace = true
 skyfire-ts.workspace = true
+skyfire-ac3.workspace = true
 dvb-si = "7.9"
 wasm-bindgen = "0.2"

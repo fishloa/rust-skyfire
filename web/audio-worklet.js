@@ -1,45 +1,73 @@
-// skyfire-pcm AudioWorklet — plays a pre-decoded PCM ring buffer.
+// skyfire-pcm AudioWorklet — streaming PCM ring buffer (ADR 0008 bridge client).
 //
-// Receives interleaved S16LE PCM as an ArrayBuffer via the port,
-// samples the audio clock for A/V sync, and loops the buffer.
+// The bridge (`SkyfireBridge.take_audio_pcm()`) yields interleaved **f32** PCM
+// chunks as TS is fed. The main thread posts them here as `{type:"pcm", samples}`;
+// this processor enqueues them in a ring and drains frame-by-frame in `process()`.
+//
+// It also reports `framesPlayed` (frames actually emitted to the output) back to
+// the main thread — the audio-master clock (#32) is derived from that: media
+// time = framesPlayed / sampleRate.
+
+const RING_CAPACITY_FRAMES = 48000 * 4; // ~4 s of headroom at 48 kHz
 
 class SkyfirePcmProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = null;      // Float32Array (interleaved)
-    this.sampleRate = 0;
-    this.channels = 0;
-    this.frameCount = 0;
-    this.playhead = 0;       // sample index
+    this.channels = 2;
+    this.sampleRate = 48000;
     this.playing = false;
-    this.startTime = 0;
-    this.startPlayhead = 0;
+
+    // Interleaved f32 ring buffer.
+    this.ring = new Float32Array(RING_CAPACITY_FRAMES * this.channels);
+    this.writeIdx = 0;   // sample index (interleaved)
+    this.readIdx = 0;    // sample index (interleaved)
+    this.available = 0;  // interleaved samples available to read
+
+    this.framesPlayed = 0;
+    this.reportCounter = 0;
 
     this.port.onmessage = (e) => {
       const msg = e.data;
-      if (msg.type === "init") {
-        this.init(msg.pcm, msg.sampleRate, msg.channels);
-      } else if (msg.type === "start") {
-        this.playing = true;
-        this.startTime = currentTime;
-        this.startPlayhead = this.playhead;
+      switch (msg.type) {
+        case "config":
+          this.configure(msg.sampleRate, msg.channels);
+          break;
+        case "pcm":
+          this.enqueue(msg.samples);
+          break;
+        case "play":
+          this.playing = true;
+          break;
+        case "pause":
+          this.playing = false;
+          break;
       }
     };
   }
 
-  init(pcmBuffer, sampleRate, channels) {
-    // Convert S16LE bytes → Float32Array
-    const bytes = new Uint8Array(pcmBuffer);
-    const sampleCount = bytes.length / 2;
-    const f32 = new Float32Array(sampleCount);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let i = 0; i < sampleCount; i++) {
-      f32[i] = dv.getInt16(i * 2, true) / 32768.0;
+  configure(sampleRate, channels) {
+    this.sampleRate = sampleRate || 48000;
+    this.channels = channels || 2;
+    this.ring = new Float32Array(RING_CAPACITY_FRAMES * this.channels);
+    this.writeIdx = 0;
+    this.readIdx = 0;
+    this.available = 0;
+    this.framesPlayed = 0;
+  }
+
+  enqueue(samples) {
+    // samples: Float32Array, interleaved, `channels` per frame.
+    const cap = this.ring.length;
+    for (let i = 0; i < samples.length; i++) {
+      this.ring[this.writeIdx] = samples[i];
+      this.writeIdx = (this.writeIdx + 1) % cap;
+      if (this.available < cap) {
+        this.available++;
+      } else {
+        // Overflow — advance read (drop oldest) to stay live.
+        this.readIdx = (this.readIdx + 1) % cap;
+      }
     }
-    this.buffer = f32;
-    this.sampleRate = sampleRate;
-    this.channels = channels;
-    this.frameCount = sampleCount / channels;
   }
 
   process(_inputs, outputs) {
@@ -48,36 +76,37 @@ class SkyfirePcmProcessor extends AudioWorkletProcessor {
 
     const chCount = Math.min(this.channels, out.length);
     const frameLen = out[0].length;
-
-    if (!this.buffer || this.frameCount === 0) {
-      // Output silence.
-      for (let ch = 0; ch < chCount; ch++) out[ch].fill(0);
-      return true;
-    }
+    const cap = this.ring.length;
 
     if (!this.playing) {
-      // Not started yet — output silence.
       for (let ch = 0; ch < chCount; ch++) out[ch].fill(0);
       return true;
     }
 
-    for (let ch = 0; ch < chCount; ch++) {
-      const chOut = out[ch];
-      for (let i = 0; i < frameLen; i++) {
-        const srcIdx = (this.playhead + i) * this.channels + ch;
-        if (srcIdx < this.buffer.length) {
-          chOut[i] = this.buffer[srcIdx];
-        } else {
-          chOut[i] = 0;
+    const framesAvail = Math.floor(this.available / this.channels);
+    const framesToPlay = Math.min(frameLen, framesAvail);
+
+    for (let i = 0; i < frameLen; i++) {
+      if (i < framesToPlay) {
+        for (let ch = 0; ch < chCount; ch++) {
+          out[ch][i] = this.ring[(this.readIdx + i * this.channels + ch) % cap];
         }
+      } else {
+        // Underrun — pad with silence (don't advance clock past real audio).
+        for (let ch = 0; ch < chCount; ch++) out[ch][i] = 0;
       }
     }
 
-    this.playhead += frameLen;
+    if (framesToPlay > 0) {
+      this.readIdx = (this.readIdx + framesToPlay * this.channels) % cap;
+      this.available -= framesToPlay * this.channels;
+      this.framesPlayed += framesToPlay;
+    }
 
-    // Loop the buffer when we hit the end.
-    if (this.playhead >= this.frameCount) {
-      this.playhead = 0;
+    // Report the clock ~every 10 quanta (~27 ms at 128-frame quanta).
+    if (++this.reportCounter >= 10) {
+      this.reportCounter = 0;
+      this.port.postMessage({ type: "clock", framesPlayed: this.framesPlayed });
     }
 
     return true;

@@ -55,7 +55,10 @@ function drawFrame(frame) {
 
 // ── shared state ────────────────────────────────────────────────────────────
 
-const stats = { decoded: 0, drawn: 0, w: 0, h: 0, aus: 0, path: "wc" };
+const stats = {
+  decoded: 0, drawn: 0, w: 0, h: 0, aus: 0, path: "wc",
+  audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0,
+};
 let videoDecoder = null;
 let decoderConfigured = false;
 let sawKeyframe = false;
@@ -113,6 +116,64 @@ function pumpVideo() {
   void codec;
 }
 
+// ── audio: WASM PCM → WebAudio AudioWorklet (#31) ───────────────────────────
+
+let audioCtx = null;
+let audioNode = null;
+let audioReady = false;
+let audioStarting = false;
+
+async function ensureAudio(sampleRate, channels) {
+  if (audioReady || audioStarting) return;
+  audioStarting = true;
+  audioCtx = new AudioContext({ sampleRate });
+  await audioCtx.audioWorklet.addModule("./audio-worklet.js");
+  audioNode = new AudioWorkletNode(audioCtx, "skyfire-pcm", {
+    numberOfOutputs: 1,
+    outputChannelCount: [channels],
+  });
+  audioNode.port.onmessage = (e) => {
+    if (e.data.type === "clock") {
+      stats.audioFrames = e.data.framesPlayed;
+      // Audio-master media time (seconds). TODO(#32): present video against this.
+      stats.audioSec = e.data.framesPlayed / (audioCtx.sampleRate || sampleRate);
+    }
+  };
+  audioNode.connect(audioCtx.destination);
+  audioNode.port.postMessage({ type: "config", sampleRate, channels });
+  audioNode.port.postMessage({ type: "play" });
+  // Autoplay policy: resume if a user gesture has been granted; otherwise it
+  // stays suspended until startAudio() is called from a click.
+  audioCtx.resume().catch(() => {});
+  audioReady = true;
+  audioStarting = false;
+  status(`audio: ${sampleRate} Hz, ${channels} ch`);
+}
+
+// Drain decoded PCM chunks from the bridge into the worklet.
+async function pumpAudio() {
+  const chunks = bridge.take_audio_pcm();
+  for (const c of chunks) {
+    if (!audioReady) {
+      // eslint-disable-next-line no-await-in-loop
+      await ensureAudio(c.sample_rate, c.channels);
+    }
+    const samples = c.samples; // Float32Array, interleaved
+    stats.audioChunks++;
+    stats.audioSamples += samples.length;
+    audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
+    c.free?.();
+  }
+}
+
+// Resume audio on a user gesture (browsers gate AudioContext on one).
+function startAudio() {
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+}
+window.addEventListener("pointerdown", startAudio, { once: true });
+window.addEventListener("keydown", startAudio, { once: true });
+window.sfStartAudio = startAudio; // exposed for the Playwright/iOS verifier
+
 // ── bridge + stream ─────────────────────────────────────────────────────────
 
 let bridge = null;
@@ -162,15 +223,17 @@ async function main() {
       }
     }
     pumpVideo();
+    await pumpAudio();
   }
 
   // Stream ended — drain any tail AUs and flush the decoder.
   pumpVideo();
+  await pumpAudio();
   if (videoDecoder && decoderConfigured) {
     try { await videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
   }
 
-  status(`done — decoded ${stats.decoded} video frames, drew ${stats.drawn} (AUs fed ${stats.aus})`);
+  status(`done — video ${stats.decoded}f/${stats.drawn}drawn, audio ${stats.audioChunks} chunks / ${stats.audioSamples} samples, played ${stats.audioSec.toFixed(1)}s`);
   window.__sfStats = { ...stats, done: true };
 }
 

@@ -296,6 +296,7 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 // the fly; no separate probe/init/finalize step is required.
 
 use dvb_si::resync::TsResync as BridgeTsResync;
+use skyfire_ac3::IncrementalDecoder;
 use skyfire_ts::{
     AudioCodec as TsAudioCodec, ChannelMap, EsDemux, SubtitleKind as TsSubtitleKind,
     VideoCodec as TsVideoCodec,
@@ -443,10 +444,11 @@ pub struct SkyfireBridge {
     // Accumulated video AUs (drained by `take_video_aus`).
     video_aus: Vec<WasmVideoAu>,
 
-    // Audio ES bytes for the selected audio PID (routing only; #31 decodes).
-    // We hold them so issue #31 can plug in decode without structural changes.
-    #[allow(dead_code)]
-    audio_es_pending: Vec<u8>,
+    // Incremental E-AC-3/AC-3 decoder — holds IMDCT state across AU boundaries.
+    audio_decoder: IncrementalDecoder,
+
+    // Decoded PCM chunks pending drain by `take_audio_pcm`.
+    audio_pcm_pending: Vec<WasmPcmChunk>,
 
     // Latest PCR / PTS seen (90 kHz ticks).
     latest_pts: Option<i64>,
@@ -468,7 +470,8 @@ impl SkyfireBridge {
             selected_subtitle_pid: None,
             playing: false,
             video_aus: Vec::new(),
-            audio_es_pending: Vec::new(),
+            audio_decoder: IncrementalDecoder::new(),
+            audio_pcm_pending: Vec::new(),
             latest_pts: None,
         }
     }
@@ -519,9 +522,15 @@ impl SkyfireBridge {
         self.drain_access_units();
     }
 
-    /// Select which audio PID to route (and later decode in #31).
+    /// Select which audio PID to route and decode.
+    ///
+    /// If the PID changes, the AC-3/E-AC-3 decoder state is reset so the new
+    /// stream decodes cleanly (PTS continuity is handled in issue #33).
     #[wasm_bindgen]
     pub fn select_audio(&mut self, pid: u16) {
+        if self.selected_audio_pid != Some(pid) {
+            self.audio_decoder.reset();
+        }
         self.selected_audio_pid = Some(pid);
     }
 
@@ -599,13 +608,13 @@ impl SkyfireBridge {
         std::mem::take(&mut self.video_aus)
     }
 
-    /// Scaffold: returns an empty `Vec` until issue #31 implements AC-3 decode.
+    /// Drain all decoded PCM chunks produced since the last call.
     ///
-    /// The selected audio PID is already routed internally via
-    /// `audio_es_pending`; issue #31 will hook decode into `drain_access_units`.
+    /// Each chunk corresponds to one audio access unit decoded from the
+    /// selected audio PID.  Samples are interleaved f32 (WebAudio-ready).
     #[wasm_bindgen]
     pub fn take_audio_pcm(&mut self) -> Vec<WasmPcmChunk> {
-        Vec::new()
+        std::mem::take(&mut self.audio_pcm_pending)
     }
 
     /// Scaffold: returns an empty `Vec` until issue #34 implements subtitle parsing.
@@ -654,8 +663,35 @@ impl SkyfireBridge {
                     bytes: au.es_bytes,
                 });
             } else if Some(au.pid) == audio_pid {
-                // Route audio ES bytes for #31 to decode.
-                self.audio_es_pending.extend_from_slice(&au.es_bytes);
+                // Decode this audio AU incrementally via the persistent E-AC-3 state.
+                let pts_ticks = au.pts_ticks;
+                match self.audio_decoder.decode_au(&au.es_bytes) {
+                    Ok(Some(decoded)) => {
+                        if decoded.sample_rate > 0 && decoded.channels > 0 {
+                            // Convert S16LE → f32 interleaved (WebAudio wants f32).
+                            let samples_f32: Vec<f32> = decoded
+                                .pcm_s16le
+                                .chunks_exact(2)
+                                .map(|b| {
+                                    let s = i16::from_le_bytes([b[0], b[1]]);
+                                    f32::from(s) / 32_768.0_f32
+                                })
+                                .collect();
+                            self.audio_pcm_pending.push(WasmPcmChunk {
+                                pts_ticks,
+                                sample_rate: decoded.sample_rate,
+                                channels: decoded.channels,
+                                samples: samples_f32,
+                            });
+                        }
+                    }
+                    Ok(None) => {
+                        // No syncframes found in this AU — skip silently.
+                    }
+                    Err(_) => {
+                        // Decode error — skip this AU, keep state for next one.
+                    }
+                }
             }
         }
     }
@@ -908,9 +944,16 @@ mod tests {
         let pcr = bridge.pcr_pts().unwrap();
         assert!(pcr > 0, "pcr_pts must be positive");
 
-        // --- scaffolds ---
+        // --- audio PCM is now live (issue #31) ---
+        // A dedicated test covers the full decode assertions; here we just
+        // verify `take_audio_pcm` does not panic and returns Some data.
         let pcm = bridge.take_audio_pcm();
-        assert!(pcm.is_empty(), "take_audio_pcm must be empty (scaffold)");
+        assert!(
+            !pcm.is_empty(),
+            "take_audio_pcm must be non-empty after feeding audio data"
+        );
+
+        // --- subtitle scaffold ---
         let subs = bridge.take_subtitle_cues();
         assert!(
             subs.is_empty(),
@@ -922,6 +965,90 @@ mod tests {
             aus.len(),
             keyframe_count,
             pcr
+        );
+    }
+
+    /// Issue #31: streaming bridge audio PCM decode.
+    ///
+    /// Feeds gulli-15s.ts (E-AC-3 stereo 48 kHz, audio PID 0x101) in 4096-byte
+    /// chunks through `SkyfireBridge`, drains `take_audio_pcm()` across all
+    /// feeds, and asserts the decoded PCM meets the exit criteria.
+    #[test]
+    fn bridge_audio_pcm_gulli_15s() {
+        let data = load_fixture("gulli-15s.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        let mut all_chunks: Vec<WasmPcmChunk> = Vec::new();
+
+        // Feed in 4096-byte chunks and drain PCM each time (streaming pattern).
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+            all_chunks.extend(bridge.take_audio_pcm());
+        }
+
+        // --- non-empty ---
+        assert!(
+            !all_chunks.is_empty(),
+            "must produce at least one PCM chunk from gulli-15s.ts"
+        );
+
+        // --- format: 48 kHz stereo ---
+        for chunk in &all_chunks {
+            assert_eq!(
+                chunk.sample_rate, 48_000,
+                "all chunks must be 48 kHz (got {})",
+                chunk.sample_rate
+            );
+            assert_eq!(
+                chunk.channels, 2,
+                "all chunks must be stereo (got {} channels)",
+                chunk.channels
+            );
+            assert!(
+                !chunk.samples.is_empty(),
+                "every chunk must contain samples"
+            );
+        }
+
+        // --- substantial sample count ---
+        // Total f32 samples (interleaved: left+right per frame).
+        // The batch path yields ~140k samples/channel = ~280k total interleaved
+        // samples.  Assert >100k to leave headroom for any minor AU boundary
+        // differences.
+        let total_samples: usize = all_chunks.iter().map(|c| c.samples.len()).sum();
+        assert!(
+            total_samples > 100_000,
+            "expected >100k total interleaved f32 samples, got {total_samples}"
+        );
+
+        // --- not all silence ---
+        let non_zero: usize = all_chunks
+            .iter()
+            .flat_map(|c| c.samples.iter())
+            .filter(|&&s| s != 0.0_f32)
+            .count();
+        assert!(
+            non_zero > total_samples / 100,
+            "PCM must not be all-silence: only {non_zero}/{total_samples} non-zero samples"
+        );
+
+        // --- PTS coverage: at least some chunks have a PTS ---
+        let with_pts = all_chunks
+            .iter()
+            .filter(|c| c.pts_ticks().is_some())
+            .count();
+        assert!(
+            with_pts > 0,
+            "at least some PCM chunks must carry a PTS from the audio PES"
+        );
+
+        eprintln!(
+            "bridge_audio_pcm: {} chunks, {} total interleaved f32 samples, \
+             {} non-zero, {} with PTS",
+            all_chunks.len(),
+            total_samples,
+            non_zero,
+            with_pts,
         );
     }
 }

@@ -558,6 +558,7 @@ name = "skyfire-wasm"
 version = "0.0.1"
 dependencies = [
  "dvb-si",
+ "skyfire-ac3",
  "skyfire-core",
  "skyfire-ts",
  "wasm-bindgen",

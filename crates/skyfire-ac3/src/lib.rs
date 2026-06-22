@@ -51,6 +51,91 @@ pub fn decode_eac3_packet(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Incremental decoder
+// ---------------------------------------------------------------------------
+
+/// Stateful E-AC-3/AC-3 decoder for incremental (per-access-unit) use.
+///
+/// Holds the IMDCT overlap-add state across calls so that the codec has
+/// correct history at AU boundaries.  Use one `IncrementalDecoder` per audio
+/// PID; call [`reset`](Self::reset) when switching PIDs.
+pub struct IncrementalDecoder {
+    state: eac3::Eac3DecoderState,
+}
+
+impl Default for IncrementalDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IncrementalDecoder {
+    /// Create a new decoder with a fresh state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: eac3::Eac3DecoderState::default(),
+        }
+    }
+
+    /// Reset the IMDCT history (call when switching to a new stream / PID).
+    pub fn reset(&mut self) {
+        self.state = eac3::Eac3DecoderState::default();
+    }
+
+    /// Decode all E-AC-3 syncframes in one access unit's ES bytes.
+    ///
+    /// Returns the concatenated PCM for all syncframes found, plus the sample
+    /// rate and channel count (constant within a stream, taken from the last
+    /// syncframe decoded).  Returns `None` if `data` contains no valid
+    /// syncframes.
+    ///
+    /// Any bytes that don't form a complete syncframe are silently skipped
+    /// (consistent with [`decode_all_eac3`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if any syncframe fails to decode.
+    pub fn decode_au(&mut self, data: &[u8]) -> Result<Option<DecodedAudio>, String> {
+        let mut combined_pcm: Vec<u8> = Vec::new();
+        let mut sample_rate: Option<u32> = None;
+        let mut channels: Option<u16> = None;
+
+        let mut offset = 0;
+        while offset + 6 <= data.len() {
+            if !is_ac3_syncframe(&data[offset..]) {
+                offset += 1;
+                continue;
+            }
+            let b2 = u16::from(data[offset + 2]);
+            let b3 = u16::from(data[offset + 3]);
+            let frmsiz = ((b2 & 0x07) << 8) | b3;
+            let frame_len = ((frmsiz as usize) + 1) * 2;
+            if offset + frame_len > data.len() {
+                break;
+            }
+            let frame =
+                eac3::decode_eac3_packet(&mut self.state, &data[offset..offset + frame_len])
+                    .map_err(|e| e.to_string())?;
+            sample_rate = Some(frame.sample_rate);
+            channels = Some(frame.channels);
+            combined_pcm.extend_from_slice(&frame.pcm_s16le);
+            offset += frame_len;
+        }
+
+        if combined_pcm.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(DecodedAudio {
+            pcm_s16le: combined_pcm,
+            sample_rate: sample_rate.unwrap_or(0),
+            channels: channels.unwrap_or(0),
+        }))
+    }
+}
+
 /// Decode all E-AC-3 syncframes in `data` and return the concatenated
 /// interleaved PCM.
 ///
