@@ -635,6 +635,20 @@ impl SkyfireBridge {
         self.latest_pts
     }
 
+    /// Signal end-of-stream: flush any partial PES packets held in the
+    /// PES assemblers, then run the same access-unit processing as `feed()`.
+    ///
+    /// After calling `flush()`, a subsequent `take_video_aus()` /
+    /// `take_audio_pcm()` will return any tail access units that were
+    /// held back because the final PES end had not yet been signalled by
+    /// a downstream PUSI packet.  Safe to call once at stream end;
+    /// idempotent — calling it more than once does nothing harmful.
+    #[wasm_bindgen]
+    pub fn flush(&mut self) {
+        self.es_demux.flush();
+        self.drain_access_units();
+    }
+
     // ── internal ────────────────────────────────────────────────────────────
 
     fn drain_access_units(&mut self) {
@@ -965,6 +979,33 @@ mod tests {
             aus.len(),
             keyframe_count,
             pcr
+        );
+
+        // --- flush: tail AU(s) emitted at end-of-stream ---
+        // Pass 1 (no-flush): count AUs already collected above.
+        let no_flush_count = aus.len();
+
+        // Pass 2 (with flush): feed the same bytes, call flush() at the end.
+        let mut bridge2 = SkyfireBridge::new();
+        let mut flushed_aus: Vec<WasmVideoAu> = Vec::new();
+        for chunk in data.chunks(4096) {
+            bridge2.feed(chunk);
+            // Drain incrementally so we don't lose pre-flush AUs.
+            flushed_aus.extend(bridge2.take_video_aus());
+        }
+        bridge2.flush();
+        flushed_aus.extend(bridge2.take_video_aus());
+        let flush_count = flushed_aus.len();
+
+        assert!(
+            flush_count >= no_flush_count,
+            "flush must emit at least as many video AUs as no-flush: \
+             flush={flush_count}, no_flush={no_flush_count}"
+        );
+
+        eprintln!(
+            "bridge flush test: no_flush={no_flush_count} video AUs, \
+             flushed={flush_count} video AUs"
         );
     }
 

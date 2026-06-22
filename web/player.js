@@ -30,6 +30,7 @@ function fatal(msg, err) {
 
 const PTS_HZ = 90_000;
 const ticksToMicros = (ticks) => Number(ticks) * 1_000_000 / PTS_HZ;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── canvas (2D draw of WebCodecs VideoFrame) ────────────────────────────────
 
@@ -56,12 +57,68 @@ function drawFrame(frame) {
 // ── shared state ────────────────────────────────────────────────────────────
 
 const stats = {
-  decoded: 0, drawn: 0, w: 0, h: 0, aus: 0, path: "wc",
-  audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0,
+  decoded: 0, drawn: 0, dropped: 0, w: 0, h: 0, aus: 0, path: "wc",
+  audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0, avSkewMs: 0,
 };
 let videoDecoder = null;
 let decoderConfigured = false;
 let sawKeyframe = false;
+
+// ── audio-master A/V sync (#32) ─────────────────────────────────────────────
+//
+// Audio is the clock. Video PTS and audio PTS share the broadcaster 90 kHz
+// timeline (PCR/PTS preserved by zenith), so the position currently being heard
+// is `firstAudioPtsUs + framesPlayed / sampleRate`. A video frame is presented
+// when its timestamp reaches that clock; frames that fall too far behind are
+// dropped, frames ahead are held.
+
+const presentQueue = [];          // { frame, ts(µs) }, ascending by ts
+let firstAudioPtsUs = null;       // µs PTS of the first audio sample heard
+let audioFramesPlayed = 0;        // from the worklet clock
+let audioSampleRate = 48000;
+let presentScheduled = false;
+
+const LATE_DROP_US = 80_000;      // >80 ms behind the clock → drop
+const LEAD_US = 12_000;           // present up to ~12 ms early (one frame)
+
+function audioClockUs() {
+  if (firstAudioPtsUs === null || audioFramesPlayed === 0) return null;
+  return firstAudioPtsUs + (audioFramesPlayed / audioSampleRate) * 1_000_000;
+}
+
+function schedulePresent() {
+  if (presentScheduled) return;
+  presentScheduled = true;
+  requestAnimationFrame(present);
+}
+
+function present() {
+  presentScheduled = false;
+  const clock = audioClockUs();
+
+  // Before audio is actually playing, present at the display's pace (one frame
+  // per rAF) so video isn't frozen waiting on a clock that hasn't started.
+  if (clock === null) {
+    const e = presentQueue.shift();
+    if (e) drawFrame(e.frame);
+    if (presentQueue.length) schedulePresent();
+    return;
+  }
+
+  while (presentQueue.length) {
+    const e = presentQueue[0];
+    if (e.ts > clock + LEAD_US) break;          // ahead of the clock — hold
+    presentQueue.shift();
+    if (e.ts < clock - LATE_DROP_US) {           // too far behind — drop
+      e.frame.close();
+      stats.dropped++;
+      continue;
+    }
+    drawFrame(e.frame);
+    stats.avSkewMs = Math.round((clock - e.ts) / 1000);
+  }
+  if (presentQueue.length) schedulePresent();
+}
 
 // ── WebCodecs video decoder ─────────────────────────────────────────────────
 
@@ -71,9 +128,9 @@ function ensureDecoder(codec) {
   videoDecoder = new VideoDecoder({
     output(frame) {
       stats.decoded++;
-      // #30: present immediately (no clock yet). TODO(#32): queue + present
-      // against the audio-master PCR/PTS clock instead of drawing on output.
-      drawFrame(frame);
+      // #32: queue by PTS; the rAF present loop draws against the audio clock.
+      presentQueue.push({ frame, ts: frame.timestamp });
+      schedulePresent();
     },
     error(e) { fatal("VideoDecoder error", e); },
   });
@@ -132,11 +189,13 @@ async function ensureAudio(sampleRate, channels) {
     numberOfOutputs: 1,
     outputChannelCount: [channels],
   });
+  audioSampleRate = audioCtx.sampleRate || sampleRate;
   audioNode.port.onmessage = (e) => {
     if (e.data.type === "clock") {
-      stats.audioFrames = e.data.framesPlayed;
-      // Audio-master media time (seconds). TODO(#32): present video against this.
-      stats.audioSec = e.data.framesPlayed / (audioCtx.sampleRate || sampleRate);
+      audioFramesPlayed = e.data.framesPlayed;
+      stats.audioFrames = audioFramesPlayed;
+      stats.audioSec = audioFramesPlayed / audioSampleRate;
+      schedulePresent();   // wake the present loop on each clock tick
     }
   };
   audioNode.connect(audioCtx.destination);
@@ -157,6 +216,9 @@ async function pumpAudio() {
     if (!audioReady) {
       // eslint-disable-next-line no-await-in-loop
       await ensureAudio(c.sample_rate, c.channels);
+    }
+    if (firstAudioPtsUs === null && c.pts_ticks !== undefined) {
+      firstAudioPtsUs = ticksToMicros(c.pts_ticks);
     }
     const samples = c.samples; // Float32Array, interleaved
     stats.audioChunks++;
@@ -224,9 +286,19 @@ async function main() {
     }
     pumpVideo();
     await pumpAudio();
+
+    // Back-pressure: video presents at the audio (realtime) pace, so cap how
+    // far decode runs ahead — otherwise the whole clip's frames queue as open
+    // VideoFrames at once. (Bounded buffering is refined in #36.)
+    while (presentQueue.length > 60) {
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(40);
+    }
   }
 
-  // Stream ended — drain any tail AUs and flush the decoder.
+  // Stream ended — flush the bridge (emits the final buffered AU/PCM), drain,
+  // then flush the decoder so its reordered tail frames come out.
+  bridge.flush();
   pumpVideo();
   await pumpAudio();
   if (videoDecoder && decoderConfigured) {
