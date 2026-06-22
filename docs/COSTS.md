@@ -41,8 +41,14 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-19 | #12 wasm-bindgen expose engine | #5 | deepseek-v4-pro | ~40k | n/a¹ | 0.03 |
 | 2026-06-22 | #28 skyfire-ts demux + PSI track enum | #27 | **claude-sonnet** (Anthropic subagent) | ~100k total² | — | ~0.30² |
 | 2026-06-22 | #29 skyfire-wasm streaming bridge API | #27 | claude-sonnet (Anthropic subagent) | ~80k total² | — | ~0.24² |
+| 2026-06-22 | #30 WebCodecs video path + browser verify | #27 | orchestrator-driven (no delegate)³ | — | — | — |
+| 2026-06-22 | cleanup: remove dead SW H.264 path | — | orchestrator-driven (no delegate)³ | — | — | — |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
+
+³ Owner-directed: browser/WebCodecs work (#30) + the SW-path cleanup were driven by
+the orchestrator directly (main-loop tokens, not a separate delegated subagent), since
+the "done" bar is a live in-browser behavioural check rather than the cargo gate.
 
 ² **2026-06-22 — delegation switched from crush to Anthropic subagents**, model-tiered
 (Haiku/Sonnet for simple-moderate, Opus for hard) to spend tokens wisely; the crush
