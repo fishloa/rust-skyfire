@@ -151,6 +151,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dvb-subtitle"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66d044fe231ea3a684d8e2ad1ed3c92eba6b6ec563f3fc3f932ebd29fdecd7f6"
+dependencies = [
+ "dvb-common",
+ "thiserror",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -547,8 +557,10 @@ version = "0.0.1"
 name = "skyfire-ts"
 version = "0.0.1"
 dependencies = [
+ "dvb-common",
  "dvb-pes",
  "dvb-si",
+ "dvb-subtitle",
  "h264-reader",
  "skyfire-ac3",
 ]
@@ -557,7 +569,9 @@ dependencies = [
 name = "skyfire-wasm"
 version = "0.0.1"
 dependencies = [
+ "dvb-common",
  "dvb-si",
+ "dvb-subtitle",
  "skyfire-ac3",
  "skyfire-core",
  "skyfire-ts",

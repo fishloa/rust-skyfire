@@ -8,6 +8,7 @@
 
 pub mod h264_config;
 
+use dvb_common::Parse as _;
 use dvb_pes::{PesAssembler, PesPacket};
 use dvb_si::demux::SiDemux;
 use dvb_si::descriptors::any::AnyDescriptor;
@@ -15,6 +16,7 @@ use dvb_si::resync::TsResync;
 use dvb_si::tables::any::AnyTableSection;
 use dvb_si::tables::pat::PatSection;
 use dvb_si::tables::pmt::StreamType;
+use dvb_subtitle::{AnySegment, PesDataField};
 
 use std::collections::HashMap;
 
@@ -324,6 +326,87 @@ pub struct TimedAccessUnit {
     pub pid: u16,
     pub pts_ticks: u64,
     pub es_bytes: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Subtitle parsing (ETSI EN 300 743)
+// ---------------------------------------------------------------------------
+
+/// One parsed DVB subtitle cue, ready to surface to the browser overlay.
+///
+/// `bytes` layout (ETSI EN 300 743 PES data field, verbatim):
+/// ```text
+///   [0]     data_identifier  = 0x20
+///   [1]     subtitle_stream_id = 0x00
+///   [2..]   one or more subtitling_segments (each prefixed by sync_byte 0x0F)
+///   [last]  end_of_PES_data_field_marker = 0xFF
+/// ```
+///
+/// Parse with `dvb_subtitle::PesDataField::parse(&bytes)` to access the
+/// segment tree (page_composition, region_composition, object_data, CLUT, …).
+/// The byte layout is the standard wire format — no Skyfire-specific framing.
+///
+/// `end_pts` is derived from the `page_time_out` field in the
+/// page_composition_segment (in seconds × 90_000 ticks) added to `start_pts`.
+/// When no page_composition_segment is present, `end_pts == start_pts`
+/// (the JS layer should treat the cue as instantaneous / unknown duration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleCue {
+    /// PES PTS in 90 kHz ticks.
+    pub start_pts: u64,
+    /// Estimated end PTS = start_pts + page_time_out × 90_000.
+    /// Falls back to `start_pts` when no page_composition_segment is found.
+    pub end_pts: u64,
+    /// PID this cue came from.
+    pub pid: u16,
+    /// Raw PES data field bytes (ETSI EN 300 743, starting with data_identifier 0x20).
+    pub bytes: Vec<u8>,
+}
+
+/// Try to parse a DVB subtitle PES payload into a [`SubtitleCue`].
+///
+/// Returns `None` when:
+/// - The payload does not start with the DVB subtitle `data_identifier` (0x20),
+///   indicating this is not a subtitle PES (e.g. padding_stream on the same PID).
+/// - `dvb_subtitle::PesDataField::parse` fails (malformed PES data field).
+///
+/// `start_pts` is the PTS extracted from the PES header (90 kHz ticks).
+pub fn parse_subtitle_pes(
+    pid: u16,
+    start_pts: Option<u64>,
+    es_bytes: &[u8],
+) -> Option<SubtitleCue> {
+    // ETSI EN 300 743 §7.2: the PES payload starts with data_identifier 0x20.
+    // Any other value means this is not a DVB subtitling PES (e.g. EBU Teletext
+    // uses data_identifier 0x10, and padding_stream PES on the same PID may
+    // carry arbitrary data).
+    if es_bytes.first() != Some(&dvb_subtitle::DataIdentifier) {
+        return None;
+    }
+
+    let field = PesDataField::parse(es_bytes).ok()?;
+
+    // Extract page_time_out from the first page_composition_segment found.
+    let page_time_out_secs: Option<u8> = field.segments.iter().find_map(|seg| {
+        if let AnySegment::PageComposition(pcs) = seg {
+            Some(pcs.page_time_out)
+        } else {
+            None
+        }
+    });
+
+    let pts = start_pts.unwrap_or(0);
+    // page_time_out is in seconds; 90_000 ticks/second (ISO/IEC 13818-1 §2.7.4).
+    let end_pts = page_time_out_secs
+        .map(|t| pts.saturating_add(u64::from(t) * 90_000))
+        .unwrap_or(pts);
+
+    Some(SubtitleCue {
+        start_pts: pts,
+        end_pts,
+        pid,
+        bytes: es_bytes.to_vec(),
+    })
 }
 
 // ---------------------------------------------------------------------------

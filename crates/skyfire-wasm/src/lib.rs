@@ -298,8 +298,8 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 use dvb_si::resync::TsResync as BridgeTsResync;
 use skyfire_ac3::IncrementalDecoder;
 use skyfire_ts::{
-    AudioCodec as TsAudioCodec, ChannelMap, EsDemux, SubtitleKind as TsSubtitleKind,
-    VideoCodec as TsVideoCodec,
+    parse_subtitle_pes, AudioCodec as TsAudioCodec, ChannelMap, EsDemux,
+    SubtitleKind as TsSubtitleKind, VideoCodec as TsVideoCodec,
 };
 
 /// Track-list produced once the first PMT has been parsed.
@@ -398,16 +398,31 @@ impl WasmPcmChunk {
     }
 }
 
-/// Scaffold: subtitle cue — produced in issue #34.
+/// One DVB subtitle cue (issue #34), ready for the JS overlay renderer.
+///
+/// `bytes` is the verbatim ETSI EN 300 743 PES data field (starting with
+/// `data_identifier` = 0x20):
+///
+/// ```text
+///   [0]     data_identifier  = 0x20
+///   [1]     subtitle_stream_id = 0x00
+///   [2..]   subtitling_segments, each prefixed by sync_byte 0x0F:
+///             sync_byte(1) + segment_type(1) + page_id(2) + segment_length(2) + body
+///   [last]  end_of_PES_data_field_marker = 0xFF
+/// ```
+///
+/// Parse on the JS side with the `dvb-subtitle` WASM binding or a JS port.
+/// `end_pts` is derived from `page_time_out` × 90_000 ticks; it falls back to
+/// `start_pts` when no `page_composition_segment` is present in the data field.
 #[wasm_bindgen]
 pub struct WasmSubtitleCue {
-    /// Cue start PTS in 90 kHz ticks.
+    /// Cue start PTS in 90 kHz ticks (from the subtitle PES header).
     pub start_pts: u64,
-    /// Cue end PTS in 90 kHz ticks.
+    /// Estimated end PTS in 90 kHz ticks (start_pts + page_time_out × 90_000).
     pub end_pts: u64,
     /// PID this cue came from.
     pub pid: u16,
-    /// Raw subtitle payload bytes.
+    /// Raw ETSI EN 300 743 PES data field bytes (see type-level doc for layout).
     #[wasm_bindgen(getter_with_clone)]
     pub bytes: Vec<u8>,
 }
@@ -450,6 +465,9 @@ pub struct SkyfireBridge {
     // Decoded PCM chunks pending drain by `take_audio_pcm`.
     audio_pcm_pending: Vec<WasmPcmChunk>,
 
+    // Subtitle cues pending drain by `take_subtitle_cues`.
+    subtitle_cues_pending: Vec<WasmSubtitleCue>,
+
     // Latest PCR / PTS seen (90 kHz ticks).
     latest_pts: Option<i64>,
 }
@@ -472,6 +490,7 @@ impl SkyfireBridge {
             video_aus: Vec::new(),
             audio_decoder: IncrementalDecoder::new(),
             audio_pcm_pending: Vec::new(),
+            subtitle_cues_pending: Vec::new(),
             latest_pts: None,
         }
     }
@@ -535,8 +554,14 @@ impl SkyfireBridge {
     }
 
     /// Select a subtitle PID, or `None` to disable subtitles.
+    ///
+    /// Calling this clears any buffered subtitle cues from the previously
+    /// selected PID (or disables subtitle output when `pid` is `None`).
     #[wasm_bindgen]
     pub fn select_subtitle(&mut self, pid: Option<u16>) {
+        if self.selected_subtitle_pid != pid {
+            self.subtitle_cues_pending.clear();
+        }
         self.selected_subtitle_pid = pid;
     }
 
@@ -617,10 +642,26 @@ impl SkyfireBridge {
         std::mem::take(&mut self.audio_pcm_pending)
     }
 
-    /// Scaffold: returns an empty `Vec` until issue #34 implements subtitle parsing.
+    /// Drain all subtitle cues parsed since the last call.
+    ///
+    /// Each cue corresponds to one DVB subtitle display-set from the selected
+    /// subtitle PID.  `bytes` is the raw ETSI EN 300 743 PES data field
+    /// (see [`WasmSubtitleCue`] for the byte layout).
+    ///
+    /// Returns an empty `Vec` when no subtitle PID is selected
+    /// (`select_subtitle(None)`) or when the selected PID carries no subtitle
+    /// PES packets in the fed data (e.g. a fixture without subtitle tracks).
+    ///
+    /// # Browser verification
+    ///
+    /// End-to-end rendering (JS overlay consuming `bytes`) requires a DVB-subtitle
+    /// capture that is not available in the current fixture set.  The parse path
+    /// is unit-tested with a hand-built minimal segment; see
+    /// `skyfire_ts::parse_subtitle_pes` and the `parse_subtitle_cue_minimal`
+    /// test below.
     #[wasm_bindgen]
     pub fn take_subtitle_cues(&mut self) -> Vec<WasmSubtitleCue> {
-        Vec::new()
+        std::mem::take(&mut self.subtitle_cues_pending)
     }
 
     /// Latest PCR-derived clock value in 90 kHz ticks.
@@ -659,6 +700,7 @@ impl SkyfireBridge {
 
         let video_pid = self.channel.as_ref().map(|ch| ch.video_pid);
         let audio_pid = self.selected_audio_pid;
+        let subtitle_pid = self.selected_subtitle_pid;
 
         for au in units {
             // Update latest PTS clock from video or selected-audio PID.
@@ -705,6 +747,18 @@ impl SkyfireBridge {
                     Err(_) => {
                         // Decode error — skip this AU, keep state for next one.
                     }
+                }
+            } else if Some(au.pid) == subtitle_pid {
+                // DVB subtitle PES: parse with dvb-subtitle (ETSI EN 300 743).
+                // Non-subtitle PES on the same PID (e.g. padding_stream) are
+                // silently dropped by parse_subtitle_pes when data_identifier ≠ 0x20.
+                if let Some(cue) = parse_subtitle_pes(au.pid, au.pts_ticks, &au.es_bytes) {
+                    self.subtitle_cues_pending.push(WasmSubtitleCue {
+                        start_pts: cue.start_pts,
+                        end_pts: cue.end_pts,
+                        pid: cue.pid,
+                        bytes: cue.bytes,
+                    });
                 }
             }
         }
@@ -967,11 +1021,12 @@ mod tests {
             "take_audio_pcm must be non-empty after feeding audio data"
         );
 
-        // --- subtitle scaffold ---
+        // --- subtitle: gulli-15s.ts has no subtitle PID → empty, no panics ---
+        // (No subtitle PID is selected; take_subtitle_cues must be empty.)
         let subs = bridge.take_subtitle_cues();
         assert!(
             subs.is_empty(),
-            "take_subtitle_cues must be empty (scaffold)"
+            "take_subtitle_cues must be empty for gulli-15s.ts (no subtitle PID)"
         );
 
         eprintln!(
@@ -1006,6 +1061,144 @@ mod tests {
         eprintln!(
             "bridge flush test: no_flush={no_flush_count} video AUs, \
              flushed={flush_count} video AUs"
+        );
+    }
+
+    // ── subtitle tests (issue #34) ─────────────────────────────────────────
+
+    /// Parse a hand-built minimal DVB subtitle PES payload (ETSI EN 300 743)
+    /// through `skyfire_ts::parse_subtitle_pes` and assert a cue is produced
+    /// with the expected PTS and end_pts.
+    ///
+    /// The payload is a single display-set: DDS (display_definition) + PCS
+    /// (page_composition, page_time_out = 5 s) + EDS (end_of_display_set).
+    /// Mirrors the bytes used in `dvb-subtitle`'s own `parse_full_pes` example.
+    ///
+    /// NOTE: end-to-end browser rendering needs a real DVB-subtitle capture
+    /// (not available in the fixture set); this test verifies the parse path only.
+    #[test]
+    fn parse_subtitle_cue_minimal() {
+        use skyfire_ts::parse_subtitle_pes;
+
+        // Hand-built PES data field (ETSI EN 300 743):
+        //   data_identifier = 0x20
+        //   subtitle_stream_id = 0x00
+        //   DDS: display 720×288 (segment_type 0x14)
+        //   PCS: page_time_out = 5 s, acquisition state (segment_type 0x10)
+        //   EDS: end_of_display_set (segment_type 0x80)
+        //   end_marker = 0xFF
+        #[rustfmt::skip]
+        let payload: &[u8] = &[
+            0x20, 0x00,                               // data_identifier + subtitle_stream_id
+            0x0F, 0x14, 0x00, 0x01, 0x00, 0x05,      // DDS header (seg_len=5)
+            0x30, 0x02, 0xCF, 0x01, 0x1F,             // DDS body: version=3, 720×288
+            0x0F, 0x10, 0x00, 0x01, 0x00, 0x08,      // PCS header (seg_len=8)
+            0x05, 0x04,                               // page_time_out=5, state=acquisition
+            0x01, 0x00, 0x00, 0x64, 0x00, 0x32,      // region_id=1 @ (100, 50)
+            0x0F, 0x80, 0x00, 0x01, 0x00, 0x00,      // EDS header (seg_len=0)
+            0xFF,                                     // end_of_PES_data_field_marker
+        ];
+
+        let start_pts: u64 = 900_000; // arbitrary 10 s at 90 kHz
+        let cue = parse_subtitle_pes(0x0042, Some(start_pts), payload)
+            .expect("must parse a valid DVB subtitle PES payload");
+
+        assert_eq!(cue.pid, 0x0042, "PID must be round-tripped");
+        assert_eq!(cue.start_pts, start_pts, "start_pts must match PES PTS");
+        // page_time_out = 5 s → end_pts = 900_000 + 5 × 90_000 = 1_350_000
+        assert_eq!(
+            cue.end_pts,
+            start_pts + 5 * 90_000,
+            "end_pts must be start_pts + page_time_out × 90_000"
+        );
+        // bytes must be the verbatim payload (ETSI EN 300 743 PES data field)
+        assert_eq!(
+            cue.bytes, payload,
+            "bytes must be the verbatim PES data field"
+        );
+
+        // Sanity: dvb-subtitle can round-trip the bytes we emitted.
+        {
+            use dvb_common::Parse as _;
+            use dvb_subtitle::{AnySegment, PesDataField};
+            let field = PesDataField::parse(&cue.bytes).expect("round-trip parse must succeed");
+            assert_eq!(
+                field.segments.len(),
+                3,
+                "must have 3 segments (DDS+PCS+EDS)"
+            );
+            assert!(
+                field
+                    .segments
+                    .iter()
+                    .any(|s| matches!(s, AnySegment::PageComposition(_))),
+                "must contain a PAGE_COMPOSITION segment"
+            );
+            assert!(
+                field
+                    .segments
+                    .iter()
+                    .any(|s| matches!(s, AnySegment::EndOfDisplaySet(_))),
+                "must contain an END_OF_DISPLAY_SET segment"
+            );
+        }
+
+        eprintln!(
+            "parse_subtitle_cue_minimal: start_pts={}, end_pts={}, bytes={}",
+            cue.start_pts,
+            cue.end_pts,
+            cue.bytes.len()
+        );
+    }
+
+    /// Non-subtitle PES payload (no data_identifier 0x20) must return None.
+    #[test]
+    fn parse_subtitle_cue_non_subtitle_pes_returns_none() {
+        use skyfire_ts::parse_subtitle_pes;
+        // A minimal PES payload that starts with 0x00 (not 0x20) — e.g. a
+        // padding_stream PES multiplexed on the same PID as a subtitle PID.
+        let non_subtitle_payload: &[u8] = &[0x00, 0xBE, 0x01, 0x02, 0x03];
+        let result = parse_subtitle_pes(0x0042, Some(100_000), non_subtitle_payload);
+        assert!(result.is_none(), "non-subtitle PES must return None");
+    }
+
+    /// Bridge: gulli-15s.ts has no subtitle PID — feed data, assert:
+    /// - `track_list().subtitles` is empty.
+    /// - `take_subtitle_cues()` is empty after feeding all data.
+    /// - No panics.
+    #[test]
+    fn bridge_subtitle_no_subs_gulli_15s() {
+        let data = load_fixture("gulli-15s.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+        bridge.flush();
+
+        // No subtitle tracks in this fixture.
+        let tl = bridge.track_list().expect("track_list must be Some");
+        assert!(
+            tl.subtitles.is_empty(),
+            "gulli-15s.ts must have no subtitle tracks, got {:?}",
+            tl.subtitles.iter().map(|s| s.pid).collect::<Vec<_>>()
+        );
+
+        // Even if a subtitle PID is "selected" pointing at a non-subtitle PID,
+        // take_subtitle_cues must be empty and must not panic.
+        bridge.select_subtitle(Some(0x0101)); // audio PID — not a subtitle PES
+        let cues = bridge.take_subtitle_cues();
+        assert!(
+            cues.is_empty(),
+            "take_subtitle_cues must be empty when selected PID has no subtitle data"
+        );
+
+        // Disable subtitles: cue queue must remain empty.
+        bridge.select_subtitle(None);
+        let cues = bridge.take_subtitle_cues();
+        assert!(
+            cues.is_empty(),
+            "take_subtitle_cues must be empty after select_subtitle(None)"
         );
     }
 
