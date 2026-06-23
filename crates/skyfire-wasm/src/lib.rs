@@ -22,7 +22,7 @@ pub struct ProbeResult {
     pub video_codec: String,
     /// PIDs of audio elementary streams (at least one for DVB).
     audio_pids: Vec<u16>,
-    /// Audio codec identifiers, parallel to `audio_pids`: `"EAc3"` or `"Ac3"`.
+    /// Audio codec identifiers, parallel to `audio_pids`: `"EAc3"`, `"Ac3"`, or `"Mp2"`.
     audio_codecs: Vec<String>,
 }
 
@@ -139,6 +139,7 @@ impl WasmEngine {
             let ac = match codec_str.as_str() {
                 "EAc3" | "AC3" => skyfire_core::ts::AudioCodec::EAc3,
                 "Ac3" => skyfire_core::ts::AudioCodec::Ac3,
+                "Mp2" => skyfire_core::ts::AudioCodec::Mp2,
                 _ => skyfire_core::ts::AudioCodec::EAc3,
             };
             streams.push(skyfire_core::ts::AudioStream {
@@ -285,6 +286,7 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
     match c {
         skyfire_core::ts::AudioCodec::Ac3 => "Ac3",
         skyfire_core::ts::AudioCodec::EAc3 => "EAc3",
+        skyfire_core::ts::AudioCodec::Mp2 => "Mp2",
     }
 }
 
@@ -297,6 +299,7 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 
 use dvb_si::resync::TsResync as BridgeTsResync;
 use skyfire_ac3::IncrementalDecoder;
+use skyfire_mpa::IncrementalMpaDecoder;
 use skyfire_ts::{
     parse_subtitle_pes, AudioCodec as TsAudioCodec, ChannelMap, EsDemux,
     SubtitleKind as TsSubtitleKind, VideoCodec as TsVideoCodec,
@@ -324,7 +327,7 @@ pub struct WasmTrackList {
 pub struct WasmAudioTrack {
     /// PID.
     pub pid: u16,
-    /// `"AC3"` or `"EAC3"`.
+    /// `"AC3"`, `"EAC3"`, or `"MP2"`.
     #[wasm_bindgen(getter_with_clone)]
     pub codec: String,
     /// ISO 639-2 language (3 chars), or `None`.
@@ -462,6 +465,9 @@ pub struct SkyfireBridge {
     // Incremental E-AC-3/AC-3 decoder — holds IMDCT state across AU boundaries.
     audio_decoder: IncrementalDecoder,
 
+    // Incremental MPEG-1/2 Layer II decoder.
+    mpa_decoder: IncrementalMpaDecoder,
+
     // Decoded PCM chunks pending drain by `take_audio_pcm`.
     audio_pcm_pending: Vec<WasmPcmChunk>,
 
@@ -489,6 +495,7 @@ impl SkyfireBridge {
             playing: false,
             video_aus: Vec::new(),
             audio_decoder: IncrementalDecoder::new(),
+            mpa_decoder: IncrementalMpaDecoder::new(),
             audio_pcm_pending: Vec::new(),
             subtitle_cues_pending: Vec::new(),
             latest_pts: None,
@@ -543,12 +550,14 @@ impl SkyfireBridge {
 
     /// Select which audio PID to route and decode.
     ///
-    /// If the PID changes, the AC-3/E-AC-3 decoder state is reset so the new
-    /// stream decodes cleanly (PTS continuity is handled in issue #33).
+    /// If the PID changes, the AC-3/E-AC-3 and MPEG audio decoder states are
+    /// reset so the new stream decodes cleanly (PTS continuity is handled in
+    /// issue #33).
     #[wasm_bindgen]
     pub fn select_audio(&mut self, pid: u16) {
         if self.selected_audio_pid != Some(pid) {
             self.audio_decoder.reset();
+            self.mpa_decoder.reset();
         }
         self.selected_audio_pid = Some(pid);
     }
@@ -702,6 +711,14 @@ impl SkyfireBridge {
         let audio_pid = self.selected_audio_pid;
         let subtitle_pid = self.selected_subtitle_pid;
 
+        // Look up the codec for the selected audio PID.
+        let audio_codec = audio_pid.and_then(|pid| {
+            self.channel
+                .as_ref()
+                .and_then(|ch| ch.audio_streams.iter().find(|s| s.pid == pid))
+                .map(|s| s.codec)
+        });
+
         for au in units {
             // Update latest PTS clock from video or selected-audio PID.
             if Some(au.pid) == video_pid || Some(au.pid) == audio_pid {
@@ -719,33 +736,51 @@ impl SkyfireBridge {
                     bytes: au.es_bytes,
                 });
             } else if Some(au.pid) == audio_pid {
-                // Decode this audio AU incrementally via the persistent E-AC-3 state.
                 let pts_ticks = au.pts_ticks;
-                match self.audio_decoder.decode_au(&au.es_bytes) {
-                    Ok(Some(decoded)) => {
-                        if decoded.sample_rate > 0 && decoded.channels > 0 {
-                            // Convert S16LE → f32 interleaved (WebAudio wants f32).
-                            let samples_f32: Vec<f32> = decoded
-                                .pcm_s16le
-                                .chunks_exact(2)
-                                .map(|b| {
-                                    let s = i16::from_le_bytes([b[0], b[1]]);
-                                    f32::from(s) / 32_768.0_f32
-                                })
-                                .collect();
-                            self.audio_pcm_pending.push(WasmPcmChunk {
-                                pts_ticks,
-                                sample_rate: decoded.sample_rate,
-                                channels: decoded.channels,
-                                samples: samples_f32,
-                            });
-                        }
+                // Route to the appropriate decoder based on codec.
+                match audio_codec {
+                    Some(TsAudioCodec::Mp2) => {
+                        let _ = self.mpa_decoder.decode_au(&au.es_bytes).map(|opt| {
+                            if let Some(decoded) = opt {
+                                let samples_f32: Vec<f32> = decoded
+                                    .pcm_s16le
+                                    .chunks_exact(2)
+                                    .map(|b| {
+                                        let s = i16::from_le_bytes([b[0], b[1]]);
+                                        f32::from(s) / 32_768.0_f32
+                                    })
+                                    .collect();
+                                self.audio_pcm_pending.push(WasmPcmChunk {
+                                    pts_ticks,
+                                    sample_rate: decoded.sample_rate,
+                                    channels: decoded.channels,
+                                    samples: samples_f32,
+                                });
+                            }
+                        });
                     }
-                    Ok(None) => {
-                        // No syncframes found in this AU — skip silently.
-                    }
-                    Err(_) => {
-                        // Decode error — skip this AU, keep state for next one.
+                    _ => {
+                        // Default to AC-3/E-AC-3 decoder.
+                        let _ = self.audio_decoder.decode_au(&au.es_bytes).map(|opt| {
+                            if let Some(decoded) = opt {
+                                if decoded.sample_rate > 0 && decoded.channels > 0 {
+                                    let samples_f32: Vec<f32> = decoded
+                                        .pcm_s16le
+                                        .chunks_exact(2)
+                                        .map(|b| {
+                                            let s = i16::from_le_bytes([b[0], b[1]]);
+                                            f32::from(s) / 32_768.0_f32
+                                        })
+                                        .collect();
+                                    self.audio_pcm_pending.push(WasmPcmChunk {
+                                        pts_ticks,
+                                        sample_rate: decoded.sample_rate,
+                                        channels: decoded.channels,
+                                        samples: samples_f32,
+                                    });
+                                }
+                            }
+                        });
                     }
                 }
             } else if Some(au.pid) == subtitle_pid {
@@ -832,6 +867,7 @@ fn bridge_audio_codec_str(c: TsAudioCodec) -> &'static str {
     match c {
         TsAudioCodec::Ac3 => "AC3",
         TsAudioCodec::EAc3 => "EAC3",
+        TsAudioCodec::Mp2 => "MP2",
     }
 }
 
@@ -1283,6 +1319,78 @@ mod tests {
             total_samples,
             non_zero,
             with_pts,
+        );
+    }
+
+    // ── mp2 / SkyfireBridge tests ────────────────────────────────────────
+
+    /// Feed the mp2-tone.ts fixture (H.264 video + MP2 audio) through
+    /// `SkyfireBridge` and verify:
+    /// - `track_list()` shows `"MP2"` audio codec.
+    /// - PCM chunks are non-empty.
+    /// - `sample_rate == 48000`, `channels == 2`.
+    /// - Substantial sample count; not all-silence (440 Hz tone is strongly non-zero).
+    #[test]
+    fn bridge_mp2_tone() {
+        let data = load_fixture("mp2-tone.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+        bridge.flush();
+
+        // --- track_list ---
+        let tl = bridge
+            .track_list()
+            .expect("track_list must be Some after feeding mp2-tone.ts");
+
+        assert_eq!(tl.video_pid, 0x0100, "video PID must be 0x0100");
+        assert_eq!(tl.video_codec, "H264", "video codec must be H264");
+
+        assert_eq!(tl.audio.len(), 1, "must have exactly one audio track");
+        let audio = &tl.audio[0];
+        assert_eq!(audio.pid, 0x0101, "audio PID must be 0x0101");
+        assert_eq!(audio.codec, "MP2", "audio codec must be MP2");
+
+        // Select the audio PID (default should already be audio[0]).
+        bridge.select_audio(0x0101);
+
+        // --- video AUs ---
+        let aus = bridge.take_video_aus();
+        assert!(!aus.is_empty(), "take_video_aus must return non-empty set");
+
+        // --- PCM ---
+        let pcm = bridge.take_audio_pcm();
+        assert!(!pcm.is_empty(), "take_audio_pcm must be non-empty");
+
+        let mut total_samples: usize = 0;
+        let mut non_zero: usize = 0;
+        for chunk in &pcm {
+            assert_eq!(chunk.sample_rate, 48000, "sample_rate must be 48 kHz");
+            assert_eq!(chunk.channels, 2, "channels must be 2 (stereo)");
+            total_samples += chunk.samples.len();
+            for &s in &chunk.samples {
+                if s != 0.0_f32 {
+                    non_zero += 1;
+                }
+            }
+        }
+
+        assert!(
+            total_samples > 1000,
+            "must have >1000 interleaved f32 samples, got {total_samples}"
+        );
+        assert!(
+            non_zero > total_samples / 100,
+            "PCM must not be all-silence (440 Hz tone): only {non_zero}/{total_samples} non-zero"
+        );
+
+        eprintln!(
+            "bridge_mp2_tone: {} chunks, {} total f32 samples, {} non-zero",
+            pcm.len(),
+            total_samples,
+            non_zero,
         );
     }
 }

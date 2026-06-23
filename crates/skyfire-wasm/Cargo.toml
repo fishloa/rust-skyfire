@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 skyfire-core.workspace = true
 skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
+skyfire-mpa.workspace = true
 dvb-common = "7.9"
 dvb-si = "7.9"
 dvb-subtitle = "0.1"

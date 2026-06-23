@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/skyfire-ts",
     "crates/skyfire-ac3",
+    "crates/skyfire-mpa",
     "crates/skyfire-sync",
     "crates/skyfire-core",
     "crates/skyfire-wasm",
@@ -23,5 +24,6 @@ repository = "https://github.com/fishloa/rust-skyfire"
 thiserror = "2"
 skyfire-ts = { path = "crates/skyfire-ts" }
 skyfire-ac3 = { path = "crates/skyfire-ac3" }
+skyfire-mpa = { path = "crates/skyfire-mpa" }
 skyfire-sync = { path = "crates/skyfire-sync" }
 skyfire-core = { path = "crates/skyfire-core" }

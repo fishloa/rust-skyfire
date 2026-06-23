@@ -41,6 +41,8 @@ pub enum VideoCodec {
 pub enum AudioCodec {
     Ac3,
     EAc3,
+    /// MPEG-1/2 Layer II audio (stream_type 0x03/0x04, DVB-SD).
+    Mp2,
 }
 
 /// One audio elementary stream.
@@ -258,6 +260,14 @@ fn audio_codec_from_stream_type(
     st: StreamType,
     es_info: &dvb_si::descriptors::any::DescriptorLoop<'_>,
 ) -> Option<AudioCodec> {
+    // MPEG-1/2 audio (DVB-SD): stream_type 0x03 = MPEG-1 audio,
+    // 0x04 = MPEG-2 audio — both are MPEG-1/2 Layer II.
+    match st {
+        StreamType::Mpeg1Audio => return Some(AudioCodec::Mp2),
+        StreamType::Mpeg2Audio => return Some(AudioCodec::Mp2),
+        _ => {}
+    }
+
     // Direct stream-type mappings (ATSC A/52, ETSI TS 102 366):
     match st {
         StreamType::Ac3 => return Some(AudioCodec::Ac3),
