@@ -409,9 +409,9 @@ impl WasmPcmChunk {
 #[wasm_bindgen]
 pub struct WasmSubtitleCue {
     /// Cue start PTS in 90 kHz ticks (from the subtitle PES header).
-    pub start_pts: u64,
+    start_pts: u64,
     /// Estimated end PTS in 90 kHz ticks (start_pts + page_time_out x 90_000).
-    pub end_pts: u64,
+    end_pts: u64,
     regions: Vec<WasmSubtitleRegion>,
 }
 
