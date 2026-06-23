@@ -48,6 +48,7 @@ function drawFrame(frame) {
     stats.drawn++;
     stats.w = frame.displayWidth;
     stats.h = frame.displayHeight;
+    lastVideoTs = frame.timestamp;
     window.__sfStats = { ...stats };
   } finally {
     frame.close();
@@ -101,7 +102,8 @@ function present() {
   if (clock === null) {
     const e = presentQueue.shift();
     if (e) drawFrame(e.frame);
-    if (presentQueue.length) schedulePresent();
+    renderSubs(lastVideoTs || null);
+    if (presentQueue.length || subQueue.length) schedulePresent();
     return;
   }
 
@@ -117,7 +119,65 @@ function present() {
     drawFrame(e.frame);
     stats.avSkewMs = Math.round((clock - e.ts) / 1000);
   }
-  if (presentQueue.length) schedulePresent();
+  renderSubs(clock);
+  if (presentQueue.length || subQueue.length) schedulePresent();
+}
+
+// ── DVB subtitle overlay (#34/#35) ──────────────────────────────────────────
+// WASM composites EN 300 743 → RGBA regions; here we only place them (pure blit).
+
+let lastVideoTs = 0;          // µs, fallback clock before audio starts
+const subQueue = [];          // { startUs, endUs, key, regions:[{x,y,width,height,rgba}] }
+let subCtx = null;            // 2D ctx of the overlay canvas
+let shownSubKey = null;       // identity of the cue currently drawn
+
+function ensureSubsCanvas() {
+  if (subCtx) {
+    if (subCtx.canvas.width !== (canvas.width || 1920) ||
+        subCtx.canvas.height !== (canvas.height || 1080)) {
+      subCtx.canvas.width = canvas.width || 1920;
+      subCtx.canvas.height = canvas.height || 1080;
+      shownSubKey = null;     // size changed → force redraw
+    }
+    return subCtx;
+  }
+  const c = document.createElement("canvas");
+  c.width = canvas.width || 1920;
+  c.height = canvas.height || 1080;
+  subsEl.replaceChildren(c);
+  subCtx = c.getContext("2d");
+  return subCtx;
+}
+
+function clearSubs() {
+  if (subCtx) subCtx.clearRect(0, 0, subCtx.canvas.width, subCtx.canvas.height);
+  shownSubKey = null;
+}
+
+// Region x/y are in the subtitle display space; v1 assumes it matches the video
+// frame (HD DVB-sub is authored at video resolution). TODO: scale by the
+// display_definition dims for SD (720×576) sources.
+function drawSubCue(cue) {
+  const cx = ensureSubsCanvas();
+  cx.clearRect(0, 0, cx.canvas.width, cx.canvas.height);
+  for (const r of cue.regions) {
+    if (!r.rgba || !r.width || !r.height) continue;
+    cx.putImageData(new ImageData(new Uint8ClampedArray(r.rgba), r.width, r.height), r.x, r.y);
+  }
+}
+
+function renderSubs(clockUs) {
+  if (clockUs == null) return;
+  while (subQueue.length && subQueue[0].endUs <= clockUs) {
+    if (shownSubKey === subQueue[0].key) clearSubs();
+    subQueue.shift();
+  }
+  const active = subQueue.find((c) => c.startUs <= clockUs && clockUs < c.endUs);
+  if (active) {
+    if (shownSubKey !== active.key) { drawSubCue(active); shownSubKey = active.key; }
+  } else if (shownSubKey !== null) {
+    clearSubs();
+  }
 }
 
 // ── WebCodecs video decoder ─────────────────────────────────────────────────
@@ -301,15 +361,32 @@ function wireControls() {
   });
 }
 
-// Drain parsed subtitle cues into the overlay. The cue bitmap layout is defined
-// by the bridge (#34); render is finalised once that lands.
+// Drain composited subtitle cues from the bridge into subQueue. The bridge has
+// already turned EN 300 743 into RGBA regions — we just snapshot them into plain
+// JS (copying out of WASM) and free the wasm objects.
 function pumpSubtitles() {
   if (!bridge.take_subtitle_cues) return;
+  let added = false;
   for (const cue of bridge.take_subtitle_cues()) {
+    const start = Number(cue.start_pts);
+    const end = Number(cue.end_pts);
+    const regions = cue.regions.map((r) => {
+      const o = { x: r.x, y: r.y, width: r.width, height: r.height, rgba: r.rgba };
+      r.free?.();
+      return o;
+    });
+    subQueue.push({
+      startUs: ticksToMicros(start),
+      // guard: page_time_out 0 / fallback (end==start) → show ~3 s so it's visible
+      endUs: ticksToMicros(end > start ? end : start + 3 * PTS_HZ),
+      key: `${start}:${regions.length}`,
+      regions,
+    });
     stats.subCues = (stats.subCues || 0) + 1;
-    // TODO(#34 render): decode cue.bytes → bitmap region → draw into #subs.
+    added = true;
     cue.free?.();
   }
+  if (added) schedulePresent();
 }
 
 // ── bridge + stream ─────────────────────────────────────────────────────────
