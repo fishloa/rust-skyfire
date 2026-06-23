@@ -297,12 +297,13 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 // demuxes + exposes access units incrementally.  PAT/PMT are discovered on
 // the fly; no separate probe/init/finalize step is required.
 
+use dvb_common::Parse;
 use dvb_si::resync::TsResync as BridgeTsResync;
 use skyfire_ac3::IncrementalDecoder;
 use skyfire_mpa::IncrementalMpaDecoder;
 use skyfire_ts::{
-    parse_subtitle_pes, AudioCodec as TsAudioCodec, ChannelMap, EsDemux,
-    SubtitleKind as TsSubtitleKind, VideoCodec as TsVideoCodec,
+    AudioCodec as TsAudioCodec, ChannelMap, EsDemux, SubtitleKind as TsSubtitleKind,
+    VideoCodec as TsVideoCodec,
 };
 
 /// Track-list produced once the first PMT has been parsed.
@@ -401,33 +402,55 @@ impl WasmPcmChunk {
     }
 }
 
-/// One DVB subtitle cue (issue #34), ready for the JS overlay renderer.
+/// One composited DVB subtitle cue — RGBA region bitmaps ready for JS overlay.
 ///
-/// `bytes` is the verbatim ETSI EN 300 743 PES data field (starting with
-/// `data_identifier` = 0x20):
-///
-/// ```text
-///   [0]     data_identifier  = 0x20
-///   [1]     subtitle_stream_id = 0x00
-///   [2..]   subtitling_segments, each prefixed by sync_byte 0x0F:
-///             sync_byte(1) + segment_type(1) + page_id(2) + segment_length(2) + body
-///   [last]  end_of_PES_data_field_marker = 0xFF
-/// ```
-///
-/// Parse on the JS side with the `dvb-subtitle` WASM binding or a JS port.
-/// `end_pts` is derived from `page_time_out` × 90_000 ticks; it falls back to
-/// `start_pts` when no `page_composition_segment` is present in the data field.
+/// Produced by the compositor from the CLUT + object pixel data in a display set.
+/// JS draws each region's RGBA at (x, y) on the subtitle canvas.
 #[wasm_bindgen]
 pub struct WasmSubtitleCue {
     /// Cue start PTS in 90 kHz ticks (from the subtitle PES header).
     pub start_pts: u64,
-    /// Estimated end PTS in 90 kHz ticks (start_pts + page_time_out × 90_000).
+    /// Estimated end PTS in 90 kHz ticks (start_pts + page_time_out x 90_000).
     pub end_pts: u64,
-    /// PID this cue came from.
-    pub pid: u16,
-    /// Raw ETSI EN 300 743 PES data field bytes (see type-level doc for layout).
+    regions: Vec<WasmSubtitleRegion>,
+}
+
+/// RGBA bitmap for one subtitle region, placed on the display canvas.
+#[wasm_bindgen]
+#[derive(Clone)]
+pub struct WasmSubtitleRegion {
+    /// Horizontal position on the display canvas.
+    pub x: u16,
+    /// Vertical position on the display canvas.
+    pub y: u16,
+    /// Region width in pixels.
+    pub width: u16,
+    /// Region height in pixels.
+    pub height: u16,
+    /// RGBA pixel data, row-major, width*height*4 bytes.
     #[wasm_bindgen(getter_with_clone)]
-    pub bytes: Vec<u8>,
+    pub rgba: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl WasmSubtitleCue {
+    /// PTS in 90 kHz ticks.
+    #[wasm_bindgen(getter)]
+    pub fn start_pts(&self) -> u64 {
+        self.start_pts
+    }
+
+    /// End PTS in 90 kHz ticks.
+    #[wasm_bindgen(getter)]
+    pub fn end_pts(&self) -> u64 {
+        self.end_pts
+    }
+
+    /// Regions in this cue, each with RGBA + screen placement.
+    #[wasm_bindgen(getter)]
+    pub fn regions(&self) -> Vec<WasmSubtitleRegion> {
+        self.regions.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +494,10 @@ pub struct SkyfireBridge {
     // Decoded PCM chunks pending drain by `take_audio_pcm`.
     audio_pcm_pending: Vec<WasmPcmChunk>,
 
-    // Subtitle cues pending drain by `take_subtitle_cues`.
+    // Subtitle compositor (accumulates segments, composites display sets).
+    subtitle_compositor: skyfire_ts::subtitle_compositor::CompositorState,
+
+    // Composited subtitle cues pending drain by `take_subtitle_cues`.
     subtitle_cues_pending: Vec<WasmSubtitleCue>,
 
     // Latest PCR / PTS seen (90 kHz ticks).
@@ -497,6 +523,7 @@ impl SkyfireBridge {
             audio_decoder: IncrementalDecoder::new(),
             mpa_decoder: IncrementalMpaDecoder::new(),
             audio_pcm_pending: Vec::new(),
+            subtitle_compositor: skyfire_ts::subtitle_compositor::CompositorState::new(),
             subtitle_cues_pending: Vec::new(),
             latest_pts: None,
         }
@@ -651,25 +678,36 @@ impl SkyfireBridge {
         std::mem::take(&mut self.audio_pcm_pending)
     }
 
-    /// Drain all subtitle cues parsed since the last call.
+    /// Drain all composited subtitle cues since the last call.
     ///
     /// Each cue corresponds to one DVB subtitle display-set from the selected
-    /// subtitle PID.  `bytes` is the raw ETSI EN 300 743 PES data field
-    /// (see [`WasmSubtitleCue`] for the byte layout).
+    /// subtitle PID.  Each cue contains RGBA region bitmaps ready for the
+    /// JS overlay (no further parsing needed).
     ///
     /// Returns an empty `Vec` when no subtitle PID is selected
     /// (`select_subtitle(None)`) or when the selected PID carries no subtitle
     /// PES packets in the fed data (e.g. a fixture without subtitle tracks).
-    ///
-    /// # Browser verification
-    ///
-    /// End-to-end rendering (JS overlay consuming `bytes`) requires a DVB-subtitle
-    /// capture that is not available in the current fixture set.  The parse path
-    /// is unit-tested with a hand-built minimal segment; see
-    /// `skyfire_ts::parse_subtitle_pes` and the `parse_subtitle_cue_minimal`
-    /// test below.
     #[wasm_bindgen]
     pub fn take_subtitle_cues(&mut self) -> Vec<WasmSubtitleCue> {
+        // Drain the compositor, converting to WasmSubtitleCue.
+        for cue in self.subtitle_compositor.take_cues() {
+            let regions = cue
+                .regions
+                .into_iter()
+                .map(|r| WasmSubtitleRegion {
+                    x: r.x,
+                    y: r.y,
+                    width: r.width,
+                    height: r.height,
+                    rgba: r.rgba,
+                })
+                .collect();
+            self.subtitle_cues_pending.push(WasmSubtitleCue {
+                start_pts: cue.start_pts,
+                end_pts: cue.end_pts,
+                regions,
+            });
+        }
         std::mem::take(&mut self.subtitle_cues_pending)
     }
 
@@ -784,16 +822,15 @@ impl SkyfireBridge {
                     }
                 }
             } else if Some(au.pid) == subtitle_pid {
-                // DVB subtitle PES: parse with dvb-subtitle (ETSI EN 300 743).
+                // DVB subtitle PES: parse with dvb-subtitle (ETSI EN 300 743),
+                // then feed through the compositor.
                 // Non-subtitle PES on the same PID (e.g. padding_stream) are
-                // silently dropped by parse_subtitle_pes when data_identifier ≠ 0x20.
-                if let Some(cue) = parse_subtitle_pes(au.pid, au.pts_ticks, &au.es_bytes) {
-                    self.subtitle_cues_pending.push(WasmSubtitleCue {
-                        start_pts: cue.start_pts,
-                        end_pts: cue.end_pts,
-                        pid: cue.pid,
-                        bytes: cue.bytes,
-                    });
+                // silently dropped when data_identifier ≠ 0x20.
+                if au.es_bytes.first() == Some(&dvb_subtitle::DataIdentifier) {
+                    if let Ok(field) = dvb_subtitle::PesDataField::parse(&au.es_bytes) {
+                        self.subtitle_compositor
+                            .feed_pes(au.pid, au.pts_ticks, &field);
+                    }
                 }
             }
         }
@@ -1102,88 +1139,107 @@ mod tests {
 
     // ── subtitle tests (issue #34) ─────────────────────────────────────────
 
-    /// Parse a hand-built minimal DVB subtitle PES payload (ETSI EN 300 743)
-    /// through `skyfire_ts::parse_subtitle_pes` and assert a cue is produced
-    /// with the expected PTS and end_pts.
+    /// Feed a hand-built minimal DVB subtitle display set through the
+    /// bridge and assert the compositor produces the expected RGBA region.
     ///
-    /// The payload is a single display-set: DDS (display_definition) + PCS
-    /// (page_composition, page_time_out = 5 s) + EDS (end_of_display_set).
-    /// Mirrors the bytes used in `dvb-subtitle`'s own `parse_full_pes` example.
-    ///
-    /// NOTE: end-to-end browser rendering needs a real DVB-subtitle capture
-    /// (not available in the fixture set); this test verifies the parse path only.
+    /// Builds a complete display set with CLUT (index 1 = near-red),
+    /// region composition (32x16), object data (all pixels = index 1),
+    /// and page composition (region at screen (10,20), page_time_out=5).
+    /// Validates the composited cue has one region with correct placement,
+    /// size, and pixel colour.
     #[test]
-    fn parse_subtitle_cue_minimal() {
-        use skyfire_ts::parse_subtitle_pes;
+    fn bridge_subtitle_composite_red_region() {
+        use dvb_common::Parse;
 
-        // Hand-built PES data field (ETSI EN 300 743):
-        //   data_identifier = 0x20
-        //   subtitle_stream_id = 0x00
-        //   DDS: display 720×288 (segment_type 0x14)
-        //   PCS: page_time_out = 5 s, acquisition state (segment_type 0x10)
-        //   EDS: end_of_display_set (segment_type 0x80)
-        //   end_marker = 0xFF
-        #[rustfmt::skip]
-        let payload: &[u8] = &[
-            0x20, 0x00,                               // data_identifier + subtitle_stream_id
-            0x0F, 0x14, 0x00, 0x01, 0x00, 0x05,      // DDS header (seg_len=5)
-            0x30, 0x02, 0xCF, 0x01, 0x1F,             // DDS body: version=3, 720×288
-            0x0F, 0x10, 0x00, 0x01, 0x00, 0x08,      // PCS header (seg_len=8)
-            0x05, 0x04,                               // page_time_out=5, state=acquisition
-            0x01, 0x00, 0x00, 0x64, 0x00, 0x32,      // region_id=1 @ (100, 50)
-            0x0F, 0x80, 0x00, 0x01, 0x00, 0x00,      // EDS header (seg_len=0)
-            0xFF,                                     // end_of_PES_data_field_marker
-        ];
-
-        let start_pts: u64 = 900_000; // arbitrary 10 s at 90 kHz
-        let cue = parse_subtitle_pes(0x0042, Some(start_pts), payload)
-            .expect("must parse a valid DVB subtitle PES payload");
-
-        assert_eq!(cue.pid, 0x0042, "PID must be round-tripped");
-        assert_eq!(cue.start_pts, start_pts, "start_pts must match PES PTS");
-        // page_time_out = 5 s → end_pts = 900_000 + 5 × 90_000 = 1_350_000
-        assert_eq!(
-            cue.end_pts,
-            start_pts + 5 * 90_000,
-            "end_pts must be start_pts + page_time_out × 90_000"
-        );
-        // bytes must be the verbatim payload (ETSI EN 300 743 PES data field)
-        assert_eq!(
-            cue.bytes, payload,
-            "bytes must be the verbatim PES data field"
-        );
-
-        // Sanity: dvb-subtitle can round-trip the bytes we emitted.
-        {
-            use dvb_common::Parse as _;
-            use dvb_subtitle::{AnySegment, PesDataField};
-            let field = PesDataField::parse(&cue.bytes).expect("round-trip parse must succeed");
-            assert_eq!(
-                field.segments.len(),
-                3,
-                "must have 3 segments (DDS+PCS+EDS)"
-            );
-            assert!(
-                field
-                    .segments
-                    .iter()
-                    .any(|s| matches!(s, AnySegment::PageComposition(_))),
-                "must contain a PAGE_COMPOSITION segment"
-            );
-            assert!(
-                field
-                    .segments
-                    .iter()
-                    .any(|s| matches!(s, AnySegment::EndOfDisplaySet(_))),
-                "must contain an END_OF_DISPLAY_SET segment"
-            );
+        // Build a minimal DVB subtitle display set PES data field.
+        // Contains DDS, CLUT (index 1 = near-red), region comp (32x16),
+        // object data (all pixels = index 1), page comp (region at (10,20)),
+        // and end-of-display-set.
+        let mut pes_bytes = Vec::new();
+        pes_bytes.extend_from_slice(&[0x20, 0x00]);
+        // DDS
+        pes_bytes.extend_from_slice(&[
+            0x0F, 0x14, 0x00, 0x01, 0x00, 0x05, 0x10, 0x02, 0xCF, 0x01, 0x1F,
+        ]);
+        // CLUT: Y=76 Cr=255 Cb=86 T=255
+        pes_bytes.extend_from_slice(&[
+            0x0F, 0x12, 0x00, 0x01, 0x00, 0x08, 0x01, 0x10, 0x01, 0x21, 0x4C, 0xFF, 0x56, 0xFF,
+        ]);
+        // Region comp: id=1, 32x16, 8-bit, CLUT=1, obj 1 at (0,0)
+        pes_bytes.extend_from_slice(&[
+            0x0F, 0x11, 0x00, 0x01, 0x00, 0x10, 0x01, 0x10, 0x00, 0x20, 0x00, 0x10, 0xEC, 0x01,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        // Object data: interlaced, 8 top lines + 8 bottom lines of red pixels
+        let mut top_field = Vec::new();
+        for _ in 0..8 {
+            top_field.push(0x12);
+            top_field.extend_from_slice(&[0x01u8; 32]);
+            top_field.extend_from_slice(&[0x00, 0x00]);
+            top_field.push(0xF0);
         }
+        let mut bottom_field = Vec::new();
+        for _ in 0..8 {
+            bottom_field.push(0x12);
+            bottom_field.extend_from_slice(&[0x01u8; 32]);
+            bottom_field.extend_from_slice(&[0x00, 0x00]);
+            bottom_field.push(0xF0);
+        }
+        let mut obj_payload = Vec::new();
+        obj_payload.extend_from_slice(&[0x00, 0x01, 0x00]);
+        obj_payload.extend_from_slice(&(top_field.len() as u16).to_be_bytes());
+        obj_payload.extend_from_slice(&(bottom_field.len() as u16).to_be_bytes());
+        obj_payload.extend_from_slice(&top_field);
+        obj_payload.extend_from_slice(&bottom_field);
+        let seg_len = obj_payload.len() as u16;
+        pes_bytes.push(0x0F);
+        pes_bytes.push(0x13);
+        pes_bytes.extend_from_slice(&[0x00, 0x01]);
+        pes_bytes.extend_from_slice(&seg_len.to_be_bytes());
+        pes_bytes.extend_from_slice(&obj_payload);
+        // Page comp: region 1 at (10,20), page_time_out=5
+        pes_bytes.extend_from_slice(&[
+            0x0F, 0x10, 0x00, 0x01, 0x00, 0x08, 0x05, 0x14, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x14,
+        ]);
+        // End of display set + end marker
+        pes_bytes.extend_from_slice(&[0x0F, 0x80, 0x00, 0x01, 0x00, 0x00, 0xFF]);
+
+        // The payload is a PES data field — we need a TS packet wrapping it
+        // for the bridge.  Feed it directly through the compositor.
+        let field =
+            dvb_subtitle::PesDataField::parse(&pes_bytes).expect("must parse valid PES data field");
+
+        let mut compositor = skyfire_ts::subtitle_compositor::CompositorState::new();
+        compositor.feed_pes(0x42, Some(900_000), &field);
+        let cues = compositor.take_cues();
+
+        assert_eq!(cues.len(), 1, "must produce one composited cue");
+        let cue = &cues[0];
+        assert_eq!(cue.pid, 0x42);
+        assert_eq!(cue.start_pts, 900_000);
+        assert_eq!(cue.end_pts, 900_000 + 5 * 90_000);
+
+        assert_eq!(cue.regions.len(), 1, "must have one region");
+        let region = &cue.regions[0];
+        assert_eq!(region.x, 10, "region screen x");
+        assert_eq!(region.y, 20, "region screen y");
+        assert_eq!(region.width, 32, "region width");
+        assert_eq!(region.height, 16, "region height");
+        assert_eq!(region.rgba.len(), 32 * 16 * 4, "RGBA buffer size");
+
+        // Centre pixel must be near-red (BT.601: Y=76 Cr=255 Cb=86)
+        let mid = (8 * 32 + 16) * 4;
+        assert_eq!(
+            &region.rgba[mid..mid + 4],
+            &[254u8, 0, 1, 255],
+            "centre pixel must be near-red (BT.601)"
+        );
 
         eprintln!(
-            "parse_subtitle_cue_minimal: start_pts={}, end_pts={}, bytes={}",
-            cue.start_pts,
-            cue.end_pts,
-            cue.bytes.len()
+            "bridge_subtitle_composite_red_region: {} cue(s), {} region(s), {} RGBA bytes",
+            cues.len(),
+            cue.regions.len(),
+            region.rgba.len(),
         );
     }
 

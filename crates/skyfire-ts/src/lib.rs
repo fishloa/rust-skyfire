@@ -7,6 +7,7 @@
 //! them to the WebCodecs video decoder and the WASM AC-3 audio decoder.
 
 pub mod h264_config;
+pub mod subtitle_compositor;
 
 use dvb_common::Parse as _;
 use dvb_pes::{PesAssembler, PesPacket};
