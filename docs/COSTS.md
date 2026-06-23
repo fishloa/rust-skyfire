@@ -46,8 +46,14 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-22 | #31 bridge AC-3→PCM decode | #27 | claude-sonnet (subagent) | ~83k total² | — | ~0.25² |
 | 2026-06-22 | #32 bridge flush() (tail AU) | #27 | claude-sonnet (subagent) | ~49k total² | — | ~0.15² |
 | 2026-06-22 | #34 DVB subtitle PES parse | #27 | claude-sonnet (subagent) | ~103k total² | — | ~0.31² |
+| 2026-06-23 | mp2 (Layer II) decode — skyfire-mpa | #27 | **deepseek-v4-flash** (crush, back to ADR 0002) | n/a¹ | n/a¹ | ~0.02⁴ |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
+
+⁴ 2026-06-23 — delegation returned to **crush + deepseek-v4-flash** (ADR 0002 default,
+per owner). crush's session JSON didn't expose token/cost fields this run; ds-flash
+rates ($0.14/$0.28 per M) make a one-shot impl ≈ a couple cents. Orchestrator
+verified the gate (fmt/clippy/build/nextest 30/30 + wasm32) — never self-report.
 
 ³ Owner-directed: browser/WebCodecs work (#30) + the SW-path cleanup were driven by
 the orchestrator directly (main-loop tokens, not a separate delegated subagent), since
