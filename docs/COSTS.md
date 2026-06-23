@@ -47,6 +47,7 @@ the ledger and update the epic rollup in the same change.
 | 2026-06-22 | #32 bridge flush() (tail AU) | #27 | claude-sonnet (subagent) | ~49k total² | — | ~0.15² |
 | 2026-06-22 | #34 DVB subtitle PES parse | #27 | claude-sonnet (subagent) | ~103k total² | — | ~0.31² |
 | 2026-06-23 | mp2 (Layer II) decode — skyfire-mpa | #27 | **deepseek-v4-flash** (crush, back to ADR 0002) | n/a¹ | n/a¹ | ~0.02⁴ |
+| 2026-06-23 | skyfire-cli → clap derive (UNIX CLI) | — | deepseek-v4-flash (crush) | n/a¹ | n/a¹ | ~0.02⁴ |
 
 ¹ crush reports a cumulative session `cost` but only last-turn token counts; cost is the reliable figure.
 
