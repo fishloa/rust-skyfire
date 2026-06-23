@@ -4,7 +4,7 @@
 > Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
 > when an epic's state changes, update its row in the same change.
 
-_Last updated: 2026-06-22._
+_Last updated: 2026-06-23._
 
 ## Primary objective
 
@@ -86,7 +86,7 @@ work units.
 | #32 | audio-master A/V sync | ✅ browser-verified (skew < 120 ms) |
 | — | remove dead SW H.264 path | ✅ done |
 | #33 | runtime audio-track flip | code done (select_audio+reset); A/B verify needs a multi-audio fixture |
-| #34 | DVB subtitle PES parse → cues | Rust done (nextest); JS bitmap render + verify need a sub fixture |
+| #34 | DVB subtitle: parse → composite (EN 300 743 → RGBA) → overlay blit | Rust composite + JS overlay done (nextest + e2e no-regression); end-to-end render verify needs a dvb-sub fixture → #40 |
 | #35 | UI shell: pickers + controls + overlay | ✅ done (exercised by e2e); bitmap-sub render pending |
 | #36 | hold-open + reconnect stream loop | ✅ done (e2e); live zenith endpoint verify pending |
 | #37 | E2E Playwright spec | ✅ done — 3/3 green in Chromium (`bunx playwright test`) |
