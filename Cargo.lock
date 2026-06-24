@@ -538,6 +538,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oxideav-ac3"
 version = "0.0.9"
+source = "git+https://github.com/OxideAV/oxideav-ac3?rev=2d56c09f3b337926208130ac8773744219024d9b#2d56c09f3b337926208130ac8773744219024d9b"
 dependencies = [
  "oxideav-core",
 ]
