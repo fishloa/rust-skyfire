@@ -240,14 +240,55 @@ let audioNode = null;
 let audioReady = false;
 let audioStarting = false;
 
+// Decoded stream channel count (what the codec produced) vs. output channel
+// count (what the browser destination actually gets after any downmix).
+let streamChannels = 0;      // decoded channels from the stream (e.g. 6 for 5.1)
+let outputChannels = 0;      // channels actually output (e.g. 2 if stereo-only browser)
+let downmixActive = false;   // true when stream is multichannel but browser is stereo
+
+// Standard ITU-R BS.775 5.1 → stereo downmix matrix.
+// L' = L + 0.707*C + 0.707*Ls
+// R' = R + 0.707*C + 0.707*Rs
+// LFE is discarded (not present in typical DVB AC-3 layouts).
+//
+// Channel ordering (SMPTE/ITU): L, R, C, LFE, Ls, Rs
+// Many AC-3 decoders (including oxideav-ac3) use this order internally.
+const _51_L = 0, _51_R = 1, _51_C = 2, _51_LFE = 3, _51_Ls = 4, _51_Rs = 5;
+const DBM1 = 0.70710678; // -3 dB (equal-power centre/surround blend)
+
+function downmix51ToStereo(interleaved, srcCh) {
+  const frameCount = interleaved.length / srcCh;
+  const out = new Float32Array(frameCount * 2);
+  for (let i = 0; i < frameCount; i++) {
+    const base = i * srcCh;
+    out[i * 2]     = interleaved[base + _51_L] + DBM1 * (interleaved[base + _51_C] + interleaved[base + _51_Ls]);
+    out[i * 2 + 1] = interleaved[base + _51_R] + DBM1 * (interleaved[base + _51_C] + interleaved[base + _51_Rs]);
+  }
+  return out;
+}
+
 async function ensureAudio(sampleRate, channels) {
   if (audioReady || audioStarting) return;
   audioStarting = true;
+  streamChannels = channels;
+
   audioCtx = new AudioContext({ sampleRate });
+  const maxCh = audioCtx.destination.maxChannelCount;
+
+  // Passthrough when the browser supports the stream channel count;
+  // otherwise downmix to stereo (the universal fallback).
+  if (channels <= maxCh) {
+    outputChannels = channels;
+    downmixActive = false;
+  } else {
+    outputChannels = Math.min(2, maxCh);
+    downmixActive = true;
+  }
+
   await audioCtx.audioWorklet.addModule("./audio-worklet.js");
   audioNode = new AudioWorkletNode(audioCtx, "skyfire-pcm", {
     numberOfOutputs: 1,
-    outputChannelCount: [channels],
+    outputChannelCount: [outputChannels],
   });
   audioSampleRate = audioCtx.sampleRate || sampleRate;
   audioNode.port.onmessage = (e) => {
@@ -261,14 +302,15 @@ async function ensureAudio(sampleRate, channels) {
   audioGain = audioCtx.createGain();
   audioGain.gain.value = muted ? 0 : 1;
   audioNode.connect(audioGain).connect(audioCtx.destination);
-  audioNode.port.postMessage({ type: "config", sampleRate, channels });
+  audioNode.port.postMessage({ type: "config", sampleRate, outputChannels });
   audioNode.port.postMessage({ type: "play" });
   // Autoplay policy: resume if a user gesture has been granted; otherwise it
   // stays suspended until startAudio() is called from a click.
   audioCtx.resume().catch(() => {});
   audioReady = true;
   audioStarting = false;
-  status(`audio: ${sampleRate} Hz, ${channels} ch`);
+  const label = downmixActive ? `${streamChannels}→${outputChannels} ch (downmix)` : `${outputChannels} ch`;
+  status(`audio: ${sampleRate} Hz, ${label}`);
 }
 
 // Drain decoded PCM chunks from the bridge into the worklet.
@@ -282,9 +324,13 @@ async function pumpAudio() {
     if (firstAudioPtsUs === null && c.pts_ticks !== undefined) {
       firstAudioPtsUs = ticksToMicros(c.pts_ticks);
     }
-    const samples = c.samples; // Float32Array, interleaved
+    let samples = c.samples; // Float32Array, interleaved (decoded channel count)
+    if (downmixActive && streamChannels === 6) {
+      samples = downmix51ToStereo(samples, streamChannels);
+    }
     stats.audioChunks++;
     stats.audioSamples += samples.length;
+    // Transfer the Float32Array (or the downmixed copy) to the worklet.
     audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
     c.free?.();
   }

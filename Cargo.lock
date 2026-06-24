@@ -692,14 +692,14 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "skyfire-ac3"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "oxideav-ac3",
 ]
 
 [[package]]
 name = "skyfire-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dvb-si",
  "skyfire-ac3",
@@ -721,18 +721,18 @@ dependencies = [
 
 [[package]]
 name = "skyfire-mpa"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "symphonia",
 ]
 
 [[package]]
 name = "skyfire-sync"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "skyfire-ts"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dvb-common",
  "dvb-pes",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dvb-common",
  "dvb-si",
