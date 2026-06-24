@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyfire v0.1.0 — DVB Player</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; color: #ccc; font: 14px/1.5 system-ui, sans-serif; overflow: hidden; }
+
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #video { display: block; max-width: 100vw; max-height: 100vh; object-fit: contain; }
+
+  #overlay {
+    position: fixed; top: 0; left: 0; z-index: 20;
+    padding: 8px 12px; background: rgba(0,0,0,0.7);
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+
+  #controls {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 10px 14px; background: rgba(0,0,0,0.8);
+    opacity: 0; transition: opacity 0.2s;
+  }
+  body:hover #controls, #controls:focus-within { opacity: 1; }
+  #controls label { color: #999; font-size: 12px; }
+  #controls select, #controls button, #controls input {
+    background: #1a1a1a; color: #eee; border: 1px solid #444;
+    border-radius: 4px; padding: 4px 8px; font: inherit; cursor: pointer;
+  }
+  #controls input { width: 320px; }
+  #controls .spacer { flex: 1; }
+
+  #error {
+    display: none; position: fixed; bottom: 56px; left: 0; right: 0; z-index: 25;
+    padding: 12px; background: rgba(200,0,0,0.85); color: #fff;
+    white-space: pre-wrap; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage"><canvas id="video"></canvas></div>
+<div id="overlay">Loading…</div>
+<div id="error"></div>
+
+<div id="controls">
+  <button id="playpause" type="button">⏸ Pause</button>
+
+  <label for="src-input">URL</label>
+  <input id="src-input" type="text" placeholder="TS/HLS stream URL" value="/fixtures/h264-25fps.ts">
+
+  <label for="audio-select">Audio</label>
+  <select id="audio-select" aria-label="Audio track"></select>
+
+  <label for="sub-select">Subtitles</label>
+  <select id="sub-select" aria-label="Subtitle track">
+    <option value="-1">Off</option>
+  </select>
+
+  <span class="spacer"></span>
+  <button id="mute" type="button">🔊 Mute</button>
+</div>
+
+<script type="module">
+import { SkyfirePlayer, version } from "./skyfire.js";
+
+const overlayEl = document.getElementById("overlay");
+const errorEl = document.getElementById("error");
+const canvas = document.getElementById("video");
+const playPauseBtn = document.getElementById("playpause");
+const audioSelect = document.getElementById("audio-select");
+const subSelect = document.getElementById("sub-select");
+const muteBtn = document.getElementById("mute");
+const srcInput = document.getElementById("src-input");
+
+function log(msg) {
+  overlayEl.textContent = `Skyfire v${version} — ${msg}`;
+  console.log("[skyfire]", msg);
+}
+
+function fatal(msg, err) {
+  const text = msg + (err ? "\n" + (err.message || err) : "");
+  errorEl.textContent = text;
+  errorEl.style.display = "block";
+  console.error("[skyfire]", msg, err);
+}
+
+let player = null;
+let playing = true;
+let muted = false;
+
+// Listen for player events.
+canvas.addEventListener("skyfire:tracklist", (e) => {
+  const tl = e.detail;
+  log(`video 0x${tl.video.pid.toString(16)} ${tl.video.codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`);
+
+  // Populate audio picker.
+  audioSelect.innerHTML = "";
+  tl.audio.forEach((a, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = `${a.language || `track ${i + 1}`} · ${a.codec}`;
+    audioSelect.appendChild(o);
+  });
+
+  // Populate subtitle picker.
+  while (subSelect.options.length > 1) subSelect.remove(1);
+  tl.subtitles.forEach((s, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = `${s.language || `sub ${i + 1}`} · ${s.kind}`;
+    subSelect.appendChild(o);
+  });
+});
+
+canvas.addEventListener("skyfire:end", () => {
+  log(`done — ${player.stats.drawn}f drawn, ${player.stats.audioSec.toFixed(1)}s audio`);
+});
+
+canvas.addEventListener("skyfire:error", (e) => {
+  fatal("stream error", e.detail);
+});
+
+// ── controls ─────────────────────────────────────────────────────────────
+
+playPauseBtn.addEventListener("click", () => {
+  if (!player) return;
+  playing = !playing;
+  if (playing) player.play(); else player.pause();
+  playPauseBtn.textContent = playing ? "⏸ Pause" : "▶ Play";
+});
+
+audioSelect.addEventListener("change", () => {
+  if (!player) return;
+  player.selectAudio(parseInt(audioSelect.value, 10));
+  log(`audio → ${audioSelect.selectedOptions[0]?.textContent}`);
+});
+
+subSelect.addEventListener("change", () => {
+  if (!player) return;
+  player.selectSubtitle(parseInt(subSelect.value, 10));
+});
+
+muteBtn.addEventListener("click", () => {
+  muted = !muted;
+  if (player) player._muted = muted;
+  muteBtn.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
+});
+
+// Init on load.
+const url = new URLSearchParams(location.search).get("src") || srcInput.value;
+const live = new URLSearchParams(location.search).has("live");
+
+log(`init ${url}${live ? " (live)" : ""}`);
+player = new SkyfirePlayer();
+player.init(canvas, url, { live }).catch((err) => fatal("init failed", err));
+</script>
+
+</body>
+</html>

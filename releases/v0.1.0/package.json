@@ -1,0 +1,21 @@
+{
+  "name": "skyfire-wasm",
+  "type": "module",
+  "description": "WASM bindings for Skyfire — exposes the engine to the JS/WebCodecs/AudioWorklet shell.",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fishloa/rust-skyfire"
+  },
+  "files": [
+    "skyfire_wasm_bg.wasm",
+    "skyfire_wasm.js",
+    "skyfire_wasm.d.ts"
+  ],
+  "main": "skyfire_wasm.js",
+  "types": "skyfire_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
