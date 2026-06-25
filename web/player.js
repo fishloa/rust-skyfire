@@ -206,7 +206,7 @@ function ensureDecoder(codec) {
 }
 
 // Drain pending video AUs from the bridge into the decoder.
-function pumpVideo() {
+function pumpVideoInner() {
   const codec = videoDecoder ? null : undefined; // placeholder to keep lints quiet
   const cs = bridge.video_codec();               // "avc1.640028" once SPS seen
   if (!cs) return;                               // no config yet → wait
@@ -234,6 +234,10 @@ function pumpVideo() {
     au.free?.();
   }
   void codec;
+}
+
+function pumpVideo() {
+  callBridge(() => pumpVideoInner());
 }
 
 // ── audio: WASM PCM → WebAudio AudioWorklet (#31) ───────────────────────────
@@ -317,7 +321,7 @@ async function ensureAudio(sampleRate, channels) {
 }
 
 // Drain decoded PCM chunks from the bridge into the worklet.
-async function pumpAudio() {
+async function pumpAudioInner() {
   const chunks = bridge.take_audio_pcm();
   for (const c of chunks) {
     if (!audioReady) {
@@ -337,6 +341,10 @@ async function pumpAudio() {
     audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
     c.free?.();
   }
+}
+
+async function pumpAudio() {
+  callBridge(() => pumpAudioInner());
 }
 
 // Resume audio on a user gesture (browsers gate AudioContext on one).
@@ -385,19 +393,19 @@ function wireControls() {
   uiWired = true;
 
   audioSelect.addEventListener("change", () => {
-    bridge.select_audio(parseInt(audioSelect.value, 10));
+    callBridge("select_audio", parseInt(audioSelect.value, 10));
     status(`audio → pid ${audioSelect.value}`);
   });
 
   subSelect.addEventListener("change", () => {
     const v = subSelect.value;
-    bridge.select_subtitle(v === "" ? undefined : parseInt(v, 10));
+    callBridge("select_subtitle", v === "" ? undefined : parseInt(v, 10));
     subsEl.replaceChildren(); // clear current cue on switch/off
   });
 
   playPauseBtn.addEventListener("click", () => {
     playing = !playing;
-    bridge.set_playing(playing);
+    callBridge("set_playing", playing);
     if (audioNode) audioNode.port.postMessage({ type: playing ? "play" : "pause" });
     if (playing) startAudio();
     playPauseBtn.textContent = playing ? "⏸ Pause" : "▶ Play";
@@ -413,7 +421,7 @@ function wireControls() {
 // Drain composited subtitle cues from the bridge into subQueue. The bridge has
 // already turned EN 300 743 into RGBA regions — we just snapshot them into plain
 // JS (copying out of WASM) and free the wasm objects.
-function pumpSubtitles() {
+function pumpSubtitlesInner() {
   if (!bridge.take_subtitle_cues) return;
   let added = false;
   for (const cue of bridge.take_subtitle_cues()) {
@@ -438,10 +446,53 @@ function pumpSubtitles() {
   if (added) schedulePresent();
 }
 
+function pumpSubtitles() {
+  callBridge(() => pumpSubtitlesInner());
+}
+
 // ── bridge + stream ─────────────────────────────────────────────────────────
 
 let bridge = null;
 let audioGain = null;
+
+// ── Re-entrancy guard ───────────────────────────────────────────────────────
+// wasm-bindgen structs use a RefCell internally — concurrent method calls from
+// overlapping JS contexts trigger "recursive use of an object" panics.
+// This guard ensures only one bridge call is in progress at a time.
+// See §Guard in releases/v0.1.4/skyfire.js for the full explanation.
+let bridgeLocked = false;
+const pendingBridgeQueue = [];
+
+function callBridge(method, ...args) {
+  if (!bridge) return;
+
+  if (bridgeLocked) {
+    stats._bridgeReentries = (stats._bridgeReentries || 0) + 1;
+    if (typeof method === 'function') {
+      pendingBridgeQueue.push(method);
+    } else {
+      const m = method;
+      pendingBridgeQueue.push(() => bridge[m](...args));
+    }
+    return undefined;
+  }
+
+  bridgeLocked = true;
+  try {
+    if (typeof method === 'function') return method();
+    return bridge[method](...args);
+  } finally {
+    bridgeLocked = false;
+    while (pendingBridgeQueue.length > 0) {
+      const fn = pendingBridgeQueue.shift();
+      if (bridgeLocked) { pendingBridgeQueue.unshift(fn); break; }
+      bridgeLocked = true;
+      try { fn(); } finally { bridgeLocked = false; }
+    }
+  }
+}
+
+// ── stream loop ────────────────────────────────────────────────────────────
 
 async function main() {
   status("Loading WASM…");
@@ -489,12 +540,14 @@ async function main() {
     break;
   }
 
-  // End of stream — flush the bridge (emits the final buffered AU/PCM), drain,
-  // then flush the decoder so its reordered tail frames come out.
-  bridge.flush();
-  pumpVideo();
+  // End of stream — flush the bridge, drain, then flush the decoder.
+  callBridge(() => {
+    bridge.flush();
+    pumpVideoInner();
+    pumpSubtitlesInner();
+  });
+  // pumpAudio uses async AudioWorklet setup; await it separately.
   await pumpAudio();
-  pumpSubtitles();
   if (videoDecoder && decoderConfigured) {
     try { await videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
   }
@@ -516,20 +569,24 @@ async function consumeStream(src) {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) return;
-    bridge.feed(value);
 
-    if (!trackLogged) {
-      const tl = bridge.track_list();
-      if (tl) {
-        trackLogged = true;
-        status(`track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`);
-        populateTracks(tl);
-        wireControls();
+    callBridge(() => {
+      bridge.feed(value);
+
+      if (!trackLogged) {
+        const tl = bridge.track_list();
+        if (tl) {
+          trackLogged = true;
+          status(`track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`);
+          populateTracks(tl);
+          wireControls();
+        }
       }
-    }
-    pumpVideo();
-    await pumpAudio();
-    pumpSubtitles();
+
+      pumpVideoInner();
+      pumpAudioInner();
+      pumpSubtitlesInner();
+    });
 
     // Back-pressure: video presents at the audio (realtime) pace, so cap how far
     // decode runs ahead — otherwise the whole clip queues as open VideoFrames.
