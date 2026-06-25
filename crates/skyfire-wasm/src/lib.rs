@@ -485,6 +485,10 @@ pub struct SkyfireBridge {
     // Accumulated video AUs (drained by `take_video_aus`).
     video_aus: Vec<WasmVideoAu>,
 
+    // Cached WebCodecs video config, built once from the first keyframe
+    // AUs.  Persists across `take_video_aus()` drains.
+    cached_video_config: Option<skyfire_ts::h264_config::VideoConfig>,
+
     // Incremental E-AC-3/AC-3 decoder — holds IMDCT state across AU boundaries.
     audio_decoder: IncrementalDecoder,
 
@@ -502,6 +506,10 @@ pub struct SkyfireBridge {
 
     // Latest PCR / PTS seen (90 kHz ticks).
     latest_pts: Option<i64>,
+
+    // Access units drained before the PMT was parsed (channel is None).
+    // Replayed once the channel map becomes known.
+    pre_channel_aus: Vec<skyfire_ts::AccessUnit>,
 }
 
 #[wasm_bindgen]
@@ -520,12 +528,14 @@ impl SkyfireBridge {
             selected_subtitle_pid: None,
             playing: false,
             video_aus: Vec::new(),
+            cached_video_config: None,
             audio_decoder: IncrementalDecoder::new(),
             mpa_decoder: IncrementalMpaDecoder::new(),
             audio_pcm_pending: Vec::new(),
             subtitle_compositor: skyfire_ts::subtitle_compositor::CompositorState::new(),
             subtitle_cues_pending: Vec::new(),
             latest_pts: None,
+            pre_channel_aus: Vec::new(),
         }
     }
 
@@ -573,6 +583,10 @@ impl SkyfireBridge {
 
         // Drain completed access units.
         self.drain_access_units();
+
+        // If the channel map was just discovered, replay any access units
+        // that were drained before we knew the video/audio PIDs.
+        self.replay_pre_channel_aus();
     }
 
     /// Select which audio PID to route and decode.
@@ -640,25 +654,10 @@ impl SkyfireBridge {
     /// WebCodecs codec string (e.g. `"avc1.640028"`) once SPS has been seen.
     ///
     /// Returns `None` until sufficient video AUs have been fed to extract an SPS.
+    /// Once extracted, the config is cached and survives `take_video_aus()` drains.
     #[wasm_bindgen]
     pub fn video_codec(&self) -> Option<String> {
-        let ch = self.channel.as_ref()?;
-        // Collect the video AUs we've buffered so far (plus any in the pending queue).
-        let video_pid = ch.video_pid;
-        // Build a slice of AccessUnit refs from our buffered WasmVideoAu to feed
-        // h264_decoder_config.  We reconstruct minimal AccessUnit structs from the bytes.
-        let aus: Vec<skyfire_ts::AccessUnit> = self
-            .video_aus
-            .iter()
-            .map(|au| skyfire_ts::AccessUnit {
-                pid: video_pid,
-                pts_ticks: au.pts_ticks,
-                dts_ticks: au.dts_ticks,
-                es_bytes: au.bytes.clone(),
-            })
-            .collect();
-        let config = skyfire_ts::h264_config::h264_decoder_config(&aus)?;
-        Some(config.codec)
+        self.cached_video_config.as_ref().map(|c| c.codec.clone())
     }
 
     /// Drain all completed video access units since the last call.
@@ -745,6 +744,17 @@ impl SkyfireBridge {
             return;
         }
 
+        // When the channel map isn't known yet, buffer all AUs for later replay.
+        if self.channel.is_none() {
+            self.pre_channel_aus.extend(units);
+            return;
+        }
+
+        self.route_access_units(units.into_iter());
+    }
+
+    /// Process a stream of access units through the per-PID routing logic.
+    fn route_access_units(&mut self, units: impl Iterator<Item = skyfire_ts::AccessUnit>) {
         let video_pid = self.channel.as_ref().map(|ch| ch.video_pid);
         let audio_pid = self.selected_audio_pid;
         let subtitle_pid = self.selected_subtitle_pid;
@@ -773,6 +783,21 @@ impl SkyfireBridge {
                     is_keyframe,
                     bytes: au.es_bytes,
                 });
+                // Try to build the video config once we have enough data.
+                if self.cached_video_config.is_none() {
+                    let video_pid_val = video_pid.unwrap_or(0);
+                    let aus: Vec<skyfire_ts::AccessUnit> = self
+                        .video_aus
+                        .iter()
+                        .map(|a| skyfire_ts::AccessUnit {
+                            pid: video_pid_val,
+                            pts_ticks: a.pts_ticks,
+                            dts_ticks: a.dts_ticks,
+                            es_bytes: a.bytes.clone(),
+                        })
+                        .collect();
+                    self.cached_video_config = skyfire_ts::h264_config::h264_decoder_config(&aus);
+                }
             } else if Some(au.pid) == audio_pid {
                 let pts_ticks = au.pts_ticks;
                 // Route to the appropriate decoder based on codec.
@@ -834,6 +859,16 @@ impl SkyfireBridge {
                 }
             }
         }
+    }
+
+    /// Replay any access units that were buffered before the channel map was
+    /// known.  Called after `self.channel` transitions from `None` to `Some`.
+    fn replay_pre_channel_aus(&mut self) {
+        if self.channel.is_none() || self.pre_channel_aus.is_empty() {
+            return;
+        }
+        let units: Vec<skyfire_ts::AccessUnit> = std::mem::take(&mut self.pre_channel_aus);
+        self.route_access_units(units.into_iter());
     }
 }
 
@@ -1134,6 +1169,126 @@ mod tests {
         eprintln!(
             "bridge flush test: no_flush={no_flush_count} video AUs, \
              flushed={flush_count} video AUs"
+        );
+    }
+
+    /// Streaming bridge: feed france2-8s.ts in 4096-byte chunks.
+    ///
+    /// Verifies the streaming path detects video and produces a valid
+    /// WebCodecs video config + video AUs for the France-2 H.264 stream,
+    /// mirroring the same structure as the gulli-15s streaming test.
+    #[test]
+    fn bridge_streaming_france2_8s() {
+        let data = load_fixture("france2-8s.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+
+        // --- track_list ---
+        let tl = bridge
+            .track_list()
+            .expect("track_list must be Some after feeding france2-8s.ts");
+        assert_eq!(tl.video_pid, 0x0078, "video PID must be 0x0078");
+        assert_eq!(tl.video_codec, "H264", "video codec must be H264");
+
+        assert!(!tl.audio.is_empty(), "must have at least one audio track");
+        let audio0 = &tl.audio[0];
+        assert_eq!(audio0.pid, 0x0082, "first audio PID must be 0x0082");
+        assert_eq!(audio0.codec, "EAC3", "first audio codec must be EAC3");
+
+        // --- video_config ---
+        let codec = bridge
+            .video_codec()
+            .expect("video_codec must be Some for france2-8s.ts");
+        assert!(
+            codec.starts_with("avc1."),
+            "codec string must be avc1..., got {codec:?}"
+        );
+
+        // --- video AUs ---
+        let aus = bridge.take_video_aus();
+        assert!(
+            !aus.is_empty(),
+            "take_video_aus must return non-empty set for france2-8s.ts"
+        );
+
+        for au in &aus {
+            let pts = au.pts_ticks.expect("video AU must have PTS");
+            assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
+        }
+
+        let keyframe_count = aus.iter().filter(|au| au.is_keyframe).count();
+        assert!(keyframe_count > 0, "must have at least one keyframe AU");
+
+        eprintln!(
+            "france2-8s bridge (batch drain): {} video AUs, {} keyframes, codec={}",
+            aus.len(),
+            keyframe_count,
+            codec
+        );
+    }
+
+    /// Streaming bridge: feed france2-8s.ts with **live-style** incremental
+    /// draining (drain after each chunk, mirroring the JS `pumpVideo()` loop).
+    ///
+    /// This exposes the bug: when video packets arrive before the PMT, they
+    /// are discarded.  If the early packets contain the only SPS-bearing
+    /// keyframes, then `video_codec()` never returns a valid codec string.
+    #[test]
+    fn bridge_streaming_france2_8s_live_pump() {
+        let data = load_fixture("france2-8s.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        let mut all_video_aus = Vec::new();
+        let mut first_codec: Option<String> = None;
+
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+            all_video_aus.extend(bridge.take_video_aus());
+
+            if first_codec.is_none() {
+                first_codec = bridge.video_codec();
+            }
+        }
+
+        // --- track_list ---
+        let tl = bridge
+            .track_list()
+            .expect("track_list must be Some after feeding france2-8s.ts");
+        assert_eq!(tl.video_pid, 0x0078);
+        assert_eq!(tl.video_codec, "H264");
+
+        // --- video_codec must eventually become Some ---
+        let codec = first_codec
+            .or_else(|| bridge.video_codec())
+            .expect("video_codec must eventually be Some for france2-8s.ts");
+        assert!(
+            codec.starts_with("avc1."),
+            "codec string must be avc1..., got {codec:?}"
+        );
+
+        // --- video AUs must be non-empty ---
+        assert!(
+            !all_video_aus.is_empty(),
+            "live pump: must eventually produce video AUs"
+        );
+
+        let keyframe_count = all_video_aus.iter().filter(|au| au.is_keyframe).count();
+        assert!(keyframe_count > 0, "must have at least one keyframe AU");
+
+        for au in &all_video_aus {
+            if let Some(pts) = au.pts_ticks {
+                assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
+            }
+        }
+
+        eprintln!(
+            "france2-8s bridge (live pump): {} video AUs, {} keyframes, codec={}",
+            all_video_aus.len(),
+            keyframe_count,
+            codec
         );
     }
 
