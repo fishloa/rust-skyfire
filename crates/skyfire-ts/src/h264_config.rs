@@ -150,6 +150,65 @@ fn build_avcc_description(
     bytes
 }
 
+/// Convert an Annex-B NAL stream to AVCC length-prefixed format.
+///
+/// Scans for 3-byte (`00 00 01`) and 4-byte (`00 00 00 01`) start codes
+/// and replaces each with a 4-byte big-endian length prefix equal to the
+/// size of the following NAL unit (excluding the start code).
+///
+/// The output is suitable for `EncodedVideoChunk` when the `VideoDecoder`
+/// is configured with an avcC `description`.
+pub fn annexb_to_avcc(annexb: &[u8]) -> Vec<u8> {
+    // Collect (offset, length) for each NAL unit
+    let mut nals: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i + 3 < annexb.len() {
+        let sc_len = if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 1 {
+            3
+        } else if i + 4 <= annexb.len()
+            && annexb[i] == 0
+            && annexb[i + 1] == 0
+            && annexb[i + 2] == 0
+            && annexb[i + 3] == 1
+        {
+            4
+        } else {
+            i += 1;
+            continue;
+        };
+        let nal_start = i + sc_len;
+        // Find the next start code to determine this NAL unit's end
+        let mut next = annexb.len();
+        let mut j = nal_start;
+        while j + 4 <= annexb.len() {
+            if annexb[j] == 0 && annexb[j + 1] == 0 && annexb[j + 2] == 0 && annexb[j + 3] == 1 {
+                next = j;
+                break;
+            }
+            if j + 3 <= annexb.len() && annexb[j] == 0 && annexb[j + 1] == 0 && annexb[j + 2] == 1 {
+                next = j;
+                break;
+            }
+            j += 1;
+        }
+        nals.push((nal_start, next - nal_start));
+        i = next;
+    }
+
+    // Build AVCC output with 4-byte length prefixes
+    let total_len: usize = nals.iter().map(|(_, len)| len + 4).sum();
+    let mut avcc = Vec::with_capacity(total_len);
+    for (start, len) in &nals {
+        let len_u32 = *len as u32;
+        avcc.push((len_u32 >> 24) as u8);
+        avcc.push((len_u32 >> 16) as u8);
+        avcc.push((len_u32 >> 8) as u8);
+        avcc.push(len_u32 as u8);
+        avcc.extend_from_slice(&annexb[*start..*start + *len]);
+    }
+    avcc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

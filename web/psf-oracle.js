@@ -47,7 +47,7 @@ async function run() {
       },
       error(e) { decodeError = e?.message ?? String(e); log("DECODER ERROR: " + decodeError); },
     });
-    decoder.configure({ codec, optimizeForLatency: true });
+    decoder.configure({ codec, optimizeForLatency: true, description: bridge.video_config_description() });
     configured = true;
     log("configured " + codec);
   };

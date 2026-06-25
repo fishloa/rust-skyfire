@@ -359,7 +359,10 @@ pub struct WasmVideoAu {
     dts_ticks: Option<u64>,
     /// True when this AU contains an IDR (NAL type 5) or SPS (NAL type 7).
     pub is_keyframe: bool,
-    /// Annex-B elementary-stream bytes.
+    /// AVCC length-prefixed elementary-stream bytes (suitable for
+    /// `EncodedVideoChunk` when `VideoDecoder` is configured with
+    /// an avcC `description`).  Internally stored as Annex-B; converted
+    /// on drain by `take_video_aus()`.
     #[wasm_bindgen(getter_with_clone)]
     pub bytes: Vec<u8>,
 }
@@ -660,12 +663,31 @@ impl SkyfireBridge {
         self.cached_video_config.as_ref().map(|c| c.codec.clone())
     }
 
+    /// WebCodecs `avcC` description bytes (`Uint8Array`), or empty if not yet available.
+    ///
+    /// This is the `AVCDecoderConfigurationRecord` per ISO/IEC 14496-15.
+    /// When present, the player should configure `VideoDecoder` with `description`
+    /// (AVCC mode); when absent, Annex-B mode requires SPS+PPS in-band.
+    #[wasm_bindgen]
+    pub fn video_config_description(&self) -> Vec<u8> {
+        self.cached_video_config
+            .as_ref()
+            .map(|c| c.description.clone())
+            .unwrap_or_default()
+    }
+
     /// Drain all completed video access units since the last call.
     ///
-    /// Returns Annex-B bytes with PTS/DTS and a keyframe flag.
+    /// Returns AVCC length-prefixed bytes with PTS/DTS and a keyframe flag.
+    /// Configure the `VideoDecoder` with the avcC `description` from
+    /// `video_config_description()` for AVCC mode.
     #[wasm_bindgen]
     pub fn take_video_aus(&mut self) -> Vec<WasmVideoAu> {
-        std::mem::take(&mut self.video_aus)
+        let mut aus = std::mem::take(&mut self.video_aus);
+        for au in &mut aus {
+            au.bytes = skyfire_ts::h264_config::annexb_to_avcc(&au.bytes);
+        }
+        aus
     }
 
     /// Drain all decoded PCM chunks produced since the last call.
@@ -777,6 +799,8 @@ impl SkyfireBridge {
 
             if Some(au.pid) == video_pid {
                 let is_keyframe = annexb_has_idr_or_sps(&au.es_bytes);
+                // Store Annex-B bytes internally; conversion to AVCC happens
+                // in `take_video_aus()` once the avcC description is available.
                 self.video_aus.push(WasmVideoAu {
                     pts_ticks: au.pts_ticks,
                     dts_ticks: au.dts_ticks,
@@ -1396,6 +1420,113 @@ mod tests {
             cue.regions.len(),
             region.rgba.len(),
         );
+    }
+
+    /// WebCodecs format coherence: assert that video AU bytes and decoder
+    /// config form a valid AVCC-mode WebCodecs `VideoDecoder` configuration.
+    ///
+    /// AVCC mode = `description` (avcC record) + length-prefixed NAL units.
+    /// This is the format the bridge emits after the fix: Annex-B AUs from the
+    /// demux are converted to AVCC in `take_video_aus()`, matching the avcC
+    /// `description` exported by `video_config_description()`.
+    ///
+    /// This test runs over both france2-8s.ts and gulli-15s.ts fixtures.
+    #[test]
+    fn webcodecs_format_coherence_avcc_mode() {
+        for (fixture, _exp_video_pid, exp_codec_prefix) in [
+            ("france2-8s.ts", 0x0078u16, "avc1."),
+            ("gulli-15s.ts", 0x0100u16, "avc1.640028"),
+        ] {
+            let data = load_fixture(fixture);
+            let mut bridge = SkyfireBridge::new();
+            for chunk in data.chunks(4096) {
+                bridge.feed(chunk);
+            }
+
+            let aus = bridge.take_video_aus();
+            assert!(!aus.is_empty(), "fixture {fixture}: must have video AUs");
+
+            // Must have a codec string (SPS parsed).
+            let codec = bridge
+                .video_codec()
+                .expect("fixture {fixture}: must have codec string");
+            assert!(
+                codec.starts_with(exp_codec_prefix),
+                "fixture {fixture}: codec={codec}"
+            );
+
+            // avcC description must be available and non-empty.
+            let avcc = bridge.video_config_description();
+            assert!(
+                !avcc.is_empty(),
+                "fixture {fixture}: avcC description must be non-empty"
+            );
+            assert_eq!(
+                avcc[0], 1,
+                "fixture {fixture}: avcC configuration_version must be 1"
+            );
+
+            // Verify at least one keyframe AU is emitted.
+            let keyframe_count = aus.iter().filter(|au| au.is_keyframe).count();
+            assert!(
+                keyframe_count > 0,
+                "fixture {fixture}: must have at least one keyframe AU"
+            );
+
+            // Verify all AUs are valid AVCC (length-prefixed) format.
+            // Each AU consists of one or more NAL units, each with a 4-byte
+            // big-endian length prefix.  The first byte of each NAL must have
+            // forbidden_zero_bit == 0 (top bit clear).
+            for (i, au) in aus.iter().enumerate() {
+                let b = &au.bytes;
+                assert!(
+                    b.len() >= 4,
+                    "fixture {fixture}: AU #{i} too short for AVCC ({})",
+                    b.len()
+                );
+                // Walk through all length-prefixed NAL units.
+                let mut pos = 0usize;
+                let mut nal_count = 0usize;
+                while pos + 4 <= b.len() {
+                    let nal_len =
+                        u32::from_be_bytes([b[pos], b[pos + 1], b[pos + 2], b[pos + 3]]) as usize;
+                    assert!(
+                        nal_len > 0,
+                        "fixture {fixture}: AU #{i} NAL #{nal_count} length is zero"
+                    );
+                    assert!(
+                        pos + 4 + nal_len <= b.len(),
+                        "fixture {fixture}: AU #{i} NAL #{nal_count} length {nal_len} overflows buffer (pos={pos}, total={})",
+                        b.len()
+                    );
+                    // forbidden_zero_bit must be 0
+                    assert_eq!(
+                        b[pos + 4] & 0x80,
+                        0,
+                        "fixture {fixture}: AU #{i} NAL #{nal_count} has forbidden_zero_bit set"
+                    );
+                    pos += 4 + nal_len;
+                    nal_count += 1;
+                }
+                assert_eq!(
+                    pos,
+                    b.len(),
+                    "fixture {fixture}: AU #{i}: trailing bytes after final NAL (pos={pos} != len={})",
+                    b.len()
+                );
+                assert!(
+                    nal_count > 0,
+                    "fixture {fixture}: AU #{i} has zero NAL units",
+                );
+            }
+
+            eprintln!(
+                "fixture {fixture}: {} video AUs, {} keyframes, codec={codec}, avcC.len={}",
+                aus.len(),
+                keyframe_count,
+                avcc.len(),
+            );
+        }
     }
 
     /// Non-subtitle PES payload (no data_identifier 0x20) must return None.

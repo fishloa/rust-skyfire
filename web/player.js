@@ -195,10 +195,13 @@ function ensureDecoder(codec) {
     error(e) { fatal("VideoDecoder error", e); },
   });
 
-  // Annex-B: configure with codec only, no description.
-  videoDecoder.configure({ codec, optimizeForLatency: true });
+  // AVCC mode: configure with codec + avcC description.
+  // The bridge emits AVCC (length-prefixed) bytes and provides the
+  // avcC description needed for proper decoding.
+  const avcc = bridge.video_config_description();
+  videoDecoder.configure({ codec, description: avcc, optimizeForLatency: true });
   decoderConfigured = true;
-  status(`VideoDecoder configured: ${codec}`);
+  status(`VideoDecoder configured: ${codec} (AVCC, description ${avcc.length} bytes)`);
   return true;
 }
 
