@@ -102,19 +102,30 @@ green. Remaining gaps are external-resource-gated: a DVB-subtitle / multi-audio
 capture, a live zenith `/skyfire` endpoint, an iOS 17 device, and the zenith PsF
 sample for the #38 gate.
 
-| Epic | Crate(s) | Objective | Status |
-|---|---|---|---|
-| [#1](https://github.com/fishloa/rust-skyfire/issues/1) | skyfire-ts | MPEG-TS/HLS demux → ES + PTS (reuse `rust-dvb` PSI) | In progress — #20 done ✅, #21 blocked on rust-dvb#249 |
-| [#2](https://github.com/fishloa/rust-skyfire/issues/2) | skyfire-ac3 | WASM AC-3 / E-AC-3 decode → PCM | E-AC-3→PCM done ✅ (#24, wraps oxideav-ac3) |
-| [#3](https://github.com/fishloa/rust-skyfire/issues/3) | web/ | WebCodecs video pipeline, HW H.264/H.265 | Open — sub-issues #9–#11 |
-| [#4](https://github.com/fishloa/rust-skyfire/issues/4) | skyfire-sync, core | Audio-master A/V sync engine | sync logic done ✅ (#22,#23); engine wiring in core/#5 |
-| [#5](https://github.com/fishloa/rust-skyfire/issues/5) | skyfire-wasm, web/ | WASM bindings + browser shell | Open — sub-issues #12–#15 |
-| [#6](https://github.com/fishloa/rust-skyfire/issues/6) | web/ | Deinterlace + render (GPU weave shader) | Open |
-| [#7](https://github.com/fishloa/rust-skyfire/issues/7) | core, web/ | Live-edge, buffering, capability fallback | Open — sub-issues #16–#18 |
-| [#8](https://github.com/fishloa/rust-skyfire/issues/8) | fixtures, CI | Fixtures, conformance harness, CI/WASM build | Open — harness #19 (v1 gate) |
+> **Legacy epics #1–#8 (closed).** These were the pre-#27 crate decomposition;
+> their scope shipped in the browser-verified #27 client and they are closed as
+> superseded (see the client build-status table above). Kept here for provenance:
+> #1 demux, #2 AC-3/E-AC-3, #3 WebCodecs video, #4 A/V sync, #5 WASM+shell,
+> #6 deinterlace+render (→ server-side per ADR 0006/0008), #7 live-edge/fallback
+> (→ TS transport + MSE fallback), #8 fixtures/CI.
 
-## Current state (2026-06-18)
+## Current state (2026-07-01)
 
-Scaffold + contract-test stage. Six crate stubs (~229 lines total), `web/` empty.
-Epics #3/#5/#7 decomposed into sub-issues #9–#18 (baking in ADR 0001 gating +
-iOS-17 floor), ready for delegation. Epics #1/#2/#4/#6/#8 still need decomposition.
+**Core v1 is built and browser-verified.** The skyfire WASM bridge client
+(epic [#27](https://github.com/fishloa/rust-skyfire/issues/27), items #28–#37)
+demuxes TS → WebCodecs HW video + WASM AC-3/E-AC-3 audio → audio-master sync,
+with DVB-subtitle compositing and the UI shell; 3/3 Playwright e2e green on real
+1080p content. Since then:
+
+- **transmux container layer + fMP4/MSE video fallback** ([ADR 0009](decisions/0009-transmux-fmp4-mse-fallback.md),
+  PR #45) — `h264_reader` dropped; MSE path for browsers without WebCodecs H.264.
+- **Multichannel → stereo downmix** (PR #46, #43/#39) — 5.1 E-AC-3 verified;
+  base AC-3 decode is a tracked follow-up.
+
+The original epics **#1–#8** (and sub-issues #9–#19) were the pre-#27
+decomposition and are **closed as superseded** by the rebuilt, verified client.
+
+**Remaining open work is external-resource-gated:** a live zenith `/skyfire`
+endpoint (#41), an iOS-17 device (MSE-fallback verify), a DVB-subtitle capture
+(#40), a zenith PsF sample (#38 gate), base-AC-3 5.1 decode + the opt-in
+multichannel path (#43/#39).
