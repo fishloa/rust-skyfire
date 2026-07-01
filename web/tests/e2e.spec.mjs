@@ -92,30 +92,47 @@ async function waitForStats(page, timeoutMs = 15000) {
   }), timeoutMs);
 }
 
-test("MSE fallback: segments appended and video time advances", async ({ page }) => {
-  // Skip if MSE is not supported for this codec in headless Chromium.
-  const codecCheck = await page.evaluate(() => {
-    try {
-      return MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028"');
-    } catch (_) { return false; }
-  });
-  test.skip(!codecCheck, "MSE / video/mp4 not supported in this browser");
+test("MSE fallback: transmux fMP4 decodes + plays via MediaSource", async ({ page }) => {
+  // Conformant progressive Main-profile fixture (avc1.4d401f) — MSE-supported,
+  // unlike the High 4:4:4 h264-25fps.ts (profile MSE rejects) or gulli-15s.ts
+  // (source ref-frame non-conformance Chromium's MSE decoder rejects).
+  const codecCheck = await page.evaluate(() =>
+    MediaSource.isTypeSupported('video/mp4; codecs="avc1.4d401f"'));
+  test.skip(!codecCheck, "MSE avc1.4d401f not supported in this browser");
 
-  const errors = [];
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  await page.goto(`${BASE}/index.html?src=/fixtures/h264-mse.ts&video=mse`);
+  // Short fixture — wait for the stream to finish processing.
+  await page.evaluate(() => new Promise((res) => {
+    const t0 = Date.now();
+    const tick = () => (window.__sfStats?.done || Date.now() - t0 > 15000)
+      ? res() : setTimeout(tick, 200);
+    tick();
+  }));
 
-  await page.goto(`${BASE}/index.html?src=/fixtures/h264-25fps.ts&video=mse`);
-  const stats = await waitForStats(page);
-
+  // The bridge chose MSE and produced CMAF media segments.
+  const stats = await page.evaluate(() => window.__sfStats);
   expect(stats.videoPath, "video path is mse").toBe("mse");
-  expect(stats.mseSegments, "at least one MSE segment appended").toBeGreaterThan(0);
+  expect(stats.mseSegments, "CMAF media segments appended").toBeGreaterThan(0);
 
-  // Read currentTime, wait ~1 s, read again — must increase.
-  const t1 = stats.videoCurrentTime;
-  await page.waitForTimeout(1000);
-  const t2 = await page.evaluate(() => window.__sfStats?.videoCurrentTime ?? 0);
-  expect(t2, "video currentTime increases over time").toBeGreaterThan(t1);
+  // The <video> actually decoded the transmux fMP4: correct dimensions and no
+  // MediaError. (Feed completes ~instantly but playback is realtime, so read
+  // dimensions/error at `done`, then confirm the playhead advances over a real
+  // wait — proving decoded frames present forward, not merely buffer.)
+  const v1 = await page.evaluate(() => {
+    const el = document.querySelector("video");
+    return { w: el?.videoWidth, h: el?.videoHeight, err: el?.error?.code ?? null,
+             t: el?.currentTime ?? 0 };
+  });
+  expect(v1.err, "no MediaError (fMP4 decodes)").toBeNull();
+  expect(v1.w, "decoded video width").toBe(640);
+  expect(v1.h, "decoded video height").toBe(360);
 
-  const realErrors = errors.filter((e) => !/favicon/.test(e));
-  expect(realErrors, "no MSE errors").toEqual([]);
+  await page.waitForTimeout(1500);
+  const v2 = await page.evaluate(() => {
+    const el = document.querySelector("video");
+    return { err: el?.error?.code ?? null, t: el?.currentTime ?? 0 };
+  });
+  expect(v2.err, "still no MediaError after playback").toBeNull();
+  expect(v2.t, "playhead advances in realtime (frames decode + present)")
+    .toBeGreaterThan(v1.t);
 });
