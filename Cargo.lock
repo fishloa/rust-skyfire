@@ -101,12 +101,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
-name = "bitstream-io"
-version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
-
-[[package]]
 name = "broadcast-common"
 version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -329,12 +323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "four-cc"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "795cbfc56d419a7ce47ccbb7504dd9a5b7c484c083c356e797de08bd988d9629"
-
-[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -359,19 +347,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "h264-reader"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "036a78b2620d92f0ec57690bc792b3bb87348632ee5225302ba2e66a48021c6c"
-dependencies = [
- "bitstream-io",
- "hex-slice",
- "log",
- "memchr",
- "rfc6381-codec",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -382,12 +357,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "hex-slice"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5491a308e0214554f07a81d8944abe45f552871c12e3c3c6e7e5d354039a6c4c"
 
 [[package]]
 name = "iana-time-zone"
@@ -487,15 +456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mp4ra-rust"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdbc3d3867085d66ac6270482e66f3dd2c5a18451a3dc9ad7269e94844a536b7"
-dependencies = [
- "four-cc",
-]
-
-[[package]]
 name = "mpeg-pes"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,12 +464,6 @@ dependencies = [
  "broadcast-common",
  "thiserror",
 ]
-
-[[package]]
-name = "mpeg4-audio-const"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
 name = "num-traits"
@@ -640,16 +594,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
 
 [[package]]
-name = "rfc6381-codec"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed54c20f5c3ec82eab6d998b313dc75ec5d5650d4f57675e61d72489040297fd"
-dependencies = [
- "mp4ra-rust",
- "mpeg4-audio-const",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -760,7 +704,6 @@ dependencies = [
  "dvb-si",
  "dvb-subtitle",
  "flate2",
- "h264-reader",
  "skyfire-ac3",
  "transmux",
 ]
@@ -911,9 +854,9 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.1.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c989dcb3a71ee2527f3b5475710f70ef2a2ae0b082580d1ca28600baf89aef45"
+checksum = "afdf5cb686ba240f16c3d0613363e896956eac8dcb490e373f056eb4f7ad998a"
 dependencies = [
  "broadcast-common",
  "serde",

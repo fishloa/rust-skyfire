@@ -1,11 +1,6 @@
-use broadcast_common::traits::Serialize;
-use h264_reader::annexb::AnnexBReader;
-use h264_reader::nal::{
-    sps::{ChromaFormat, SeqParameterSet},
-    Nal, RefNal, UnitType,
-};
-use h264_reader::push::NalInterest;
+use broadcast_common::Serialize;
 use transmux::nalu_types::{AvcPps, AvcSps};
+use transmux::sps::{decode_avc_sps, rfc6381_avc1, AvcSpsInfo};
 use transmux::{AVCConfigurationBox, AVCDecoderConfigurationRecord};
 
 /// Decoder configuration ready for WebCodecs `VideoDecoder.configure`.
@@ -32,72 +27,46 @@ pub struct VideoConfig {
 /// Build a WebCodecs `VideoDecoder` config by extracting SPS/PPS from
 /// H.264 video access units.
 pub fn h264_decoder_config(access_units: &[crate::AccessUnit]) -> Option<VideoConfig> {
-    let video_units: Vec<&[u8]> = access_units.iter().map(|au| &au.es_bytes[..]).collect();
+    let mut sps_bytes: Option<Vec<u8>> = None;
+    let mut pps_bytes: Option<Vec<u8>> = None;
 
-    let mut reader = AnnexBReader::accumulate(H264ParamSetCollector {
-        sps: None,
-        pps: None,
-    });
-
-    for es in &video_units {
-        reader.push(es);
+    for au in access_units {
+        for nal in transmux::iter_annexb_nals(&au.es_bytes) {
+            if nal.is_empty() {
+                continue;
+            }
+            let nal_type = nal[0] & 0x1f;
+            match nal_type {
+                7 if sps_bytes.is_none() => {
+                    sps_bytes = Some(nal.to_vec());
+                }
+                8 if pps_bytes.is_none() => {
+                    pps_bytes = Some(nal.to_vec());
+                }
+                _ => {}
+            }
+        }
     }
 
-    let collector = reader.into_nal_handler();
-    build_video_config(&collector.sps?, &collector.pps?)
-}
-
-/// State holder that captures the first SPS and PPS NALs.
-struct H264ParamSetCollector {
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
-}
-
-impl h264_reader::push::AccumulatedNalHandler for H264ParamSetCollector {
-    fn nal(&mut self, nal: RefNal<'_>) -> NalInterest {
-        let Ok(header) = nal.header() else {
-            return NalInterest::Ignore;
-        };
-        match header.nal_unit_type() {
-            UnitType::SeqParameterSet if self.sps.is_none() => {
-                let mut buf = Vec::new();
-                if std::io::Read::read_to_end(&mut nal.reader(), &mut buf).is_ok() {
-                    self.sps = Some(buf);
-                }
-                NalInterest::Buffer
-            }
-            UnitType::PicParameterSet if self.pps.is_none() => {
-                let mut buf = Vec::new();
-                if std::io::Read::read_to_end(&mut nal.reader(), &mut buf).is_ok() {
-                    self.pps = Some(buf);
-                }
-                NalInterest::Buffer
-            }
-            _ => NalInterest::Ignore,
-        }
+    match (sps_bytes, pps_bytes) {
+        (Some(sps), Some(pps)) => build_video_config(&sps, &pps),
+        _ => None,
     }
 }
 
 /// Given the raw SPS and PPS NAL unit bytes (including the NAL header byte),
 /// produce a `VideoConfig`.
 fn build_video_config(sps_bytes: &[u8], pps_bytes: &[u8]) -> Option<VideoConfig> {
-    let sps_nal = RefNal::new(sps_bytes, &[], true);
-    let sps = SeqParameterSet::from_bits(sps_nal.rbsp_bits()).ok()?;
-
-    let codec = sps.rfc6381().to_string();
-
-    // §7.4.2.1.1 — frame_mbs_only_flag == 0 ⇒ the stream may carry
-    // field/MBAFF pictures (interlaced). h264_reader models this as
-    // `FrameMbsFlags::Fields { .. }`.
-    let interlaced = matches!(
-        sps.frame_mbs_flags,
-        h264_reader::nal::sps::FrameMbsFlags::Fields { .. }
+    let sps_info = decode_avc_sps(sps_bytes).ok()?;
+    let codec = rfc6381_avc1(
+        sps_info.profile_idc,
+        sps_info.constraint_flags,
+        sps_info.level_idc,
     );
+    let interlaced = !sps_info.frame_mbs_only;
+    let (width, height) = (sps_info.width as u16, sps_info.height as u16);
+    let record = avc_record(&sps_info, sps_bytes, pps_bytes);
 
-    let (width, height) = sps_dimensions(&sps);
-    let record = avc_record(&sps, sps_bytes, pps_bytes);
-
-    // WebCodecs `description` = the raw record bytes (no box header).
     let mut description = vec![0u8; record.serialized_len()];
     let n = record.serialize_into(&mut description).ok()?;
     description.truncate(n);
@@ -114,31 +83,24 @@ fn build_video_config(sps_bytes: &[u8], pps_bytes: &[u8]) -> Option<VideoConfig>
     })
 }
 
-/// Coded luma dimensions from an h264_reader SPS (§7.4.2.1.1, accounting for
-/// frame_cropping and frame_mbs_only). Returns (width, height) in pixels.
-fn sps_dimensions(sps: &SeqParameterSet) -> (u16, u16) {
-    let (w, h) = sps.pixel_dimensions().unwrap_or((0, 0));
-    (w as u16, h as u16)
-}
-
 /// High-family profile IDs that trigger ISO 14496-15 §5.3.3.1.2 ext fields.
 /// Matches the list in `transmux::avc_config::HIGH_PROFILE_IDS`.
 const HIGH_PROFILE_IDS: [u8; 4] = [100, 110, 122, 144];
 
-/// Build the transmux `AVCDecoderConfigurationRecord` from raw SPS/PPS NAL
-/// bytes and the decoded SPS (for high-profile extension fields).
+/// Build the transmux `AVCDecoderConfigurationRecord` from decoded SPS info
+/// and raw SPS/PPS NAL bytes.
 pub(crate) fn avc_record(
-    sps: &SeqParameterSet,
+    sps_info: &AvcSpsInfo,
     sps_bytes: &[u8],
     pps_bytes: &[u8],
 ) -> AVCDecoderConfigurationRecord {
-    let profile: u8 = sps.profile_idc.into();
+    let profile: u8 = sps_info.profile_idc;
     let high = HIGH_PROFILE_IDS.contains(&profile);
     let (chroma_format, luma8, chroma8) = if high {
         (
-            Some(chroma_format_idc(&sps.chroma_info.chroma_format)),
-            Some(sps.chroma_info.bit_depth_luma_minus8),
-            Some(sps.chroma_info.bit_depth_chroma_minus8),
+            Some(sps_info.chroma_format_idc),
+            Some(sps_info.bit_depth_luma - 8),
+            Some(sps_info.bit_depth_chroma - 8),
         )
     } else {
         (None, None, None)
@@ -146,8 +108,8 @@ pub(crate) fn avc_record(
     AVCDecoderConfigurationRecord {
         configuration_version: 1,
         profile_indication: profile,
-        profile_compatibility: sps.constraint_flags.into(),
-        level_indication: sps.level_idc,
+        profile_compatibility: sps_info.constraint_flags,
+        level_indication: sps_info.level_idc,
         length_size_minus_one: 3,
         sps: vec![AvcSps(sps_bytes.to_vec())],
         pps: vec![AvcPps(pps_bytes.to_vec())],
@@ -155,16 +117,6 @@ pub(crate) fn avc_record(
         bit_depth_luma_minus8: luma8,
         bit_depth_chroma_minus8: chroma8,
         sps_ext: vec![],
-    }
-}
-
-fn chroma_format_idc(fmt: &ChromaFormat) -> u8 {
-    match fmt {
-        ChromaFormat::Monochrome => 0,
-        ChromaFormat::YUV420 => 1,
-        ChromaFormat::YUV422 => 2,
-        ChromaFormat::YUV444 => 3,
-        ChromaFormat::Invalid(v) => *v as u8,
     }
 }
 
