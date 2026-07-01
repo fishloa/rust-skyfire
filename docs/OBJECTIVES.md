@@ -4,7 +4,7 @@
 > Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
 > when an epic's state changes, update its row in the same change.
 
-_Last updated: 2026-06-23._
+_Last updated: 2026-07-01._
 
 ## Primary objective
 
@@ -26,6 +26,10 @@ is carried untouched. The client reuses skyfire's WebCodecs + WASM + sync.
   **WebCodecs** (HW video); decode the selected AC-3/E-AC-3 PID in **WASM** →
   PCM → WebAudio; parse **DVB subtitles** → cues; **audio-master sync** off
   PCR/PTS. Browser owns canvas/WebAudio/overlay/controls; WASM is the bridge.
+  H.264 container layer (avcC, Annex B↔fMP4) uses the **`transmux`** crate; where
+  WebCodecs is unavailable (e.g. some iOS/WebKit) the client repackages the
+  progressive H.264 into **fMP4 and plays via MSE** as a fallback
+  ([ADR 0009](decisions/0009-transmux-fmp4-mse-fallback.md)).
 - **Audio is never re-encoded.** Only video is touched, and only when interlaced.
 - **`oxideav-h264` is dropped from the browser** (server delivers progressive);
   kept upstream as a conformance asset only.

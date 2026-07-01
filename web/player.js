@@ -49,6 +49,7 @@ function drawFrame(frame) {
     stats.w = frame.displayWidth;
     stats.h = frame.displayHeight;
     lastVideoTs = frame.timestamp;
+    stats.videoCurrentTime = frame.timestamp / 1_000_000;
     window.__sfStats = { ...stats };
   } finally {
     frame.close();
@@ -60,10 +61,27 @@ function drawFrame(frame) {
 const stats = {
   decoded: 0, drawn: 0, dropped: 0, w: 0, h: 0, aus: 0, path: "wc",
   audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0, avSkewMs: 0,
+  videoPath: "", mseSegments: 0, videoCurrentTime: 0,
 };
 let videoDecoder = null;
 let decoderConfigured = false;
 let sawKeyframe = false;
+
+// ── MSE video fallback state ─────────────────────────────────────────────────
+let videoPath = null;             // "webcodecs" or "mse", decided once
+let mseVideoEl = null;            // muted <video> element (MSE mode only)
+let mseMediaSource = null;        // MediaSource instance
+let mseSourceBuffer = null;       // video-only SourceBuffer
+let mseBufferQueue = [];          // appends queued while sourceBuffer.updating
+let mseAppending = false;         // true while we are in the updateend drain cycle
+let mseDriftRaf = null;           // rAF handle for drift corrector
+const MSE_DRIFT_SEEK_THRESH = 0.25; // seconds — hard seek
+const MSE_DRIFT_NUDGE_THRESH = 0.05; // seconds — playbackRate nudge
+
+// Query-param flags, evaluated once at module load (location is a browser global).
+const videoMseForce = (() => {
+  try { return new URLSearchParams(location.search).has("video"); } catch (_) { return false; }
+})();
 
 // ── audio-master A/V sync (#32) ─────────────────────────────────────────────
 //
@@ -499,11 +517,6 @@ async function main() {
   await init();
   bridge = new SkyfireBridge();
 
-  if (typeof VideoDecoder === "undefined") {
-    fatal("WebCodecs VideoDecoder unavailable in this browser");
-    return;
-  }
-
   // Source TS. Default to the committed progressive fixture (WebCodecs can only
   // decode progressive H.264 — interlaced is deinterlaced server-side per ADR
   // 0008). Override with ?src= to point at the live /skyfire/<slug> endpoint or
@@ -513,6 +526,10 @@ async function main() {
   // held open and the body should never "end" — so a clean end or a drop both
   // trigger a bounded reconnect. A finite fixture (no ?live) just plays to EOS.
   const live = new URLSearchParams(location.search).has("live");
+
+  // ── decide video path once the codec string is known ────────────────────
+  videoPath = null; // reset for this session
+
   const MAX_RECONNECT = 5;
   let attempt = 0;
 
@@ -543,17 +560,194 @@ async function main() {
   // End of stream — flush the bridge, drain, then flush the decoder.
   callBridge(() => {
     bridge.flush();
-    pumpVideoInner();
+    if (videoPath === "webcodecs") pumpVideoInner();
     pumpSubtitlesInner();
   });
   // pumpAudio uses async AudioWorklet setup; await it separately.
   await pumpAudio();
-  if (videoDecoder && decoderConfigured) {
+  if (videoPath === "webcodecs" && videoDecoder && decoderConfigured) {
     try { await videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
+  }
+  // MSE: end the stream.
+  if (videoPath === "mse" && mseSourceBuffer && mseMediaSource) {
+    try {
+      drainMseBufferQueue();
+      if (mseMediaSource.readyState === "open") mseMediaSource.endOfStream();
+    } catch (e) { console.warn("[skyfire] MSE endOfStream", e); }
   }
 
   status(`done — video ${stats.decoded}f/${stats.drawn}drawn, audio ${stats.audioChunks} chunks / ${stats.audioSamples} samples, played ${stats.audioSec.toFixed(1)}s`);
   window.__sfStats = { ...stats, done: true };
+}
+
+// ── capability gate: decide video path once the codec string is known ──────
+
+async function decideVideoPath(codec, forceMse) {
+  if (videoPath !== null) return;
+
+  // Force MSE via ?video=mse for testing.
+  if (forceMse) {
+    videoPath = "mse";
+    stats.videoPath = "mse";
+    status("MSE video fallback (forced via ?video=mse)");
+    setupMse(codec);
+    return;
+  }
+
+  // WebCodecs gate.
+  if (typeof VideoDecoder !== "undefined") {
+    try {
+      const cfg = { codec, optimizeForLatency: true };
+      const sup = await VideoDecoder.isConfigSupported(cfg);
+      if (sup.supported) {
+        videoPath = "webcodecs";
+        stats.videoPath = "webcodecs";
+        status(`WebCodecs path: ${codec}`);
+        return;
+      }
+    } catch (_) { /* fall through to MSE */ }
+  }
+  videoPath = "mse";
+  stats.videoPath = "mse";
+  status(`MSE video fallback: ${codec}`);
+  setupMse(codec);
+}
+
+// ── MSE video fallback helpers ──────────────────────────────────────────────
+
+function setupMse(codec) {
+  const mime = `video/mp4; codecs="${codec}"`;
+  if (!MediaSource.isTypeSupported(mime)) {
+    fatal(`MSE: type not supported — ${mime}`);
+    return;
+  }
+
+  mseVideoEl = document.createElement("video");
+  mseVideoEl.muted = true;
+  mseVideoEl.playsInline = true;
+  mseVideoEl.style.display = "block";
+  mseVideoEl.style.width = "100%";
+  mseVideoEl.style.height = "auto";
+  // Insert after the canvas area.
+  const container = canvas.parentElement || document.body;
+  container.insertBefore(mseVideoEl, canvas.nextSibling || null);
+
+  mseMediaSource = new MediaSource();
+  mseVideoEl.src = URL.createObjectURL(mseMediaSource);
+
+  mseMediaSource.addEventListener("sourceopen", () => {
+    try {
+      mseSourceBuffer = mseMediaSource.addSourceBuffer(mime);
+    } catch (e) {
+      fatal("MSE addSourceBuffer", e);
+      return;
+    }
+
+    mseSourceBuffer.addEventListener("updateend", () => {
+      drainMseBufferQueue();
+    });
+
+    // Append init segment.
+    const init = bridge.video_init_segment();
+    if (init && init.length > 0) {
+      mseSourceBuffer.appendBuffer(init);
+    }
+
+    // Start playback once we have init data.
+    mseVideoEl.play().catch((e) => console.warn("[skyfire] MSE play", e));
+
+    // Kick off the drift corrector.
+    startMseDriftCorrector();
+  });
+}
+
+function drainMseBufferQueue() {
+  if (!mseSourceBuffer || mseAppending) return;
+  if (mseBufferQueue.length === 0) return;
+  if (mseSourceBuffer.updating) return;
+
+  mseAppending = true;
+  const seg = mseBufferQueue.shift();
+  try {
+    mseSourceBuffer.appendBuffer(seg);
+  } catch (e) {
+    console.warn("[skyfire] MSE appendBuffer error", e);
+  }
+  mseAppending = false;
+}
+
+function queueMseAppend(buf) {
+  mseBufferQueue.push(buf);
+  if (mseSourceBuffer && !mseSourceBuffer.updating) {
+    drainMseBufferQueue();
+  }
+}
+
+function pumpVideoMseInner() {
+  // Don't drain until the video path has been decided by main().
+  if (videoPath !== "mse") return;
+
+  // Drain media segments.
+  for (;;) {
+    const seg = bridge.take_video_media_segment();
+    if (!seg) break;
+    stats.mseSegments++;
+    queueMseAppend(seg.bytes);
+  }
+}
+
+function pumpVideoMse() {
+  callBridge(() => pumpVideoMseInner());
+}
+
+// A/V drift corrector (MSE mode only).
+// Audio is the master clock (WASM → WebAudio). The muted <video> is slaved to it.
+function startMseDriftCorrector() {
+  if (mseDriftRaf) return;
+
+  function corrector() {
+    if (!mseVideoEl || !mseSourceBuffer) return;
+
+    const vt = mseVideoEl.currentTime;
+    stats.videoCurrentTime = vt;
+
+    // If buffered data exists but currentTime is before it (cold start on a
+    // non-zero DTS epoch), seek to the start of the buffered range.
+    if (mseVideoEl.buffered.length > 0 && vt < mseVideoEl.buffered.start(0)) {
+      mseVideoEl.currentTime = mseVideoEl.buffered.start(0);
+      mseVideoEl.playbackRate = 1.0;
+      mseDriftRaf = requestAnimationFrame(corrector);
+      return;
+    }
+
+    // Only correct drift once the audio clock is actually running (non-zero).
+    // The audio and video share the same broadcast 90 kHz epoch, so clockSec
+    // will land inside the buffered range once audio starts.
+    const clock = audioClockUs();
+    if (clock === null || clock === 0) {
+      mseDriftRaf = requestAnimationFrame(corrector);
+      return;
+    }
+
+    const clockSec = clock / 1_000_000;
+    const drift = vt - clockSec;
+    const absDrift = Math.abs(drift);
+
+    if (absDrift > MSE_DRIFT_SEEK_THRESH) {
+      // Hard seek.
+      mseVideoEl.currentTime = clockSec;
+      mseVideoEl.playbackRate = 1.0;
+    } else if (absDrift > MSE_DRIFT_NUDGE_THRESH) {
+      // Nudge: slow down if ahead, speed up if behind.
+      mseVideoEl.playbackRate = drift > 0 ? 0.98 : 1.02;
+    } else {
+      mseVideoEl.playbackRate = 1.0;
+    }
+
+    mseDriftRaf = requestAnimationFrame(corrector);
+  }
+
+  mseDriftRaf = requestAnimationFrame(corrector);
 }
 
 // Consume one fetch of the source TS: hold the connection open (shows "tuning…"
@@ -565,10 +759,26 @@ async function consumeStream(src) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const reader = resp.body.getReader();
   let trackLogged = false;
+  let pathDecided = false;          // once set, decideVideoPath has been called
 
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) return;
+
+    if (done) {
+      // End of stream: if the path hasn't been decided yet but the last
+      // chunk(s) contained the SPS, decide now; then drain one final time.
+      if (!pathDecided && bridge.video_codec()) {
+        pathDecided = true;
+        await decideVideoPath(bridge.video_codec(), videoMseForce);
+      }
+      callBridge(() => {
+        if (videoPath === "webcodecs") pumpVideoInner();
+        else if (videoPath === "mse") pumpVideoMseInner();
+        pumpAudioInner();
+        pumpSubtitlesInner();
+      });
+      return;
+    }
 
     callBridge(() => {
       bridge.feed(value);
@@ -583,16 +793,33 @@ async function consumeStream(src) {
         }
       }
 
-      pumpVideoInner();
+      // Drain video through the active path. Either it was decided in a
+      // previous iteration, or it's still null (no SPS yet) — both
+      // branches are no-ops when the path isn't set.
+      if (videoPath === "webcodecs") {
+        pumpVideoInner();
+      } else if (videoPath === "mse") {
+        pumpVideoMseInner();
+      }
       pumpAudioInner();
       pumpSubtitlesInner();
     });
 
+    // Decide the video path AFTER feeding this chunk. video_codec() becomes
+    // non-null once the SPS has been parsed, which happens inside feed().
+    if (!pathDecided && bridge.video_codec()) {
+      pathDecided = true;
+      await decideVideoPath(bridge.video_codec(), videoMseForce);
+    }
+
     // Back-pressure: video presents at the audio (realtime) pace, so cap how far
     // decode runs ahead — otherwise the whole clip queues as open VideoFrames.
-    while (presentQueue.length > 60) {
-      // eslint-disable-next-line no-await-in-loop
-      await sleep(40);
+    // Only applies in WebCodecs mode (MSE uses the native <video> buffering).
+    if (videoPath === "webcodecs" || videoPath === null) {
+      while (presentQueue.length > 60) {
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(40);
+      }
     }
   }
 }
