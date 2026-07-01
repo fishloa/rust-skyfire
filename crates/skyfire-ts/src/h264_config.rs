@@ -158,55 +158,14 @@ fn build_avcc_description(
 ///
 /// The output is suitable for `EncodedVideoChunk` when the `VideoDecoder`
 /// is configured with an avcC `description`.
+/// Convert an Annex-B NAL stream to AVCC length-prefixed format
+/// (4-byte big-endian length before each NAL), suitable for
+/// `EncodedVideoChunk` when the `VideoDecoder` has an avcC `description`.
+///
+/// Thin wrapper over `transmux::annexb_to_length_prefixed` (ISO/IEC 14496-15
+/// length-prefixed mdat form). Retained so existing call sites keep compiling.
 pub fn annexb_to_avcc(annexb: &[u8]) -> Vec<u8> {
-    // Collect (offset, length) for each NAL unit
-    let mut nals: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0usize;
-    while i + 3 < annexb.len() {
-        let sc_len = if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 1 {
-            3
-        } else if i + 4 <= annexb.len()
-            && annexb[i] == 0
-            && annexb[i + 1] == 0
-            && annexb[i + 2] == 0
-            && annexb[i + 3] == 1
-        {
-            4
-        } else {
-            i += 1;
-            continue;
-        };
-        let nal_start = i + sc_len;
-        // Find the next start code to determine this NAL unit's end
-        let mut next = annexb.len();
-        let mut j = nal_start;
-        while j + 4 <= annexb.len() {
-            if annexb[j] == 0 && annexb[j + 1] == 0 && annexb[j + 2] == 0 && annexb[j + 3] == 1 {
-                next = j;
-                break;
-            }
-            if j + 3 <= annexb.len() && annexb[j] == 0 && annexb[j + 1] == 0 && annexb[j + 2] == 1 {
-                next = j;
-                break;
-            }
-            j += 1;
-        }
-        nals.push((nal_start, next - nal_start));
-        i = next;
-    }
-
-    // Build AVCC output with 4-byte length prefixes
-    let total_len: usize = nals.iter().map(|(_, len)| len + 4).sum();
-    let mut avcc = Vec::with_capacity(total_len);
-    for (start, len) in &nals {
-        let len_u32 = *len as u32;
-        avcc.push((len_u32 >> 24) as u8);
-        avcc.push((len_u32 >> 16) as u8);
-        avcc.push((len_u32 >> 8) as u8);
-        avcc.push(len_u32 as u8);
-        avcc.extend_from_slice(&annexb[*start..*start + *len]);
-    }
-    avcc
+    transmux::annexb_to_length_prefixed(annexb)
 }
 
 #[cfg(test)]
@@ -234,6 +193,17 @@ mod tests {
         demux.flush();
         let units = demux.drain();
         units.into_iter().filter(|au| au.pid == video_pid).collect()
+    }
+
+    #[test]
+    fn annexb_to_avcc_matches_transmux() {
+        // Two NALs: 4-byte then 3-byte start code.
+        let annexb: &[u8] = &[0, 0, 0, 1, 0x67, 0xAA, 0, 0, 1, 0x68, 0xBB, 0xCC];
+        let got = annexb_to_avcc(annexb);
+        let want = transmux::annexb_to_length_prefixed(annexb);
+        assert_eq!(got, want);
+        // Explicit expected: [len=2][67 AA][len=3][68 BB CC]
+        assert_eq!(got, vec![0, 0, 0, 2, 0x67, 0xAA, 0, 0, 0, 3, 0x68, 0xBB, 0xCC]);
     }
 
     #[test]

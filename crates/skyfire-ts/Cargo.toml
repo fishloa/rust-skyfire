@@ -14,6 +14,7 @@ dvb-si = "7.9"
 dvb-subtitle = "0.1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 h264-reader = "0.8"
+transmux = "0.1"
 
 [dev-dependencies]
 skyfire-ac3 = { path = "../../crates/skyfire-ac3" }

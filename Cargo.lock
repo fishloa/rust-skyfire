@@ -762,6 +762,7 @@ dependencies = [
  "flate2",
  "h264-reader",
  "skyfire-ac3",
+ "transmux",
 ]
 
 [[package]]
@@ -905,6 +906,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "transmux"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c989dcb3a71ee2527f3b5475710f70ef2a2ae0b082580d1ca28600baf89aef45"
+dependencies = [
+ "broadcast-common",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
