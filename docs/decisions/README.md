@@ -16,6 +16,7 @@ ADR that supersedes the old one (and mark the old one `Superseded by NNNN`).
 | [0006](0006-server-side-deinterlace-for-mobile.md) | Server-side deinterlace — only universal in-browser path for 1080i | Accepted | 2026-06-21 |
 | [0007](0007-transcode-to-hls-server-thin-client.md) | GPU transcode-to-HLS server (H.264+AAC, in-process libav) + thin client | Superseded by 0008 | 2026-06-21 |
 | [0008](0008-video-only-transcode-wasm-bridge.md) | Video-only server transcode (TS) + skyfire WASM bridge client | Accepted | 2026-06-22 |
+| [0009](0009-transmux-fmp4-mse-fallback.md) | transmux container layer + fMP4/MSE video fallback (drops h264_reader) | Accepted | 2026-07-01 |
 
 ## Format
 
