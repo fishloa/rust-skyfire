@@ -967,18 +967,18 @@ impl SkyfireBridge {
                         let _ = self.audio_decoder.decode_au(&au.es_bytes).map(|opt| {
                             if let Some(decoded) = opt {
                                 if decoded.sample_rate > 0 && decoded.channels > 0 {
-                                    let samples_f32: Vec<f32> = decoded
-                                        .pcm_s16le
-                                        .chunks_exact(2)
-                                        .map(|b| {
-                                            let s = i16::from_le_bytes([b[0], b[1]]);
-                                            f32::from(s) / 32_768.0_f32
-                                        })
-                                        .collect();
+                                    // Downmix multichannel (5.1 AC-3/E-AC-3) to
+                                    // stereo in WASM — browsers reliably render
+                                    // only stereo; discrete 5.1 goes silent (#43).
+                                    let samples_f32 =
+                                        skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
+                                            &decoded.pcm_s16le,
+                                            decoded.channels,
+                                        );
                                     self.audio_pcm_pending.push(WasmPcmChunk {
                                         pts_ticks,
                                         sample_rate: decoded.sample_rate,
-                                        channels: decoded.channels,
+                                        channels: 2,
                                         samples: samples_f32,
                                     });
                                 }
@@ -1777,6 +1777,50 @@ mod tests {
             total_samples,
             non_zero,
             with_pts,
+        );
+    }
+
+    /// 5.1 E-AC-3 (6-channel) source must come out as audible **stereo** — the
+    /// bridge downmixes multichannel in WASM so it never routes to channels the
+    /// browser can't output (#43). Fixture: fixtures/eac3-51.ts (6ch tone).
+    #[test]
+    fn bridge_downmixes_51_eac3_to_stereo() {
+        let data = load_fixture("eac3-51.ts");
+        let mut bridge = SkyfireBridge::new();
+        let mut all_chunks: Vec<WasmPcmChunk> = Vec::new();
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+            all_chunks.extend(bridge.take_audio_pcm());
+        }
+        bridge.flush();
+        all_chunks.extend(bridge.take_audio_pcm());
+
+        assert!(!all_chunks.is_empty(), "must decode PCM from 5.1 E-AC-3");
+        for c in &all_chunks {
+            // Source is 6ch, output MUST be stereo (proves the downmix ran).
+            assert_eq!(
+                c.channels, 2,
+                "5.1 must be downmixed to stereo, got {}",
+                c.channels
+            );
+            // Interleaved stereo → even sample count.
+            assert_eq!(c.samples.len() % 2, 0, "stereo interleave");
+            // Downmix output stays in unit range.
+            assert!(
+                c.samples.iter().all(|s| (-1.0..=1.0).contains(s)),
+                "downmixed samples must be clamped to [-1, 1]"
+            );
+        }
+        let total: usize = all_chunks.iter().map(|c| c.samples.len()).sum();
+        let non_zero = all_chunks
+            .iter()
+            .flat_map(|c| c.samples.iter())
+            .filter(|&&s| s != 0.0)
+            .count();
+        assert!(total > 1000, "expected substantial PCM, got {total}");
+        assert!(
+            non_zero > total / 100,
+            "downmix must be audible, not silence"
         );
     }
 
