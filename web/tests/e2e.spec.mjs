@@ -76,3 +76,46 @@ test("PsF oracle PASS on a clean progressive stream", async ({ page }) => {
   }));
   expect(v.verdict, `oracle verdict (frames=${v.frames}, err=${v.error})`).toBe("pass");
 });
+
+// ── MSE / fMP4 video fallback ──────────────────────────────────────────────
+
+async function waitForStats(page, timeoutMs = 15000) {
+  return page.evaluate((cap) => new Promise((res) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const s = window.__sfStats;
+      if (s && s.videoPath && !s.done && s.mseSegments > 0) return res(s);
+      if (Date.now() - t0 > cap) return res(s || { note: "timed out" });
+      setTimeout(tick, 200);
+    };
+    tick();
+  }), timeoutMs);
+}
+
+test("MSE fallback: segments appended and video time advances", async ({ page }) => {
+  // Skip if MSE is not supported for this codec in headless Chromium.
+  const codecCheck = await page.evaluate(() => {
+    try {
+      return MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028"');
+    } catch (_) { return false; }
+  });
+  test.skip(!codecCheck, "MSE / video/mp4 not supported in this browser");
+
+  const errors = [];
+  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+
+  await page.goto(`${BASE}/index.html?src=/fixtures/h264-25fps.ts&video=mse`);
+  const stats = await waitForStats(page);
+
+  expect(stats.videoPath, "video path is mse").toBe("mse");
+  expect(stats.mseSegments, "at least one MSE segment appended").toBeGreaterThan(0);
+
+  // Read currentTime, wait ~1 s, read again — must increase.
+  const t1 = stats.videoCurrentTime;
+  await page.waitForTimeout(1000);
+  const t2 = await page.evaluate(() => window.__sfStats?.videoCurrentTime ?? 0);
+  expect(t2, "video currentTime increases over time").toBeGreaterThan(t1);
+
+  const realErrors = errors.filter((e) => !/favicon/.test(e));
+  expect(realErrors, "no MSE errors").toEqual([]);
+});
