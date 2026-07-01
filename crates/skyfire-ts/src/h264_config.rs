@@ -1,18 +1,32 @@
+use broadcast_common::traits::Serialize;
 use h264_reader::annexb::AnnexBReader;
-use h264_reader::nal::{sps::SeqParameterSet, Nal, RefNal, UnitType};
+use h264_reader::nal::{
+    sps::{ChromaFormat, SeqParameterSet},
+    Nal, RefNal, UnitType,
+};
 use h264_reader::push::NalInterest;
+use transmux::nalu_types::{AvcPps, AvcSps};
+use transmux::{AVCConfigurationBox, AVCDecoderConfigurationRecord};
 
 /// Decoder configuration ready for WebCodecs `VideoDecoder.configure`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct VideoConfig {
     /// RFC 6381 codec string (e.g. `avc1.640028`).
     pub codec: String,
-    /// `AVCDecoderConfigurationRecord` bytes (`avcC` box).
+    /// `AVCDecoderConfigurationRecord` bytes (`avcC` box) — bare record,
+    /// no box header, for WebCodecs `description`.
     pub description: Vec<u8>,
     /// True when the SPS has `frame_mbs_only_flag == 0` — i.e. the stream
     /// is interlaced / field-coded (PAFF or MBAFF). WebCodecs cannot
     /// decode this; the shell must route it through the software decoder.
     pub interlaced: bool,
+    /// Coded luma width in pixels (from SPS, after frame_cropping).
+    pub width: u16,
+    /// Coded luma height in pixels (from SPS, after frame_cropping).
+    pub height: u16,
+    /// Transmux AVCConfigurationBox, for building an MSE init segment
+    /// (Task 4+).
+    pub avcc_box: transmux::AVCConfigurationBox,
 }
 
 /// Build a WebCodecs `VideoDecoder` config by extracting SPS/PPS from
@@ -80,74 +94,78 @@ fn build_video_config(sps_bytes: &[u8], pps_bytes: &[u8]) -> Option<VideoConfig>
         h264_reader::nal::sps::FrameMbsFlags::Fields { .. }
     );
 
-    let description = build_avcc_description(
-        sps.profile_idc.into(),
-        sps.constraint_flags.into(),
-        sps.level_idc,
-        sps_bytes,
-        pps_bytes,
-    );
+    let (width, height) = sps_dimensions(&sps);
+    let record = avc_record(&sps, sps_bytes, pps_bytes);
+
+    // WebCodecs `description` = the raw record bytes (no box header).
+    let mut description = vec![0u8; record.serialized_len()];
+    let n = record.serialize_into(&mut description).ok()?;
+    description.truncate(n);
+
+    let avcc_box = AVCConfigurationBox::new(record);
 
     Some(VideoConfig {
         codec,
         description,
         interlaced,
+        width,
+        height,
+        avcc_box,
     })
 }
 
-/// Build an AVCDecoderConfigurationRecord per ISO/IEC 14496-15.
-///
-/// Layout:
-///   u8  configuration_version = 1
-///   u8  AVCProfileIndication
-///   u8  profile_compatibility
-///   u8  AVCLevelIndication
-///   6 bits reserved + 2 bits lengthSizeMinusOne
-///   3 bits reserved + 5 bits numOfSequenceParameterSets
-///   for each SPS:
-///     u16 sequenceParameterSetLength
-///     u8[length] sequenceParameterSetNALUnit
-///   u8  numOfPictureParameterSets
-///   for each PPS:
-///     u16 pictureParameterSetLength
-///     u8[length] pictureParameterSetNALUnit
-fn build_avcc_description(
-    profile_idc: u8,
-    constraint_flags: u8,
-    level_idc: u8,
-    sps_data: &[u8],
-    pps: &[u8],
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(7 + 2 + sps_data.len() + 1 + 2 + pps.len());
+/// Coded luma dimensions from an h264_reader SPS (§7.4.2.1.1, accounting for
+/// frame_cropping and frame_mbs_only). Returns (width, height) in pixels.
+fn sps_dimensions(sps: &SeqParameterSet) -> (u16, u16) {
+    let (w, h) = sps.pixel_dimensions().unwrap_or((0, 0));
+    (w as u16, h as u16)
+}
 
-    // configuration_version = 1
-    bytes.push(1);
-    // AVCProfileIndication
-    bytes.push(profile_idc);
-    // profile_compatibility
-    bytes.push(constraint_flags);
-    // AVCLevelIndication
-    bytes.push(level_idc);
-    // 6 bits reserved (0b111111) + 2 bits lengthSizeMinusOne = 3 (4-byte length)
-    bytes.push(0b1111_1100 | 3);
-    // 3 bits reserved (0b111) + 5 bits numOfSequenceParameterSets = 1
-    bytes.push(0b111_00000 | 1);
-    // SPS length (16 bits big-endian)
-    let sps_len = sps_data.len() as u16;
-    bytes.push((sps_len >> 8) as u8);
-    bytes.push(sps_len as u8);
-    // SPS NAL unit bytes
-    bytes.extend_from_slice(sps_data);
-    // numOfPictureParameterSets = 1
-    bytes.push(1);
-    // PPS length (16 bits big-endian)
-    let pps_len = pps.len() as u16;
-    bytes.push((pps_len >> 8) as u8);
-    bytes.push(pps_len as u8);
-    // PPS NAL unit bytes
-    bytes.extend_from_slice(pps);
+/// High-family profile IDs that trigger ISO 14496-15 §5.3.3.1.2 ext fields.
+/// Matches the list in `transmux::avc_config::HIGH_PROFILE_IDS`.
+const HIGH_PROFILE_IDS: [u8; 4] = [100, 110, 122, 144];
 
-    bytes
+/// Build the transmux `AVCDecoderConfigurationRecord` from raw SPS/PPS NAL
+/// bytes and the decoded SPS (for high-profile extension fields).
+pub(crate) fn avc_record(
+    sps: &SeqParameterSet,
+    sps_bytes: &[u8],
+    pps_bytes: &[u8],
+) -> AVCDecoderConfigurationRecord {
+    let profile: u8 = sps.profile_idc.into();
+    let high = HIGH_PROFILE_IDS.contains(&profile);
+    let (chroma_format, luma8, chroma8) = if high {
+        (
+            Some(chroma_format_idc(&sps.chroma_info.chroma_format)),
+            Some(sps.chroma_info.bit_depth_luma_minus8),
+            Some(sps.chroma_info.bit_depth_chroma_minus8),
+        )
+    } else {
+        (None, None, None)
+    };
+    AVCDecoderConfigurationRecord {
+        configuration_version: 1,
+        profile_indication: profile,
+        profile_compatibility: sps.constraint_flags.into(),
+        level_indication: sps.level_idc,
+        length_size_minus_one: 3,
+        sps: vec![AvcSps(sps_bytes.to_vec())],
+        pps: vec![AvcPps(pps_bytes.to_vec())],
+        chroma_format,
+        bit_depth_luma_minus8: luma8,
+        bit_depth_chroma_minus8: chroma8,
+        sps_ext: vec![],
+    }
+}
+
+fn chroma_format_idc(fmt: &ChromaFormat) -> u8 {
+    match fmt {
+        ChromaFormat::Monochrome => 0,
+        ChromaFormat::YUV420 => 1,
+        ChromaFormat::YUV422 => 2,
+        ChromaFormat::YUV444 => 3,
+        ChromaFormat::Invalid(v) => *v as u8,
+    }
 }
 
 /// Convert an Annex-B NAL stream to AVCC length-prefixed format.
@@ -203,7 +221,10 @@ mod tests {
         let want = transmux::annexb_to_length_prefixed(annexb);
         assert_eq!(got, want);
         // Explicit expected: [len=2][67 AA][len=3][68 BB CC]
-        assert_eq!(got, vec![0, 0, 0, 2, 0x67, 0xAA, 0, 0, 0, 3, 0x68, 0xBB, 0xCC]);
+        assert_eq!(
+            got,
+            vec![0, 0, 0, 2, 0x67, 0xAA, 0, 0, 0, 3, 0x68, 0xBB, 0xCC]
+        );
     }
 
     #[test]
@@ -212,6 +233,8 @@ mod tests {
         let config = h264_decoder_config(&video_units).expect("must build config from gulli-15s");
 
         assert_eq!(config.codec, "avc1.640028");
+        assert_eq!(config.width, 1920, "gulli-15s width");
+        assert_eq!(config.height, 1080, "gulli-15s height");
 
         // Verify avcC structure:
         assert_eq!(config.description[0], 1, "configuration_version");
@@ -239,6 +262,12 @@ mod tests {
         // PPS starts with 0x68
         assert_eq!(config.description[pps_offset + 3], 0x68, "PPS NAL header");
 
+        // High profile ⇒ ISO 14496-15 §5.3.3.1.2 ext fields present after PPS.
+        assert!(
+            config.description.len() > pps_offset + 3 + pps_len,
+            "high-profile ext bytes must follow the PPS"
+        );
+
         // Full golden avcC bytes:
         let expected_avcc: &[u8] = &[
             0x01, // version
@@ -255,6 +284,8 @@ mod tests {
             0x00, 0x05, // PPS length = 5
             // PPS NAL unit:
             0x68, 0xea, 0x57, 0x52, 0x50,
+            // High-profile ext (chroma=YUV420, 8-bit, no sps_ext):
+            0xfd, 0xf8, 0xf8, 0x00,
         ];
         assert_eq!(
             config.description, expected_avcc,
@@ -289,6 +320,17 @@ mod tests {
             config.description, expected_avcc,
             "avcC golden bytes mismatch"
         );
+    }
+
+    #[test]
+    fn avcc_record_roundtrips() {
+        let video_units = video_access_units("gulli-15s.ts", 0x0100);
+        let cfg = h264_decoder_config(&video_units).unwrap();
+        // Parse back via AVCConfigurationBox::parse_body (bare record bytes).
+        let reparsed = transmux::AVCConfigurationBox::parse_body(&cfg.description)
+            .expect("record must reparse");
+        assert_eq!(reparsed.config.profile_indication, 100);
+        assert_eq!(reparsed.config.level_indication, 40);
     }
 
     #[test]

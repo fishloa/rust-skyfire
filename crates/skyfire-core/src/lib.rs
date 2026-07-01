@@ -423,7 +423,8 @@ mod tests {
 
         assert_eq!(config.codec, "avc1.640028");
 
-        // Golden avcC bytes from skyfire-ts h264_config golden test.
+        // Golden avcC bytes from skyfire-ts h264_config golden test (High profile
+        // includes ISO 14496-15 §5.3.3.1.2 ext fields).
         let expected_avcc: &[u8] = &[
             0x01, // version
             0x64, // profile_idc = 100 (High)
@@ -439,6 +440,8 @@ mod tests {
             0x00, 0x05, // PPS length = 5
             // PPS NAL unit:
             0x68, 0xea, 0x57, 0x52, 0x50,
+            // High-profile ext (chroma=YUV420, 8-bit, no sps_ext):
+            0xfd, 0xf8, 0xf8, 0x00,
         ];
         assert_eq!(
             config.description, expected_avcc,
