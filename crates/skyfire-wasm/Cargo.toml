@@ -18,4 +18,5 @@ skyfire-mpa.workspace = true
 dvb-common = "7.9"
 dvb-si = "7.9"
 dvb-subtitle = "0.1"
+transmux = "0.1"
 wasm-bindgen = "0.2"

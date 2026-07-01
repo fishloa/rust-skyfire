@@ -382,6 +382,18 @@ impl WasmVideoAu {
     }
 }
 
+/// One CMAF media segment (`styp` + `moof` + `mdat`) for the video track.
+#[wasm_bindgen]
+pub struct WasmMediaSegment {
+    /// Decode time of the first sample, 90 kHz ticks.
+    pub base_media_decode_time: u64,
+    /// Serialized segment bytes.
+    #[wasm_bindgen(getter_with_clone)]
+    pub bytes: Vec<u8>,
+    /// Number of samples in the segment.
+    pub sample_count: u32,
+}
+
 /// Scaffold: PCM chunk — produced in issue #31.
 #[wasm_bindgen]
 pub struct WasmPcmChunk {
@@ -513,6 +525,11 @@ pub struct SkyfireBridge {
     // Access units drained before the PMT was parsed (channel is None).
     // Replayed once the channel map becomes known.
     pre_channel_aus: Vec<skyfire_ts::AccessUnit>,
+
+    // CMAF media segment sequence number (starts at 1, increments per segment).
+    media_seq: u32,
+    // Set to true when flush() has been called (end of stream).
+    ended: bool,
 }
 
 #[wasm_bindgen]
@@ -539,6 +556,8 @@ impl SkyfireBridge {
             subtitle_cues_pending: Vec::new(),
             latest_pts: None,
             pre_channel_aus: Vec::new(),
+            media_seq: 1,
+            ended: false,
         }
     }
 
@@ -654,6 +673,26 @@ impl SkyfireBridge {
         })
     }
 
+    /// CMAF initialization segment (`ftyp` + fragmented-init `moov`) for
+    /// the video track, for MSE playback. Empty until SPS/PPS have been seen.
+    /// Track id = 1, timescale = 90_000 (matches TS PTS).
+    #[wasm_bindgen]
+    pub fn video_init_segment(&self) -> Vec<u8> {
+        let Some(cfg) = self.cached_video_config.as_ref() else {
+            return Vec::new();
+        };
+        let track = transmux::TrackSpec {
+            track_id: 1,
+            timescale: 90_000,
+            config: transmux::CodecConfig::Avc {
+                config: cfg.avcc_box.clone(),
+                width: cfg.width,
+                height: cfg.height,
+            },
+        };
+        transmux::build_init_segment(&[track], 90_000).unwrap_or_default()
+    }
+
     /// WebCodecs codec string (e.g. `"avc1.640028"`) once SPS has been seen.
     ///
     /// Returns `None` until sufficient video AUs have been fed to extract an SPS.
@@ -688,6 +727,82 @@ impl SkyfireBridge {
             au.bytes = skyfire_ts::h264_config::annexb_to_avcc(&au.bytes);
         }
         aus
+    }
+
+    /// Drain the next complete GOP (keyframe → just before the next keyframe)
+    /// as a CMAF media segment. Returns `None` until a full GOP is buffered.
+    /// Sample durations are the DTS deltas (90 kHz); composition offset =
+    /// pts − dts.
+    #[wasm_bindgen]
+    pub fn take_video_media_segment(&mut self) -> Option<WasmMediaSegment> {
+        // Drop leading non-keyframe AUs (cannot start a segment mid-GOP).
+        while self.video_aus.first().is_some_and(|a| !a.is_keyframe) {
+            self.video_aus.remove(0);
+        }
+        if self.video_aus.is_empty() {
+            return None;
+        }
+        // Find the end of the GOP: next keyframe (exclusive).
+        let gop_end = self.video_aus.iter().skip(1).position(|a| a.is_keyframe);
+        let end = match gop_end {
+            Some(pos) => pos + 1, // +1 because .skip(1) shifts positions
+            None => {
+                // No following keyframe: emit only if the stream has ended.
+                if self.ended {
+                    self.video_aus.len()
+                } else {
+                    return None;
+                }
+            }
+        };
+
+        let gop: Vec<_> = self.video_aus.drain(0..end).collect();
+        let dts_vec: Vec<u64> = gop
+            .iter()
+            .map(|a| a.dts_ticks.or(a.pts_ticks).unwrap_or(0))
+            .collect();
+        let base_media_decode_time = dts_vec[0];
+
+        let mut samples = Vec::with_capacity(gop.len());
+        for (i, au) in gop.iter().enumerate() {
+            let duration = if i + 1 < dts_vec.len() {
+                (dts_vec[i + 1].saturating_sub(dts_vec[i])) as u32
+            } else {
+                // Last sample: reuse previous delta, else a 25 fps default.
+                if i > 0 {
+                    (dts_vec[i].saturating_sub(dts_vec[i - 1])) as u32
+                } else {
+                    3600
+                }
+            };
+            let pts = au.pts_ticks.unwrap_or(dts_vec[i]);
+            let composition_offset = (pts as i64 - dts_vec[i] as i64) as i32;
+            samples.push(transmux::Sample::from_annexb(
+                &au.bytes,
+                duration,
+                au.is_keyframe,
+                composition_offset,
+            ));
+        }
+
+        let sample_count = samples.len() as u32;
+        let seq = self.media_seq;
+        self.media_seq += 1;
+        let bytes = transmux::build_media_segment(
+            seq,
+            &[transmux::FragmentTrackData {
+                track_id: 1,
+                base_media_decode_time,
+                samples: &samples,
+            }],
+        )
+        .unwrap_or_default();
+
+        Some(WasmMediaSegment {
+            base_media_decode_time,
+            bytes,
+            sample_count,
+        })
     }
 
     /// Drain all decoded PCM chunks produced since the last call.
@@ -756,6 +871,7 @@ impl SkyfireBridge {
     pub fn flush(&mut self) {
         self.es_demux.flush();
         self.drain_access_units();
+        self.ended = true;
     }
 
     // ── internal ────────────────────────────────────────────────────────────

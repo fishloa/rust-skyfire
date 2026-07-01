@@ -777,6 +777,7 @@ dependencies = [
  "skyfire-core",
  "skyfire-mpa",
  "skyfire-ts",
+ "transmux",
  "wasm-bindgen",
 ]
 
