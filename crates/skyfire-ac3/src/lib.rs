@@ -8,6 +8,8 @@
 
 use oxideav_ac3::eac3;
 
+pub mod downmix;
+
 /// AC-3 / E-AC-3 sync word (`0x0B77`).
 pub const AC3_SYNCWORD: u16 = 0x0B77;
 
