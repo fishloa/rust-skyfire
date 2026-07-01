@@ -7,6 +7,7 @@ repository.workspace = true
 description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extraction. Planned: rust-dvb dvb-si for PSI."
 
 [dependencies]
+broadcast-common = "8"
 dvb-common = "7.9"
 dvb-pes = "0.1.1"
 dvb-si = "7.9"

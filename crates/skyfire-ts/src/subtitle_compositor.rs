@@ -5,7 +5,7 @@
 //! end-of-display-set), then composites CLUT palette + object pixel data
 //! into per-region RGBA buffers placed on the display page.
 
-use dvb_common::Serialize;
+use broadcast_common::{Parse, Serialize};
 use dvb_subtitle::{AnySegment, PesDataField};
 use dvb_subtitle::{
     ClutDefinitionSegment, DataType, ObjectCodingMethod, ObjectDataPayload, ObjectDataSegment,
@@ -547,8 +547,6 @@ impl CompositorState {
 
     /// Composite current state into a cue.
     fn composite(&self, pid: u16, start_pts: u64, page_time_out: u8) -> Option<CompositedCue> {
-        use dvb_common::Parse;
-
         let clut = self
             .clut_bytes
             .as_ref()
@@ -650,7 +648,6 @@ impl CompositorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dvb_common::Parse;
 
     /// Build a minimal display set PES data field (raw bytes).
     ///

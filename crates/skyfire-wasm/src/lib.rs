@@ -297,7 +297,7 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 // demuxes + exposes access units incrementally.  PAT/PMT are discovered on
 // the fly; no separate probe/init/finalize step is required.
 
-use dvb_common::Parse;
+use broadcast_common::traits::Parse;
 use dvb_si::resync::TsResync as BridgeTsResync;
 use skyfire_ac3::IncrementalDecoder;
 use skyfire_mpa::IncrementalMpaDecoder;
@@ -1328,7 +1328,7 @@ mod tests {
     /// size, and pixel colour.
     #[test]
     fn bridge_subtitle_composite_red_region() {
-        use dvb_common::Parse;
+        use broadcast_common::traits::Parse;
 
         // Build a minimal DVB subtitle display set PES data field.
         // Contains DDS, CLUT (index 1 = near-red), region comp (32x16),

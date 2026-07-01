@@ -9,7 +9,7 @@
 pub mod h264_config;
 pub mod subtitle_compositor;
 
-use dvb_common::Parse as _;
+use broadcast_common::traits::Parse;
 use dvb_pes::{PesAssembler, PesPacket};
 use dvb_si::demux::SiDemux;
 use dvb_si::descriptors::any::AnyDescriptor;
