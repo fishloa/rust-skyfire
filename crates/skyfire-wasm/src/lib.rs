@@ -1824,6 +1824,77 @@ mod tests {
         );
     }
 
+    /// Base **AC-3** (bsid ≤ 8) 5.1 must also decode → audible stereo. Distinct
+    /// from E-AC-3: exercises the AC-3 path of the unified oxideav decoder (#43).
+    /// Fixture: fixtures/ac3-51.ts (6ch AC-3 tone).
+    #[test]
+    fn bridge_decodes_51_ac3_to_stereo() {
+        let data = load_fixture("ac3-51.ts");
+        let mut bridge = SkyfireBridge::new();
+        let mut all_chunks: Vec<WasmPcmChunk> = Vec::new();
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+            all_chunks.extend(bridge.take_audio_pcm());
+        }
+        bridge.flush();
+        all_chunks.extend(bridge.take_audio_pcm());
+
+        assert!(
+            !all_chunks.is_empty(),
+            "base AC-3 5.1 must decode (was silent)"
+        );
+        for c in &all_chunks {
+            assert_eq!(
+                c.channels, 2,
+                "AC-3 5.1 downmixed to stereo, got {}",
+                c.channels
+            );
+        }
+        let total: usize = all_chunks.iter().map(|c| c.samples.len()).sum();
+        let non_zero = all_chunks
+            .iter()
+            .flat_map(|c| c.samples.iter())
+            .filter(|&&s| s != 0.0)
+            .count();
+        assert!(total > 1000, "expected substantial PCM, got {total}");
+        assert!(
+            non_zero > total / 100,
+            "AC-3 decode must be audible, not silence"
+        );
+    }
+
+    /// Real-broadcast gate: a live ORF-2 capture (base AC-3 5.1) must decode to
+    /// audible stereo — real bitstream, catching quirks the synthetic fixture
+    /// can't (#43). Fixture: fixtures/orf2-ac3-51.ts (H.264 + AC-3 5.1 + MP2).
+    #[test]
+    fn bridge_decodes_real_orf2_ac3() {
+        let data = load_fixture("orf2-ac3-51.ts");
+        let mut bridge = SkyfireBridge::new();
+        let mut all_chunks: Vec<WasmPcmChunk> = Vec::new();
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+            all_chunks.extend(bridge.take_audio_pcm());
+        }
+        bridge.flush();
+        all_chunks.extend(bridge.take_audio_pcm());
+
+        assert!(!all_chunks.is_empty(), "real ORF-2 audio must decode");
+        for c in &all_chunks {
+            assert_eq!(c.channels, 2, "output stereo, got {}", c.channels);
+            assert_eq!(
+                c.sample_rate, 48_000,
+                "DVB AC-3 is 48 kHz, got {}",
+                c.sample_rate
+            );
+        }
+        let non_zero = all_chunks
+            .iter()
+            .flat_map(|c| c.samples.iter())
+            .filter(|&&s| s != 0.0)
+            .count();
+        assert!(non_zero > 1000, "real AC-3 decode must be audible");
+    }
+
     // ── mp2 / SkyfireBridge tests ────────────────────────────────────────
 
     /// Feed the mp2-tone.ts fixture (H.264 video + MP2 audio) through
