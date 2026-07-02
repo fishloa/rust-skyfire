@@ -1742,6 +1742,65 @@ mod tests {
         );
     }
 
+    /// #40 end-to-end: a real DVB-subtitle stream (france2-8s.ts) must demux →
+    /// parse (EN 300 743) → composite into valid RGBA cue regions. Proves the
+    /// whole subtitle path, not just the compositor unit (#34).
+    #[test]
+    fn bridge_composites_real_dvb_subtitles() {
+        let data = load_fixture("france2-8s.ts");
+        let mut bridge = SkyfireBridge::new();
+        // Discover the subtitle PID from the channel map.
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+        let tl = bridge.track_list().expect("track list");
+        let sub_pid = tl
+            .subtitles
+            .iter()
+            .find(|s| s.kind == "DvbSubtitles")
+            .map(|s| s.pid)
+            .expect("france2-8s.ts must carry a DVB-subtitle track");
+
+        // Fresh run with the subtitle PID selected from the start.
+        let mut b = SkyfireBridge::new();
+        b.select_subtitle(Some(sub_pid));
+        let mut cues: Vec<WasmSubtitleCue> = Vec::new();
+        for chunk in data.chunks(4096) {
+            b.feed(chunk);
+            cues.extend(b.take_subtitle_cues());
+        }
+        b.flush();
+        cues.extend(b.take_subtitle_cues());
+
+        assert!(
+            !cues.is_empty(),
+            "must composite at least one DVB-subtitle cue"
+        );
+        let mut painted = 0usize;
+        for cue in &cues {
+            assert!(
+                cue.end_pts() > cue.start_pts(),
+                "cue must have a display window"
+            );
+            for r in cue.regions() {
+                assert!(r.width > 0 && r.height > 0, "region must have dimensions");
+                assert_eq!(
+                    r.rgba.len(),
+                    r.width as usize * r.height as usize * 4,
+                    "RGBA buffer must be width·height·4"
+                );
+                // Count non-transparent pixels (alpha ≠ 0) → real painted content.
+                if r.rgba.chunks_exact(4).any(|px| px[3] != 0) {
+                    painted += 1;
+                }
+            }
+        }
+        assert!(
+            painted > 0,
+            "at least one region must have visible (non-transparent) pixels"
+        );
+    }
+
     /// Issue #31: streaming bridge audio PCM decode.
     ///
     /// Feeds gulli-15s.ts (E-AC-3 stereo 48 kHz, audio PID 0x101) in 4096-byte

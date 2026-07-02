@@ -3,3 +3,11 @@ fail-fast = false
 # Kill and FAIL a runaway/infinite-loop test instead of hanging the run (and any
 # delegate looping on it, and CI). 15s × 2 = hard terminate at 30s.
 slow-timeout = { period = "15s", terminate-after = 2 }
+
+# Full-stream AC-3/E-AC-3 decode tests are legitimately heavy in a debug build —
+# the unified oxideav decoder (#43) decodes every audio AU of a ~15 s fixture.
+# On a loaded / slow (2-core CI) runner they approach the 30 s default; give them
+# headroom (90 s) without loosening runaway detection for the rest of the suite.
+[[profile.default.overrides]]
+filter = "test(bridge_streaming_gulli_15s) or test(webcodecs_format_coherence) or test(full_pipeline_gulli_15s) or test(bridge_audio_pcm_gulli_15s)"
+slow-timeout = { period = "30s", terminate-after = 3 }
