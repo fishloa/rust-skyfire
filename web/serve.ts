@@ -5,6 +5,9 @@ import { join, extname } from "node:path";
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const WEB_DIR = import.meta.dirname;
 const FIXTURES_DIR = join(WEB_DIR, "..", "fixtures");
+// Serve packages/ so the import map entry ../packages/player/skyfire-player.js
+// resolves over HTTP when the browser requests /packages/player/skyfire-player.js.
+const PACKAGES_DIR = join(WEB_DIR, "..", "packages");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -25,6 +28,11 @@ async function serve(req) {
   if (url.pathname.startsWith("/fixtures/")) {
     const rel = url.pathname.slice("/fixtures/".length);
     filePath = join(FIXTURES_DIR, rel);
+  } else if (url.pathname.startsWith("/packages/")) {
+    // Serve the @skyfire/* package sources so the import map entry
+    // ../packages/player/skyfire-player.js resolves from the browser.
+    const rel = url.pathname.slice("/packages/".length);
+    filePath = join(PACKAGES_DIR, rel);
   } else {
     let rel = url.pathname.slice(1);
     if (rel === "") rel = "index.html";
@@ -32,7 +40,11 @@ async function serve(req) {
   }
 
   // Prevent directory traversal.
-  if (!filePath.startsWith(WEB_DIR) && !filePath.startsWith(FIXTURES_DIR)) {
+  if (
+    !filePath.startsWith(WEB_DIR) &&
+    !filePath.startsWith(FIXTURES_DIR) &&
+    !filePath.startsWith(PACKAGES_DIR)
+  ) {
     return new Response("Not Found", { status: 404 });
   }
 
@@ -92,3 +104,4 @@ const server = Bun.serve({
 console.log(`Skyfire dev server: http://localhost:${PORT}`);
 console.log(`  Web root:   ${WEB_DIR}`);
 console.log(`  Fixtures:   ${FIXTURES_DIR}`);
+console.log(`  Packages:   ${PACKAGES_DIR}`);
