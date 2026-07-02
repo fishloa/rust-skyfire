@@ -74,7 +74,7 @@ fn media_segments_cover_all_samples() {
 fn init_and_media_reparse_and_account_all_aus() {
     // Baseline AU count straight from the demux.
     let expected_aus = {
-        use dvb_si::resync::TsResync;
+        use mpeg_ts::resync::TsResync;
         use skyfire_ts::EsDemux;
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")

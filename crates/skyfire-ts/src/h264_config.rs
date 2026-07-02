@@ -142,7 +142,7 @@ pub fn annexb_to_avcc(annexb: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::EsDemux;
-    use dvb_si::resync::TsResync;
+    use mpeg_ts::resync::TsResync;
 
     fn load_fixture(name: &str) -> Vec<u8> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -13,7 +13,7 @@ use broadcast_common::traits::Parse;
 use dvb_pes::{PesAssembler, PesPacket};
 use dvb_si::demux::SiDemux;
 use dvb_si::descriptors::any::AnyDescriptor;
-use dvb_si::resync::TsResync;
+use mpeg_ts::resync::TsResync;
 use dvb_si::tables::any::AnyTableSection;
 use dvb_si::tables::pat::PatSection;
 use dvb_si::tables::pmt::StreamType;

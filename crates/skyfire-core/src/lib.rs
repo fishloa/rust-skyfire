@@ -17,7 +17,7 @@ pub use skyfire_ac3 as ac3;
 pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
-use dvb_si::resync::TsResync;
+use mpeg_ts::resync::TsResync;
 use skyfire_sync::{AudioClock, VideoFrameQueue};
 use skyfire_ts::{h264_config, AccessUnit, ChannelMap, EsDemux};
 
