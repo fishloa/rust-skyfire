@@ -6,7 +6,8 @@
 //!
 //! Powered by [`oxideav-ac3`](https://crates.io/crates/oxideav-ac3) (MIT).
 
-use oxideav_ac3::eac3;
+use oxideav_ac3::{decoder, eac3, syncinfo};
+use oxideav_core::{CodecId, CodecParameters, Decoder, Error, Frame, Packet, TimeBase};
 
 pub mod downmix;
 
@@ -57,13 +58,15 @@ pub fn decode_eac3_packet(
 // Incremental decoder
 // ---------------------------------------------------------------------------
 
-/// Stateful E-AC-3/AC-3 decoder for incremental (per-access-unit) use.
+/// Stateful **AC-3 + E-AC-3** decoder for incremental (per-access-unit) use.
 ///
-/// Holds the IMDCT overlap-add state across calls so that the codec has
-/// correct history at AU boundaries.  Use one `IncrementalDecoder` per audio
-/// PID; call [`reset`](Self::reset) when switching PIDs.
+/// Wraps `oxideav_ac3::decoder::make_decoder` — the unified decoder that
+/// dispatches base AC-3 (bsid ≤ 8) and E-AC-3 (Annex E, bsid 11–16) per
+/// syncframe, so both codecs decode (issue #43; the older E-AC-3-only
+/// `decode_eac3_packet` left base AC-3 silent). Holds decode state across
+/// calls; use one per audio PID and [`reset`](Self::reset) when switching PIDs.
 pub struct IncrementalDecoder {
-    state: eac3::Eac3DecoderState,
+    dec: Box<dyn Decoder>,
 }
 
 impl Default for IncrementalDecoder {
@@ -73,32 +76,32 @@ impl Default for IncrementalDecoder {
 }
 
 impl IncrementalDecoder {
-    /// Create a new decoder with a fresh state.
+    /// Create a new decoder with fresh state.
     #[must_use]
     pub fn new() -> Self {
+        // Codec "ac3": the unified `Ac3Decoder` inspects each packet's bsid and
+        // routes base AC-3 vs E-AC-3 itself, so this one decoder handles both.
+        let params = CodecParameters::audio(CodecId::new("ac3"));
         Self {
-            state: eac3::Eac3DecoderState::default(),
+            dec: decoder::make_decoder(&params).expect("build ac3/eac3 decoder"),
         }
     }
 
-    /// Reset the IMDCT history (call when switching to a new stream / PID).
+    /// Reset decode state (call when switching to a new stream / PID).
     pub fn reset(&mut self) {
-        self.state = eac3::Eac3DecoderState::default();
+        *self = Self::new();
     }
 
-    /// Decode all E-AC-3 syncframes in one access unit's ES bytes.
+    /// Decode all AC-3 / E-AC-3 syncframes in one access unit's ES bytes.
     ///
-    /// Returns the concatenated PCM for all syncframes found, plus the sample
-    /// rate and channel count (constant within a stream, taken from the last
-    /// syncframe decoded).  Returns `None` if `data` contains no valid
-    /// syncframes.
-    ///
-    /// Any bytes that don't form a complete syncframe are silently skipped
-    /// (consistent with [`decode_all_eac3`]).
+    /// Returns the concatenated interleaved-S16LE PCM for all syncframes found,
+    /// plus the sample rate and (native) channel count. Returns `None` if
+    /// `data` contains no valid syncframes. Bytes that don't form a complete
+    /// syncframe are skipped.
     ///
     /// # Errors
     ///
-    /// Returns an error string if any syncframe fails to decode.
+    /// Returns an error string if a syncframe fails to decode.
     pub fn decode_au(&mut self, data: &[u8]) -> Result<Option<DecodedAudio>, String> {
         let mut combined_pcm: Vec<u8> = Vec::new();
         let mut sample_rate: Option<u32> = None;
@@ -110,19 +113,66 @@ impl IncrementalDecoder {
                 offset += 1;
                 continue;
             }
-            let b2 = u16::from(data[offset + 2]);
-            let b3 = u16::from(data[offset + 3]);
-            let frmsiz = ((b2 & 0x07) << 8) | b3;
-            let frame_len = ((frmsiz as usize) + 1) * 2;
-            if offset + frame_len > data.len() {
+            // bsid (byte 5, top 5 bits) selects the layout: ≤10 = base AC-3,
+            // ≥11 = E-AC-3 (Annex E). `syncinfo::parse` is the AC-3 parser and
+            // misreads E-AC-3's fscod/frmsiz positions, so branch.
+            if offset + 6 > data.len() {
                 break;
             }
-            let frame =
-                eac3::decode_eac3_packet(&mut self.state, &data[offset..offset + frame_len])
-                    .map_err(|e| e.to_string())?;
-            sample_rate = Some(frame.sample_rate);
-            channels = Some(frame.channels);
-            combined_pcm.extend_from_slice(&frame.pcm_s16le);
+            let bsid = data[offset + 5] >> 3;
+            // bsid ≤ 10 is base AC-3 (A/52 §E.2.3.1.6); 11–16 is Annex E (E-AC-3).
+            let (frame_len, frame_rate) = if bsid <= 10 {
+                match syncinfo::parse(&data[offset..]) {
+                    Ok(si) => (si.frame_length as usize, si.sample_rate),
+                    Err(_) => {
+                        offset += 1;
+                        continue;
+                    }
+                }
+            } else {
+                // E-AC-3: frmsiz = byte2[2:0]<<8 | byte3; length = (frmsiz+1)·2.
+                // fscod is byte4 top 2 bits (48/44.1/32 kHz; 3 ⇒ fscod2, 48 kHz fallback).
+                let frmsiz =
+                    ((usize::from(data[offset + 2]) & 0x07) << 8) | usize::from(data[offset + 3]);
+                let flen = (frmsiz + 1) * 2;
+                let sr = match data[offset + 4] >> 6 {
+                    0 => 48_000,
+                    1 => 44_100,
+                    2 => 32_000,
+                    _ => 48_000,
+                };
+                (flen, sr)
+            };
+            if frame_len == 0 || offset + frame_len > data.len() {
+                break;
+            }
+
+            let pkt = Packet::new(
+                0,
+                TimeBase::new(1, 48_000),
+                data[offset..offset + frame_len].to_vec(),
+            );
+            self.dec.send_packet(&pkt).map_err(|e| e.to_string())?;
+            loop {
+                match self.dec.receive_frame() {
+                    Ok(Frame::Audio(af)) => {
+                        // Plane 0 is interleaved S16LE (packed output).
+                        if let Some(plane) = af.data.into_iter().next() {
+                            if af.samples > 0 {
+                                let ch = plane.len() / (af.samples as usize * 2);
+                                if ch > 0 {
+                                    channels = Some(ch as u16);
+                                }
+                            }
+                            combined_pcm.extend_from_slice(&plane);
+                        }
+                        sample_rate = Some(frame_rate);
+                    }
+                    Ok(_) => {}
+                    Err(Error::NeedMore) | Err(Error::Eof) => break,
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
             offset += frame_len;
         }
 
