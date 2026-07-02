@@ -1772,10 +1772,16 @@ mod tests {
         b.flush();
         cues.extend(b.take_subtitle_cues());
 
-        assert!(!cues.is_empty(), "must composite at least one DVB-subtitle cue");
+        assert!(
+            !cues.is_empty(),
+            "must composite at least one DVB-subtitle cue"
+        );
         let mut painted = 0usize;
         for cue in &cues {
-            assert!(cue.end_pts() > cue.start_pts(), "cue must have a display window");
+            assert!(
+                cue.end_pts() > cue.start_pts(),
+                "cue must have a display window"
+            );
             for r in cue.regions() {
                 assert!(r.width > 0 && r.height > 0, "region must have dimensions");
                 assert_eq!(
@@ -1789,7 +1795,10 @@ mod tests {
                 }
             }
         }
-        assert!(painted > 0, "at least one region must have visible (non-transparent) pixels");
+        assert!(
+            painted > 0,
+            "at least one region must have visible (non-transparent) pixels"
+        );
     }
 
     /// Issue #31: streaming bridge audio PCM decode.
