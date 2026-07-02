@@ -4,7 +4,7 @@
 > Decisions (**why**) live in [`decisions/`](decisions/). Keep this file current:
 > when an epic's state changes, update its row in the same change.
 
-_Last updated: 2026-07-01._
+_Last updated: 2026-07-03._
 
 ## Primary objective
 
@@ -125,7 +125,11 @@ with DVB-subtitle compositing and the UI shell; 3/3 Playwright e2e green on real
 The original epics **#1–#8** (and sub-issues #9–#19) were the pre-#27
 decomposition and are **closed as superseded** by the rebuilt, verified client.
 
-**Remaining open work is external-resource-gated:** a live zenith `/skyfire`
-endpoint (#41), an iOS-17 device (MSE-fallback verify), a DVB-subtitle capture
-(#40), a zenith PsF sample (#38 gate), base-AC-3 5.1 decode + the opt-in
-multichannel path (#43/#39).
+- **NPM packaging** ([#41](https://github.com/fishloa/rust-skyfire/issues/41)) —
+  `@skyfire/core` (WASM bridge facade + types) and `@skyfire/player` (turnkey
+  WebCodecs+WebAudio player) published to npm; CI-only release workflow on
+  `v*` tags. iOS real-device verification remains external-resource-gated.
+
+**Remaining open work is external-resource-gated:** an iOS-17 device
+(MSE-fallback verify), a DVB-subtitle capture (#40), a zenith PsF sample
+(#38 gate), base-AC-3 5.1 decode + the opt-in multichannel path (#43/#39).
