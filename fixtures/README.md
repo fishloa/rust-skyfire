@@ -8,6 +8,8 @@ Real captured MPEG-TS slices (from a DVB-S2 receiver) for demux/decode tests.
 | `m6-clean.ts`   | French TNT M6 HD — H.264 1080i/PsF. **Note:** this captured slice carries only the video PID (0x0100); no audio PID present, despite M6 broadcasting AC-3/E-AC-3. |
 | `gulli-15s.ts`  | Gulli HD — H.264 PsF (video 0x0100) + **E-AC-3** audio (0x0101, 48 kHz stereo) |
 | `gulli.eac3`    | raw E-AC-3 elementary stream extracted from `gulli-15s.ts` (`ffmpeg -map 0:a:0 -c:a copy`) — for decoder tests decoupled from demux. Starts with `0x0B77`. |
+| `orf2-ac3-51.ts` | ORF 2 HD (zenith `/stream/orf-2`, ~2 s) — H.264 + **base AC-3 5.1** (6ch, 5.1-side) + MP2 stereo + teletext. Real 5.1 AC-3 for the multichannel decode/downmix path (#43/#39). |
+| `ac3-51.ts` / `eac3-51.ts` | synthetic ffmpeg-generated 5.1 AC-3 / E-AC-3 (Main-profile video + 6ch tone) — small CI fixtures for the downmix + multichannel decode tests. |
 
 These exercise the codecs Skyfire targets: H.264 video + AC-3/E-AC-3 audio. `gulli.eac3`
 is the audio-decode fixture; verified PIDs/codecs were confirmed via demux (issue #20).
