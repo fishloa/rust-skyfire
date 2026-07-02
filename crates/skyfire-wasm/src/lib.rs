@@ -530,6 +530,14 @@ pub struct SkyfireBridge {
     media_seq: u32,
     // Set to true when flush() has been called (end of stream).
     ended: bool,
+
+    // Audio output: when true (default), multichannel is downmixed to stereo in
+    // WASM (safe everywhere, #43). When false, native multichannel PCM is
+    // emitted for discrete output on capable devices (#39 opt-in passthrough).
+    downmix_audio: bool,
+    // Native (pre-downmix) channel count of the last decoded audio frame, so JS
+    // can decide whether the device can render discrete multichannel.
+    last_audio_channels: u16,
 }
 
 #[wasm_bindgen]
@@ -558,7 +566,26 @@ impl SkyfireBridge {
             pre_channel_aus: Vec::new(),
             media_seq: 1,
             ended: false,
+            downmix_audio: true,
+            last_audio_channels: 0,
         }
+    }
+
+    /// Native channel count of the most recently decoded audio (before any
+    /// downmix), or 0 if none yet. JS uses this to decide whether the output
+    /// device can render discrete multichannel (#39).
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn audio_native_channels(&self) -> u16 {
+        self.last_audio_channels
+    }
+
+    /// Enable (default) or disable the WASM stereo downmix. Disable to emit
+    /// native multichannel PCM for discrete output on a capable device (#39);
+    /// re-enabling restores the safe stereo downmix (#43).
+    #[wasm_bindgen]
+    pub fn set_audio_downmix(&mut self, enabled: bool) {
+        self.downmix_audio = enabled;
     }
 
     /// Push a raw TS chunk into the bridge.
@@ -967,18 +994,37 @@ impl SkyfireBridge {
                         let _ = self.audio_decoder.decode_au(&au.es_bytes).map(|opt| {
                             if let Some(decoded) = opt {
                                 if decoded.sample_rate > 0 && decoded.channels > 0 {
-                                    // Downmix multichannel (5.1 AC-3/E-AC-3) to
-                                    // stereo in WASM — browsers reliably render
-                                    // only stereo; discrete 5.1 goes silent (#43).
-                                    let samples_f32 =
-                                        skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
-                                            &decoded.pcm_s16le,
-                                            decoded.channels,
-                                        );
+                                    self.last_audio_channels = decoded.channels;
+                                    // Default: downmix multichannel to stereo in
+                                    // WASM (browsers reliably render only stereo;
+                                    // discrete 5.1 goes silent, #43). When the
+                                    // JS side has confirmed a multichannel-capable
+                                    // device it disables downmix for native
+                                    // discrete output (#39 opt-in passthrough).
+                                    let (channels, samples_f32) =
+                                        if self.downmix_audio || decoded.channels <= 2 {
+                                            (
+                                                2u16,
+                                                skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
+                                                    &decoded.pcm_s16le,
+                                                    decoded.channels,
+                                                ),
+                                            )
+                                        } else {
+                                            let native: Vec<f32> = decoded
+                                                .pcm_s16le
+                                                .chunks_exact(2)
+                                                .map(|b| {
+                                                    f32::from(i16::from_le_bytes([b[0], b[1]]))
+                                                        / 32_768.0_f32
+                                                })
+                                                .collect();
+                                            (decoded.channels, native)
+                                        };
                                     self.audio_pcm_pending.push(WasmPcmChunk {
                                         pts_ticks,
                                         sample_rate: decoded.sample_rate,
-                                        channels: 2,
+                                        channels,
                                         samples: samples_f32,
                                     });
                                 }
@@ -1893,6 +1939,49 @@ mod tests {
             .filter(|&&s| s != 0.0)
             .count();
         assert!(non_zero > 1000, "real AC-3 decode must be audible");
+    }
+
+    /// #39 opt-in passthrough: `set_audio_downmix(false)` emits native
+    /// multichannel PCM (6ch for 5.1); the default downmixes to stereo.
+    /// `audio_native_channels()` reports the pre-downmix count either way.
+    #[test]
+    fn downmix_toggle_controls_output_channels() {
+        let data = load_fixture("ac3-51.ts");
+
+        // Passthrough: downmix disabled → native 6 channels.
+        let mut bridge = SkyfireBridge::new();
+        bridge.set_audio_downmix(false);
+        let mut chunks: Vec<WasmPcmChunk> = Vec::new();
+        for c in data.chunks(4096) {
+            bridge.feed(c);
+            chunks.extend(bridge.take_audio_pcm());
+        }
+        bridge.flush();
+        chunks.extend(bridge.take_audio_pcm());
+        assert!(!chunks.is_empty(), "must decode");
+        assert!(
+            chunks.iter().all(|c| c.channels == 6),
+            "passthrough emits native 6ch"
+        );
+        assert_eq!(
+            bridge.audio_native_channels(),
+            6,
+            "native channel count reported"
+        );
+
+        // Default: downmix enabled → stereo.
+        let mut b2 = SkyfireBridge::new();
+        let mut s2: Vec<WasmPcmChunk> = Vec::new();
+        for c in data.chunks(4096) {
+            b2.feed(c);
+            s2.extend(b2.take_audio_pcm());
+        }
+        b2.flush();
+        s2.extend(b2.take_audio_pcm());
+        assert!(
+            !s2.is_empty() && s2.iter().all(|c| c.channels == 2),
+            "default → stereo"
+        );
     }
 
     // ── mp2 / SkyfireBridge tests ────────────────────────────────────────
