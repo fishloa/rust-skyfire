@@ -30,3 +30,6 @@ web/playwright-report/
 .delegate/
 
 .DS_Store
+
+packages/*/pkg/
+packages/*/*.tgz
