@@ -56,3 +56,19 @@ jobs:
       - name: Build wasm
         run: cargo build -p skyfire-wasm --target wasm32-unknown-unknown
 
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+      - run: rm -f packages/core/pkg/.gitignore
+      - run: cd packages/core && npm pack --dry-run
+      - run: cd packages/player && npm pack --dry-run
+      - run: npx -y typescript@5 tsc --noEmit packages/core/index.d.ts
+
