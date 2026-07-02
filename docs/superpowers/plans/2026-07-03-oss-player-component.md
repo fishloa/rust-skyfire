@@ -439,6 +439,8 @@ jobs:
         with: { node-version: "20", registry-url: "https://registry.npmjs.org" }
       - name: Build core wasm (bundler)
         run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+      - name: Strip pkg/.gitignore (else npm excludes the wasm)
+        run: rm -f packages/core/pkg/.gitignore
       - name: Publish @skyfire/core
         run: npm publish --access public
         working-directory: packages/core
@@ -465,6 +467,7 @@ Add a job to `.github/workflows/ci.yml`:
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
       - run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+      - run: rm -f packages/core/pkg/.gitignore
       - run: cd packages/core && npm pack --dry-run
       - run: cd packages/player && npm pack --dry-run
       - run: npx -y typescript@5 tsc --noEmit packages/core/index.d.ts
