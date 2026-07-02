@@ -401,6 +401,15 @@ function populateTracks(tl) {
     o.textContent = `${langLabel(s.language) || "sub"} · ${s.kind}`;
     subSelect.appendChild(o);
   });
+
+  // Deep-link: ?sub=<pid> auto-selects a subtitle track at startup (so it is
+  // composited from the first PES, not just when the user picks it later).
+  const wantSub = new URLSearchParams(location.search).get("sub");
+  if (wantSub && [...subSelect.options].some((o) => o.value === wantSub)) {
+    subSelect.value = wantSub;
+    callBridge("select_subtitle", parseInt(wantSub, 10));
+    status(`subtitle → pid ${wantSub}`);
+  }
 }
 
 function wireControls() {
