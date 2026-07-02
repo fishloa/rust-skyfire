@@ -9,6 +9,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -69,9 +80,9 @@ dependencies = [
 
 [[package]]
 name = "arrayvec"
-version = "0.7.7"
+version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f02882884d3e1bc524fb12c79f107f6ad0e1cfd498c536ffb494301740995dfe"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "assert_cmd"
@@ -102,9 +113,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "broadcast-common"
-version = "8.1.0"
+version = "8.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7a39abcaa26a6ec6f96cc260f98c892eae197cf00423a5e58612cde2b2d083f"
+checksum = "c3a4485a61cd04b5483276d06d370f8dad385743fada0adbe8ff1a649e51be63"
 dependencies = [
  "chrono",
  "libm",
@@ -168,6 +179,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -220,6 +241,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cpufeatures"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -229,20 +259,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-common"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+dependencies = [
+ "generic-array",
+ "typenum",
+]
+
+[[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
-
-[[package]]
-name = "dvb-common"
-version = "7.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f320e84bcdbfb0393628c896d0107c96f15c27314c3acfdd57f0fda3bdf8d40"
-dependencies = [
- "chrono",
- "libm",
-]
 
 [[package]]
 name = "dvb-pes"
@@ -255,16 +294,17 @@ dependencies = [
 
 [[package]]
 name = "dvb-si"
-version = "7.9.0"
+version = "8.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d0b9833d32b99fefa049b6294429c0d0330eafefe40fabed6ef0a4eab55a4f"
+checksum = "906bd51f1c01d7efee0a8783deb1553b6b24b679f338413eb9c422daa6ff0c2b"
 dependencies = [
+ "broadcast-common",
  "bytes",
  "chrono",
- "dvb-common",
  "encoding_rs",
  "erased-serde",
  "libm",
+ "mpeg-ts",
  "num_enum",
  "serde",
  "thiserror",
@@ -347,6 +387,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-array"
+version = "0.14.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+dependencies = [
+ "typenum",
+ "version_check",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,6 +440,15 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
 ]
 
 [[package]]
@@ -462,6 +521,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5edaf7e13f192ef2b5c8bf359685df2e4a90bd16499c66edee8d4df882d40f1"
 dependencies = [
  "broadcast-common",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "mpeg-ps"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc67829740eb0fed67ba6f450305acef801612878c58319bbf32365fecf54c2c"
+dependencies = [
+ "broadcast-common",
+ "mpeg-pes",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "mpeg-ts"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c5476f9cb3b0bd3ba43decb45d0166c0f2b0ad601cb629e733f826229c0ef22"
+dependencies = [
+ "broadcast-common",
+ "bytes",
+ "serde",
  "thiserror",
 ]
 
@@ -679,6 +763,7 @@ name = "skyfire-core"
 version = "0.1.1"
 dependencies = [
  "dvb-si",
+ "mpeg-ts",
  "skyfire-ac3",
  "skyfire-sync",
  "skyfire-ts",
@@ -700,11 +785,11 @@ name = "skyfire-ts"
 version = "0.1.1"
 dependencies = [
  "broadcast-common",
- "dvb-common",
  "dvb-pes",
  "dvb-si",
  "dvb-subtitle",
  "flate2",
+ "mpeg-ts",
  "skyfire-ac3",
  "transmux",
 ]
@@ -714,9 +799,9 @@ name = "skyfire-wasm"
 version = "0.1.1"
 dependencies = [
  "broadcast-common",
- "dvb-common",
  "dvb-si",
  "dvb-subtitle",
+ "mpeg-ts",
  "skyfire-ac3",
  "skyfire-core",
  "skyfire-mpa",
@@ -855,11 +940,16 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "333cbd1d25c66519c943257c1966541d3d8355651cc4465b3b2f9222619cb6c7"
+checksum = "8c45a617dea6415b63100a32814b8f24551af805ad8db769a5fef6b0ca98ee92"
 dependencies = [
+ "aes",
  "broadcast-common",
+ "ctr",
+ "mpeg-pes",
+ "mpeg-ps",
+ "mpeg-ts",
  "serde",
  "thiserror",
 ]
@@ -869,6 +959,12 @@ name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+
+[[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unicode-ident"
@@ -881,6 +977,12 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wait-timeout"

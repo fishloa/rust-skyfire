@@ -298,7 +298,7 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 // the fly; no separate probe/init/finalize step is required.
 
 use broadcast_common::traits::Parse;
-use dvb_si::resync::TsResync as BridgeTsResync;
+use mpeg_ts::resync::TsResync as BridgeTsResync;
 use skyfire_ac3::IncrementalDecoder;
 use skyfire_mpa::IncrementalMpaDecoder;
 use skyfire_ts::{
