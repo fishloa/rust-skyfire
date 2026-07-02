@@ -58,3 +58,7 @@ video path as a fallback to WebCodecs.**
 - transmux's `avcC`/`hvcC` **box-wrapper** layout is verified upstream only against
   an OCR'd `14496-15` (provenance gap). skyfire's live `avc1` path is independently
   validated by the `ffmpeg` + Chromium decode oracles; `hvcC` is unused.
+  - **Update 2026-07-02:** resolved in transmux **0.5.0** (#441) — `avcC` is now
+    byte-exact round-trip-verified against real ffmpeg-muxer boxes and grounded on
+    the text-layer ISO/IEC 14496-15:2012 (no OCR). skyfire is on transmux 0.5;
+    both video paths re-verified in Chromium on that release.
