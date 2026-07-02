@@ -1,0 +1,900 @@
+// @skyfire/player — SkyfirePlayer: turnkey in-browser DVB TV player.
+//
+// Extracted from web/player.js (behaviour-preserving — ADR 0008).
+// The browser owns presentation + control; SkyfireBridge parses the
+// MPEG-TS and hands progressive H.264 access units up to WebCodecs.
+
+import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+
+const PTS_HZ = 90_000;
+const ticksToMicros = (t) => Number(t) * 1_000_000 / PTS_HZ;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Turnkey in-browser DVB player.
+ *
+ * @example
+ * const player = new SkyfirePlayer(canvas, { streamUrl: "/stream.ts" });
+ * player.on("tracks", (tl) => console.log(tl));
+ * await player.init();
+ */
+export class SkyfirePlayer {
+  /**
+   * @param {HTMLCanvasElement} canvas - The video canvas element.
+   * @param {object} opts
+   * @param {string}  opts.streamUrl       - TS stream URL.
+   * @param {number}  [opts.audioPid]      - Pre-select audio PID.
+   * @param {number}  [opts.subtitlePid]   - Pre-select subtitle PID (auto-starts compositing).
+   * @param {boolean} [opts.muted]         - Start muted.
+   * @param {boolean} [opts.forceMse]      - Force MSE video path (skip WebCodecs).
+   */
+  constructor(canvas, opts = {}) {
+    if (!canvas) throw new Error("SkyfirePlayer: canvas required");
+    if (!opts.streamUrl) throw new Error("SkyfirePlayer: opts.streamUrl required");
+
+    this.canvas = canvas;
+    this.opts = opts;
+    this.streamUrl = opts.streamUrl;
+
+    // ── event emitter ────────────────────────────────────────────────────────
+    this._listeners = { tracks: [], stats: [], error: [], ended: [] };
+
+    // ── bridge ───────────────────────────────────────────────────────────────
+    this.bridge = null;
+
+    // ── canvas 2D context ────────────────────────────────────────────────────
+    this._ctx = canvas.getContext("2d", { alpha: false });
+    this._sized = false;
+
+    // ── shared stats object ───────────────────────────────────────────────────
+    this._stats = {
+      decoded: 0, drawn: 0, dropped: 0, w: 0, h: 0, aus: 0, path: "wc",
+      audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0, avSkewMs: 0,
+      videoPath: "", mseSegments: 0, videoCurrentTime: 0,
+    };
+
+    // ── video decoder ─────────────────────────────────────────────────────────
+    this._videoDecoder = null;
+    this._decoderConfigured = false;
+    this._sawKeyframe = false;
+
+    // ── MSE video fallback ────────────────────────────────────────────────────
+    this._videoPath = null;          // "webcodecs" | "mse" | null
+    this._mseVideoEl = null;
+    this._mseMediaSource = null;
+    this._mseSourceBuffer = null;
+    this._mseBufferQueue = [];
+    this._mseAppending = false;
+    this._mseDriftRaf = null;
+
+    // ── audio-master A/V sync ─────────────────────────────────────────────────
+    this._presentQueue = [];
+    this._firstAudioPtsUs = null;
+    this._audioFramesPlayed = 0;
+    this._audioSampleRate = 48000;
+    this._presentScheduled = false;
+
+    // ── audio ─────────────────────────────────────────────────────────────────
+    this._audioCtx = null;
+    this._audioNode = null;
+    this._audioGain = null;
+    this._audioReady = false;
+    this._audioStarting = false;
+    this._streamChannels = 0;
+    this._outputChannels = 0;
+    this._downmixActive = false;
+
+    // ── transport ─────────────────────────────────────────────────────────────
+    this._playing = true;
+    this._muted = opts.muted || false;
+    this._destroyed = false;
+    this._fetchAbortController = null;
+
+    // ── subtitle overlay ──────────────────────────────────────────────────────
+    // The player creates a sibling canvas for the subtitle overlay. It is
+    // inserted as an absolutely-positioned child of the canvas's parent so it
+    // covers the video exactly. The parent must have position:relative (or any
+    // non-static) for the overlay to track the canvas; the host is responsible
+    // for that (or wrapping in a container).
+    this._subsCanvas = null;
+    this._subCtx = null;
+    this._shownSubKey = null;
+    this._subQueue = [];
+    this._lastVideoTs = 0;
+
+    // ── re-entrancy guard ─────────────────────────────────────────────────────
+    this._bridgeLocked = false;
+    this._pendingBridgeQueue = [];
+
+    // ── track list ────────────────────────────────────────────────────────────
+    this._trackList = null;
+
+    // ── MSE drift constants ───────────────────────────────────────────────────
+    this._MSE_DRIFT_SEEK_THRESH = 0.25;
+    this._MSE_DRIFT_NUDGE_THRESH = 0.05;
+
+    // ── late-drop / lead constants ────────────────────────────────────────────
+    this._LATE_DROP_US = 80_000;
+    this._LEAD_US = 12_000;
+
+    // Bind user-gesture audio resume so we can remove it on destroy.
+    this._startAudioBound = () => this._startAudio();
+  }
+
+  // ── public event subscription ─────────────────────────────────────────────
+
+  on(event, cb) {
+    (this._listeners[event] ||= []).push(cb);
+  }
+
+  _emit(event, data) {
+    (this._listeners[event] || []).forEach((cb) => cb(data));
+  }
+
+  // ── public transport ──────────────────────────────────────────────────────
+
+  play() {
+    if (this._destroyed) return;
+    this._playing = true;
+    this._callBridge("set_playing", true);
+    if (this._audioNode) this._audioNode.port.postMessage({ type: "play" });
+    this._startAudio();
+  }
+
+  pause() {
+    if (this._destroyed) return;
+    this._playing = false;
+    this._callBridge("set_playing", false);
+    if (this._audioNode) this._audioNode.port.postMessage({ type: "pause" });
+  }
+
+  selectAudio(pid) {
+    if (this._destroyed) return;
+    this._callBridge("select_audio", pid);
+    this._status(`audio → pid ${pid}`);
+  }
+
+  selectSubtitle(pid) {
+    if (this._destroyed) return;
+    if (pid == null) {
+      this._callBridge("select_subtitle", undefined);
+    } else {
+      this._callBridge("select_subtitle", pid);
+    }
+    // Clear current cue on switch/off.
+    if (this._subCtx) {
+      this._subCtx.clearRect(0, 0, this._subCtx.canvas.width, this._subCtx.canvas.height);
+      this._shownSubKey = null;
+    }
+  }
+
+  /** @returns {object|null} The current track list, or null if not yet available. */
+  tracks() {
+    return this._trackList || null;
+  }
+
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+
+  /**
+   * Load WASM, construct the bridge, apply opts, start the stream.
+   * @returns {Promise<void>}
+   */
+  async init() {
+    if (this._destroyed) throw new Error("SkyfirePlayer: already destroyed");
+
+    // Create the subtitle overlay canvas now (before the stream starts).
+    this._createSubsCanvas();
+
+    // Wire user-gesture audio resume.
+    window.addEventListener("pointerdown", this._startAudioBound, { once: true });
+    window.addEventListener("keydown", this._startAudioBound, { once: true });
+    // Expose for Playwright/iOS verifier.
+    window.sfStartAudio = () => this._startAudio();
+
+    this._status("Loading WASM…");
+    await initSkyfire();
+    this.bridge = new SkyfireBridge();
+
+    // Apply pre-selected subtitle PID from opts before streaming starts.
+    if (this.opts.subtitlePid != null) {
+      this.bridge.select_subtitle(this.opts.subtitlePid);
+      this._status(`subtitle → pid ${this.opts.subtitlePid}`);
+    }
+
+    const src = this.streamUrl;
+    const live = false; // opts don't expose live; keep finite-stream default (Task 3 can extend)
+
+    this._videoPath = null;
+
+    const MAX_RECONNECT = 5;
+    let attempt = 0;
+
+    for (;;) {
+      try {
+        await this._consumeStream(src);
+      } catch (e) {
+        if (live && attempt < MAX_RECONNECT) {
+          attempt++;
+          this._status(`stream dropped — reconnecting (${attempt}/${MAX_RECONNECT})…`);
+          this._sawKeyframe = false;
+          await sleep(Math.min(1500 * attempt, 8000));
+          continue;
+        }
+        this._fatal("stream failed", e);
+        return;
+      }
+      if (live && attempt < MAX_RECONNECT) {
+        attempt++;
+        this._status(`stream ended — reconnecting (${attempt}/${MAX_RECONNECT})…`);
+        this._sawKeyframe = false;
+        await sleep(1000);
+        continue;
+      }
+      break;
+    }
+
+    // End of stream — flush the bridge, drain, then flush the decoder.
+    this._callBridge(() => {
+      this.bridge.flush();
+      if (this._videoPath === "webcodecs") this._pumpVideoInner();
+      this._pumpSubtitlesInner();
+    });
+    await this._pumpAudio();
+    if (this._videoPath === "webcodecs" && this._videoDecoder && this._decoderConfigured) {
+      try { await this._videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
+    }
+    if (this._videoPath === "mse" && this._mseSourceBuffer && this._mseMediaSource) {
+      try {
+        this._drainMseBufferQueue();
+        if (this._mseMediaSource.readyState === "open") this._mseMediaSource.endOfStream();
+      } catch (e) { console.warn("[skyfire] MSE endOfStream", e); }
+    }
+
+    const s = this._stats;
+    this._status(
+      `done — video ${s.decoded}f/${s.drawn}drawn, audio ${s.audioChunks} chunks / ${s.audioSamples} samples, played ${s.audioSec.toFixed(1)}s`
+    );
+    this._emit("stats", { ...s, done: true });
+    this._emit("ended", { ...s, done: true });
+  }
+
+  /**
+   * Tear down all resources: VideoDecoder, MediaSource, AudioContext, rAF, fetch.
+   */
+  destroy() {
+    if (this._destroyed) return;
+    this._destroyed = true;
+
+    // Abort in-flight fetch.
+    if (this._fetchAbortController) {
+      try { this._fetchAbortController.abort(); } catch (_) {}
+      this._fetchAbortController = null;
+    }
+
+    // Cancel MSE drift rAF.
+    if (this._mseDriftRaf) {
+      cancelAnimationFrame(this._mseDriftRaf);
+      this._mseDriftRaf = null;
+    }
+
+    // Close VideoDecoder.
+    if (this._videoDecoder) {
+      try { this._videoDecoder.close(); } catch (_) {}
+      this._videoDecoder = null;
+    }
+
+    // Close MediaSource.
+    if (this._mseMediaSource) {
+      try {
+        if (this._mseMediaSource.readyState === "open") {
+          this._mseMediaSource.endOfStream();
+        }
+      } catch (_) {}
+      this._mseMediaSource = null;
+    }
+
+    // Remove MSE video element.
+    if (this._mseVideoEl) {
+      try { this._mseVideoEl.remove(); } catch (_) {}
+      this._mseVideoEl = null;
+    }
+
+    // Close AudioContext.
+    if (this._audioCtx) {
+      try { this._audioCtx.close(); } catch (_) {}
+      this._audioCtx = null;
+    }
+
+    // Close open VideoFrames in the present queue.
+    for (const e of this._presentQueue) {
+      try { e.frame.close(); } catch (_) {}
+    }
+    this._presentQueue.length = 0;
+
+    // Remove subtitle overlay canvas.
+    if (this._subsCanvas) {
+      try { this._subsCanvas.remove(); } catch (_) {}
+      this._subsCanvas = null;
+      this._subCtx = null;
+    }
+
+    // Remove user-gesture listeners.
+    window.removeEventListener("pointerdown", this._startAudioBound);
+    window.removeEventListener("keydown", this._startAudioBound);
+
+    // Nullify bridge last (other teardown may call callBridge which checks for null).
+    this.bridge = null;
+  }
+
+  // ── status / error helpers ─────────────────────────────────────────────────
+
+  _status(msg) {
+    console.log("[skyfire]", msg);
+    this._emit("stats", { ...this._stats, status: msg });
+  }
+
+  _fatal(msg, err) {
+    const text = msg + (err ? "\n" + (err.message || err) : "");
+    console.error("[skyfire]", msg, err);
+    this._emit("error", { message: text, cause: err });
+  }
+
+  // ── subtitle overlay canvas ───────────────────────────────────────────────
+  //
+  // Instead of using a page-level getElementById("subs"), the player creates
+  // its own overlay canvas and positions it absolutely over this.canvas.
+  // The canvas's parent element must have position != static for this to work.
+
+  _createSubsCanvas() {
+    const c = document.createElement("canvas");
+    c.width = this.canvas.width || 1920;
+    c.height = this.canvas.height || 1080;
+    c.style.position = "absolute";
+    c.style.top = "0";
+    c.style.left = "0";
+    c.style.width = "100%";
+    c.style.height = "100%";
+    c.style.pointerEvents = "none";
+    // Insert after the main canvas in the DOM.
+    const parent = this.canvas.parentElement;
+    if (parent) {
+      const next = this.canvas.nextSibling;
+      parent.insertBefore(c, next);
+    }
+    this._subsCanvas = c;
+    this._subCtx = c.getContext("2d");
+  }
+
+  _ensureSubsCanvas() {
+    if (!this._subCtx) return null;
+    const cw = this.canvas.width || 1920;
+    const ch = this.canvas.height || 1080;
+    if (this._subCtx.canvas.width !== cw || this._subCtx.canvas.height !== ch) {
+      this._subCtx.canvas.width = cw;
+      this._subCtx.canvas.height = ch;
+      this._shownSubKey = null;
+    }
+    return this._subCtx;
+  }
+
+  _clearSubs() {
+    if (this._subCtx) {
+      this._subCtx.clearRect(0, 0, this._subCtx.canvas.width, this._subCtx.canvas.height);
+    }
+    this._shownSubKey = null;
+  }
+
+  _drawSubCue(cue) {
+    const cx = this._ensureSubsCanvas();
+    if (!cx) return;
+    cx.clearRect(0, 0, cx.canvas.width, cx.canvas.height);
+    for (const r of cue.regions) {
+      if (!r.rgba || !r.width || !r.height) continue;
+      cx.putImageData(new ImageData(new Uint8ClampedArray(r.rgba), r.width, r.height), r.x, r.y);
+    }
+  }
+
+  _renderSubs(clockUs) {
+    if (clockUs == null) return;
+    const subQueue = this._subQueue;
+    while (subQueue.length && subQueue[0].endUs <= clockUs) {
+      if (this._shownSubKey === subQueue[0].key) this._clearSubs();
+      subQueue.shift();
+    }
+    const active = subQueue.find((c) => c.startUs <= clockUs && clockUs < c.endUs);
+    if (active) {
+      if (this._shownSubKey !== active.key) {
+        this._drawSubCue(active);
+        this._shownSubKey = active.key;
+      }
+    } else if (this._shownSubKey !== null) {
+      this._clearSubs();
+    }
+  }
+
+  // ── canvas frame draw ─────────────────────────────────────────────────────
+
+  _drawFrame(frame) {
+    try {
+      const c = this.canvas;
+      const s = this._stats;
+      if (!this._sized || c.width !== frame.displayWidth || c.height !== frame.displayHeight) {
+        c.width = frame.displayWidth;
+        c.height = frame.displayHeight;
+        this._sized = true;
+      }
+      this._ctx.drawImage(frame, 0, 0, c.width, c.height);
+      s.drawn++;
+      s.w = frame.displayWidth;
+      s.h = frame.displayHeight;
+      this._lastVideoTs = frame.timestamp;
+      s.videoCurrentTime = frame.timestamp / 1_000_000;
+      this._emit("stats", { ...s });
+    } finally {
+      frame.close();
+    }
+  }
+
+  // ── audio-master clock ────────────────────────────────────────────────────
+
+  _audioClockUs() {
+    if (this._firstAudioPtsUs === null || this._audioFramesPlayed === 0) return null;
+    return this._firstAudioPtsUs + (this._audioFramesPlayed / this._audioSampleRate) * 1_000_000;
+  }
+
+  _schedulePresent() {
+    if (this._presentScheduled) return;
+    this._presentScheduled = true;
+    requestAnimationFrame(() => this._present());
+  }
+
+  _present() {
+    if (this._destroyed) return;
+    this._presentScheduled = false;
+    const clock = this._audioClockUs();
+
+    if (clock === null) {
+      const e = this._presentQueue.shift();
+      if (e) this._drawFrame(e.frame);
+      this._renderSubs(this._lastVideoTs || null);
+      if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
+      return;
+    }
+
+    while (this._presentQueue.length) {
+      const e = this._presentQueue[0];
+      if (e.ts > clock + this._LEAD_US) break;
+      this._presentQueue.shift();
+      if (e.ts < clock - this._LATE_DROP_US) {
+        e.frame.close();
+        this._stats.dropped++;
+        continue;
+      }
+      this._drawFrame(e.frame);
+      this._stats.avSkewMs = Math.round((clock - e.ts) / 1000);
+    }
+    this._renderSubs(clock);
+    if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
+  }
+
+  // ── WebCodecs video decoder ───────────────────────────────────────────────
+
+  _ensureDecoder(codec) {
+    if (this._decoderConfigured) return true;
+
+    this._videoDecoder = new VideoDecoder({
+      output: (frame) => {
+        this._stats.decoded++;
+        this._presentQueue.push({ frame, ts: frame.timestamp });
+        this._schedulePresent();
+      },
+      error: (e) => { this._fatal("VideoDecoder error", e); },
+    });
+
+    const avcc = this.bridge.video_config_description();
+    this._videoDecoder.configure({ codec, description: avcc, optimizeForLatency: true });
+    this._decoderConfigured = true;
+    this._status(`VideoDecoder configured: ${codec} (AVCC, description ${avcc.length} bytes)`);
+    return true;
+  }
+
+  _pumpVideoInner() {
+    const cs = this.bridge.video_codec();
+    if (!cs) return;
+    if (!this._ensureDecoder(cs)) return;
+
+    for (const au of this.bridge.take_video_aus()) {
+      this._stats.aus++;
+      const key = au.is_keyframe;
+      if (!this._sawKeyframe) {
+        if (!key) { au.free?.(); continue; }
+        this._sawKeyframe = true;
+      }
+      const ts = au.pts_ticks !== undefined ? ticksToMicros(au.pts_ticks) : 0;
+      try {
+        this._videoDecoder.decode(new EncodedVideoChunk({
+          type: key ? "key" : "delta",
+          timestamp: ts,
+          data: au.bytes,
+        }));
+      } catch (e) {
+        this._fatal("decode() threw", e);
+        return;
+      }
+      au.free?.();
+    }
+  }
+
+  _pumpVideo() {
+    this._callBridge(() => this._pumpVideoInner());
+  }
+
+  // ── audio: WASM PCM → WebAudio AudioWorklet ───────────────────────────────
+
+  async _ensureAudio(sampleRate, nativeChannels) {
+    if (this._audioReady || this._audioStarting) return;
+    this._audioStarting = true;
+    this._streamChannels = nativeChannels;
+
+    this._audioCtx = new AudioContext({ sampleRate });
+    const maxCh = this._audioCtx.destination.maxChannelCount;
+
+    const passthrough = nativeChannels > 2 && nativeChannels <= maxCh;
+    this.bridge.set_audio_downmix(!passthrough);
+    this._outputChannels = passthrough ? nativeChannels : 2;
+    this._downmixActive = !passthrough && nativeChannels > 2;
+
+    await this._audioCtx.audioWorklet.addModule("./audio-worklet.js");
+    this._audioNode = new AudioWorkletNode(this._audioCtx, "skyfire-pcm", {
+      numberOfOutputs: 1,
+      outputChannelCount: [this._outputChannels],
+      channelCountMode: "explicit",
+      channelInterpretation: passthrough ? "discrete" : "speakers",
+    });
+    if (passthrough && this._audioCtx.destination.channelCount < this._outputChannels) {
+      this._audioCtx.destination.channelCount = this._outputChannels;
+    }
+    this._audioSampleRate = this._audioCtx.sampleRate || sampleRate;
+    this._audioNode.port.onmessage = (e) => {
+      if (e.data.type === "clock") {
+        this._audioFramesPlayed = e.data.framesPlayed;
+        this._stats.audioFrames = this._audioFramesPlayed;
+        this._stats.audioSec = this._audioFramesPlayed / this._audioSampleRate;
+        this._schedulePresent();
+      }
+    };
+    this._audioGain = this._audioCtx.createGain();
+    this._audioGain.gain.value = this._muted ? 0 : 1;
+    this._audioNode.connect(this._audioGain).connect(this._audioCtx.destination);
+    this._audioNode.port.postMessage({ type: "config", sampleRate, outputChannels: this._outputChannels });
+    this._audioNode.port.postMessage({ type: "play" });
+    this._audioCtx.resume().catch(() => {});
+    this._audioReady = true;
+    this._audioStarting = false;
+
+    const label = this._downmixActive
+      ? `${this._streamChannels}→${this._outputChannels} ch (WASM downmix)`
+      : `${this._outputChannels} ch${this._outputChannels > 2 ? " (discrete passthrough)" : ""}`;
+    this._status(`audio: ${sampleRate} Hz, ${label}`);
+  }
+
+  async _pumpAudioInner() {
+    const chunks = this.bridge.take_audio_pcm();
+    for (const c of chunks) {
+      if (!this._audioReady) {
+        // eslint-disable-next-line no-await-in-loop
+        await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
+      }
+      if (c.channels !== this._outputChannels) {
+        c.free?.();
+        continue;
+      }
+      if (this._firstAudioPtsUs === null && c.pts_ticks !== undefined) {
+        this._firstAudioPtsUs = ticksToMicros(c.pts_ticks);
+      }
+      const samples = c.samples;
+      this._stats.audioChunks++;
+      this._stats.audioSamples += samples.length;
+      this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
+      c.free?.();
+    }
+  }
+
+  async _pumpAudio() {
+    this._callBridge(() => this._pumpAudioInner());
+  }
+
+  _startAudio() {
+    if (this._audioCtx && this._audioCtx.state === "suspended") {
+      this._audioCtx.resume().catch(() => {});
+    }
+  }
+
+  // ── subtitles ─────────────────────────────────────────────────────────────
+
+  _pumpSubtitlesInner() {
+    if (!this.bridge.take_subtitle_cues) return;
+    let added = false;
+    for (const cue of this.bridge.take_subtitle_cues()) {
+      const start = Number(cue.start_pts);
+      const end = Number(cue.end_pts);
+      const regions = cue.regions.map((r) => {
+        const o = { x: r.x, y: r.y, width: r.width, height: r.height, rgba: r.rgba };
+        r.free?.();
+        return o;
+      });
+      this._subQueue.push({
+        startUs: ticksToMicros(start),
+        endUs: ticksToMicros(end > start ? end : start + 3 * PTS_HZ),
+        key: `${start}:${regions.length}`,
+        regions,
+      });
+      this._stats.subCues = (this._stats.subCues || 0) + 1;
+      added = true;
+      cue.free?.();
+    }
+    if (added) this._schedulePresent();
+  }
+
+  _pumpSubtitles() {
+    this._callBridge(() => this._pumpSubtitlesInner());
+  }
+
+  // ── re-entrancy guard ─────────────────────────────────────────────────────
+
+  _callBridge(method, ...args) {
+    if (!this.bridge) return;
+
+    if (this._bridgeLocked) {
+      this._stats._bridgeReentries = (this._stats._bridgeReentries || 0) + 1;
+      if (typeof method === "function") {
+        this._pendingBridgeQueue.push(method);
+      } else {
+        const m = method;
+        this._pendingBridgeQueue.push(() => this.bridge[m](...args));
+      }
+      return undefined;
+    }
+
+    this._bridgeLocked = true;
+    try {
+      if (typeof method === "function") return method();
+      return this.bridge[method](...args);
+    } finally {
+      this._bridgeLocked = false;
+      while (this._pendingBridgeQueue.length > 0) {
+        const fn = this._pendingBridgeQueue.shift();
+        if (this._bridgeLocked) { this._pendingBridgeQueue.unshift(fn); break; }
+        this._bridgeLocked = true;
+        try { fn(); } finally { this._bridgeLocked = false; }
+      }
+    }
+  }
+
+  // ── capability gate: decide video path ───────────────────────────────────
+
+  async _decideVideoPath(codec) {
+    if (this._videoPath !== null) return;
+
+    const forceMse = this.opts.forceMse || false;
+
+    if (forceMse) {
+      this._videoPath = "mse";
+      this._stats.videoPath = "mse";
+      this._status("MSE video fallback (forced via opts.forceMse)");
+      this._setupMse(codec);
+      return;
+    }
+
+    if (typeof VideoDecoder !== "undefined") {
+      try {
+        const cfg = { codec, optimizeForLatency: true };
+        const sup = await VideoDecoder.isConfigSupported(cfg);
+        if (sup.supported) {
+          this._videoPath = "webcodecs";
+          this._stats.videoPath = "webcodecs";
+          this._status(`WebCodecs path: ${codec}`);
+          return;
+        }
+      } catch (_) { /* fall through to MSE */ }
+    }
+    this._videoPath = "mse";
+    this._stats.videoPath = "mse";
+    this._status(`MSE video fallback: ${codec}`);
+    this._setupMse(codec);
+  }
+
+  // ── MSE video fallback helpers ────────────────────────────────────────────
+
+  _setupMse(codec) {
+    const mime = `video/mp4; codecs="${codec}"`;
+    if (!MediaSource.isTypeSupported(mime)) {
+      this._fatal(`MSE: type not supported — ${mime}`);
+      return;
+    }
+
+    this._mseVideoEl = document.createElement("video");
+    this._mseVideoEl.muted = true;
+    this._mseVideoEl.playsInline = true;
+    this._mseVideoEl.style.display = "block";
+    this._mseVideoEl.style.width = "100%";
+    this._mseVideoEl.style.height = "auto";
+    const container = this.canvas.parentElement || document.body;
+    container.insertBefore(this._mseVideoEl, this.canvas.nextSibling || null);
+
+    this._mseMediaSource = new MediaSource();
+    this._mseVideoEl.src = URL.createObjectURL(this._mseMediaSource);
+
+    this._mseMediaSource.addEventListener("sourceopen", () => {
+      try {
+        this._mseSourceBuffer = this._mseMediaSource.addSourceBuffer(mime);
+      } catch (e) {
+        this._fatal("MSE addSourceBuffer", e);
+        return;
+      }
+
+      this._mseSourceBuffer.addEventListener("updateend", () => {
+        this._drainMseBufferQueue();
+      });
+
+      const initSeg = this.bridge.video_init_segment();
+      if (initSeg && initSeg.length > 0) {
+        this._mseSourceBuffer.appendBuffer(initSeg);
+      }
+
+      this._mseVideoEl.play().catch((e) => console.warn("[skyfire] MSE play", e));
+      this._startMseDriftCorrector();
+    });
+  }
+
+  _drainMseBufferQueue() {
+    if (!this._mseSourceBuffer || this._mseAppending) return;
+    if (this._mseBufferQueue.length === 0) return;
+    if (this._mseSourceBuffer.updating) return;
+
+    this._mseAppending = true;
+    const seg = this._mseBufferQueue.shift();
+    try {
+      this._mseSourceBuffer.appendBuffer(seg);
+    } catch (e) {
+      console.warn("[skyfire] MSE appendBuffer error", e);
+    }
+    this._mseAppending = false;
+  }
+
+  _queueMseAppend(buf) {
+    this._mseBufferQueue.push(buf);
+    if (this._mseSourceBuffer && !this._mseSourceBuffer.updating) {
+      this._drainMseBufferQueue();
+    }
+  }
+
+  _pumpVideoMseInner() {
+    if (this._videoPath !== "mse") return;
+    for (;;) {
+      const seg = this.bridge.take_video_media_segment();
+      if (!seg) break;
+      this._stats.mseSegments++;
+      this._queueMseAppend(seg.bytes);
+    }
+  }
+
+  _pumpVideoMse() {
+    this._callBridge(() => this._pumpVideoMseInner());
+  }
+
+  _startMseDriftCorrector() {
+    if (this._mseDriftRaf) return;
+
+    const corrector = () => {
+      if (this._destroyed) return;
+      if (!this._mseVideoEl || !this._mseSourceBuffer) return;
+
+      const vt = this._mseVideoEl.currentTime;
+      this._stats.videoCurrentTime = vt;
+
+      if (this._mseVideoEl.buffered.length > 0 && vt < this._mseVideoEl.buffered.start(0)) {
+        this._mseVideoEl.currentTime = this._mseVideoEl.buffered.start(0);
+        this._mseVideoEl.playbackRate = 1.0;
+        this._mseDriftRaf = requestAnimationFrame(corrector);
+        return;
+      }
+
+      const clock = this._audioClockUs();
+      if (clock === null || clock === 0) {
+        this._mseDriftRaf = requestAnimationFrame(corrector);
+        return;
+      }
+
+      const clockSec = clock / 1_000_000;
+      const drift = vt - clockSec;
+      const absDrift = Math.abs(drift);
+
+      if (absDrift > this._MSE_DRIFT_SEEK_THRESH) {
+        this._mseVideoEl.currentTime = clockSec;
+        this._mseVideoEl.playbackRate = 1.0;
+      } else if (absDrift > this._MSE_DRIFT_NUDGE_THRESH) {
+        this._mseVideoEl.playbackRate = drift > 0 ? 0.98 : 1.02;
+      } else {
+        this._mseVideoEl.playbackRate = 1.0;
+      }
+
+      this._mseDriftRaf = requestAnimationFrame(corrector);
+    };
+
+    this._mseDriftRaf = requestAnimationFrame(corrector);
+  }
+
+  // ── stream consume loop ───────────────────────────────────────────────────
+
+  async _consumeStream(src) {
+    this._status(`tuning ${src} …`);
+
+    this._fetchAbortController = new AbortController();
+    const resp = await fetch(src, { signal: this._fetchAbortController.signal });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    let trackLogged = false;
+    let pathDecided = false;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        if (!pathDecided && this.bridge.video_codec()) {
+          pathDecided = true;
+          await this._decideVideoPath(this.bridge.video_codec());
+        }
+        this._callBridge(() => {
+          if (this._videoPath === "webcodecs") this._pumpVideoInner();
+          else if (this._videoPath === "mse") this._pumpVideoMseInner();
+          this._pumpAudioInner();
+          this._pumpSubtitlesInner();
+        });
+        return;
+      }
+
+      this._callBridge(() => {
+        this.bridge.feed(value);
+
+        if (!trackLogged) {
+          const tl = this.bridge.track_list();
+          if (tl) {
+            trackLogged = true;
+            this._trackList = tl;
+            this._status(
+              `track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`
+            );
+            // Apply pre-selected audio PID if provided.
+            if (this.opts.audioPid != null) {
+              this.bridge.select_audio(this.opts.audioPid);
+              this._status(`audio → pid ${this.opts.audioPid}`);
+            }
+            // Emit tracks event so the host can populate its pickers.
+            this._emit("tracks", tl);
+          }
+        }
+
+        if (this._videoPath === "webcodecs") {
+          this._pumpVideoInner();
+        } else if (this._videoPath === "mse") {
+          this._pumpVideoMseInner();
+        }
+        this._pumpAudioInner();
+        this._pumpSubtitlesInner();
+      });
+
+      if (!pathDecided && this.bridge.video_codec()) {
+        pathDecided = true;
+        await this._decideVideoPath(this.bridge.video_codec());
+      }
+
+      if (this._videoPath === "webcodecs" || this._videoPath === null) {
+        while (this._presentQueue.length > 60) {
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(40);
+        }
+      }
+    }
+  }
+}
