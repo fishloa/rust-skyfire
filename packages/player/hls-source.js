@@ -1,8 +1,149 @@
 /**
- * HLS playlist parser — pure function, no I/O.
+ * HLS playlist parser and byte-source abstractions — pure I/O wrappers.
  *
  * @module hls-source
  */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * DirectSource wraps a single HTTP fetch and delegates reads to the response
+ * body reader. Mirrors the ReadableStreamDefaultReader interface.
+ */
+export class DirectSource {
+  constructor(url, { signal, fetchImpl = fetch } = {}) {
+    this._url = url;
+    this._signal = signal;
+    this._fetchImpl = fetchImpl;
+    this._reader = null;
+    /** @type {boolean} Always false for a finite/direct stream. */
+    this.isLive = false;
+  }
+
+  async read() {
+    if (!this._reader) {
+      const resp = await this._fetchImpl(this._url, { signal: this._signal });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      this._reader = resp.body.getReader();
+    }
+    return this._reader.read();
+  }
+
+  cancel() {
+    if (this._reader) {
+      this._reader.cancel();
+      this._reader = null;
+    }
+  }
+}
+
+/**
+ * HlsSource fetches an HLS playlist and returns one segment's bytes per
+ * non-done read(). Supports both VOD (ENDLIST) and live playlists.
+ */
+export class HlsSource {
+  constructor(url, { signal, fetchImpl = fetch } = {}) {
+    this._url = url;
+    this._signal = signal;
+    this._fetchImpl = fetchImpl;
+    this._lastSeq = -1;
+    this._pending = [];
+    this._endList = false;
+    this._targetDuration = 2;
+    this._primed = false;
+    /** @type {boolean} Updated after the first successful playlist fetch. */
+    this.isLive = false;
+  }
+
+  async _refreshPlaylist() {
+    let playlistUrl = this._url;
+    let resp = await this._fetchImpl(playlistUrl, { signal: this._signal });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    let text = await resp.text();
+    let parsed = parsePlaylist(text, playlistUrl);
+
+    if (parsed.kind === "master") {
+      if (!parsed.variants || parsed.variants.length === 0) {
+        throw new Error("HLS master playlist has no variants");
+      }
+      playlistUrl = parsed.variants[0].uri;
+      resp = await this._fetchImpl(playlistUrl, { signal: this._signal });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      text = await resp.text();
+      parsed = parsePlaylist(text, playlistUrl);
+      if (parsed.kind !== "media") {
+        throw new Error("HLS variant playlist is not a media playlist");
+      }
+    }
+
+    this._targetDuration = parsed.targetDuration || 2;
+    this._endList = parsed.endList;
+    this.isLive = !parsed.endList;
+
+    for (const seg of parsed.segments) {
+      if (seg.seq > this._lastSeq) {
+        this._pending.push(seg);
+        this._lastSeq = seg.seq;
+      }
+    }
+
+    this._primed = true;
+  }
+
+  async read() {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (this._pending.length > 0) {
+        const seg = this._pending.shift();
+        const resp = await this._fetchImpl(seg.uri, { signal: this._signal });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+        return { done: false, value: new Uint8Array(buf) };
+      }
+
+      if (this._primed && this._endList) {
+        return { done: true, value: undefined };
+      }
+
+      if (this._primed) {
+        // Live: wait half the target duration before refreshing
+        await sleep(Math.max((this._targetDuration || 2) / 2, 0.5) * 1000);
+      }
+
+      await this._refreshPlaylist();
+    }
+  }
+
+  cancel() {
+    this._pending = [];
+  }
+}
+
+/**
+ * Returns true if the url looks like an HLS playlist URL (.m3u8), unless
+ * overridden by opts.hls.
+ *
+ * @param {string} url
+ * @param {{ hls?: boolean }} [opts]
+ * @returns {boolean}
+ */
+export function isHlsUrl(url, opts = {}) {
+  if (typeof opts.hls === "boolean") return opts.hls;
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+/**
+ * Create the appropriate source for a URL.
+ *
+ * @param {string} url
+ * @param {{ signal?: AbortSignal, fetchImpl?: Function, hls?: boolean }} [opts]
+ * @returns {DirectSource|HlsSource}
+ */
+export function makeSource(url, { signal, fetchImpl, hls } = {}) {
+  return isHlsUrl(url, { hls })
+    ? new HlsSource(url, { signal, fetchImpl })
+    : new DirectSource(url, { signal, fetchImpl });
+}
 
 /**
  * Parse an HLS media or master playlist.
