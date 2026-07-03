@@ -666,10 +666,10 @@ impl SyncController {
 
         // ── Stall detection ──────────────────────────────────────────
         if self.queue.is_empty() {
-            if let Some(last_pts) = self.last_frame_pts_us {
-                if clock_us > last_pts {
-                    self.stalled = true;
-                }
+            if let Some(last_pts) = self.last_frame_pts_us
+                && clock_us > last_pts
+            {
+                self.stalled = true;
             }
             return None;
         }

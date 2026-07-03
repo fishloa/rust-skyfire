@@ -201,10 +201,10 @@ fn language_from_descriptors(
     es_info: &dvb_si::descriptors::any::DescriptorLoop<'_>,
 ) -> Option<[u8; 3]> {
     for item in es_info.iter().flatten() {
-        if let AnyDescriptor::Iso639Language(lang) = item {
-            if let Some(entry) = lang.entries.first() {
-                return Some(entry.language_code.0);
-            }
+        if let AnyDescriptor::Iso639Language(lang) = item
+            && let Some(entry) = lang.entries.first()
+        {
+            return Some(entry.language_code.0);
         }
     }
     None
@@ -283,7 +283,7 @@ fn audio_codec_from_stream_type(
     for item in es_info.iter().flatten() {
         match item {
             AnyDescriptor::Registration(reg) if &reg.format_identifier == b"AC-3" => {
-                return Some(AudioCodec::Ac3)
+                return Some(AudioCodec::Ac3);
             }
             AnyDescriptor::Ac3(_) => return Some(AudioCodec::Ac3),
             AnyDescriptor::EnhancedAc3(_) => return Some(AudioCodec::EAc3),
@@ -471,8 +471,26 @@ impl EsDemux {
             None => return,
         };
 
-        if let Some(pes_bytes) = assem.feed(pusi, payload) {
-            if let Ok(pes) = PesPacket::parse(&pes_bytes) {
+        if let Some(pes_bytes) = assem.feed(pusi, payload)
+            && let Ok(pes) = PesPacket::parse(&pes_bytes)
+        {
+            let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
+            let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
+            self.units.push(AccessUnit {
+                pid,
+                pts_ticks,
+                dts_ticks,
+                es_bytes: pes.payload.to_vec(),
+            });
+        }
+    }
+
+    /// Flush all remaining partial PES packets, emitting their access units.
+    pub fn flush(&mut self) {
+        for (&pid, assem) in &mut self.assemblers {
+            if let Some(pes_bytes) = assem.flush()
+                && let Ok(pes) = PesPacket::parse(&pes_bytes)
+            {
                 let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
                 let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
                 self.units.push(AccessUnit {
@@ -481,24 +499,6 @@ impl EsDemux {
                     dts_ticks,
                     es_bytes: pes.payload.to_vec(),
                 });
-            }
-        }
-    }
-
-    /// Flush all remaining partial PES packets, emitting their access units.
-    pub fn flush(&mut self) {
-        for (&pid, assem) in &mut self.assemblers {
-            if let Some(pes_bytes) = assem.flush() {
-                if let Ok(pes) = PesPacket::parse(&pes_bytes) {
-                    let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
-                    let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
-                    self.units.push(AccessUnit {
-                        pid,
-                        pts_ticks,
-                        dts_ticks,
-                        es_bytes: pes.payload.to_vec(),
-                    });
-                }
             }
         }
     }

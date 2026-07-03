@@ -509,17 +509,17 @@ impl CompositorState {
 
         for seg in &field.segments {
             match seg {
-                AnySegment::PageComposition(ref pcs) => {
+                AnySegment::PageComposition(pcs) => {
                     page_time_out = pcs.page_time_out;
                     self.page_bytes = Some(pcs.to_bytes());
                 }
-                AnySegment::RegionComposition(ref rcs) => {
+                AnySegment::RegionComposition(rcs) => {
                     self.region_bytes.insert(rcs.region_id, rcs.to_bytes());
                 }
-                AnySegment::ClutDefinition(ref clut) => {
+                AnySegment::ClutDefinition(clut) => {
                     self.clut_bytes = Some(clut.to_bytes());
                 }
-                AnySegment::ObjectData(ref obj) => {
+                AnySegment::ObjectData(obj) => {
                     self.object_bytes.insert(obj.object_id, obj.to_bytes());
                 }
                 AnySegment::EndOfDisplaySet(_) => {
@@ -603,11 +603,11 @@ impl CompositorState {
                             break;
                         }
                         let clut_idx = pixels[src_idx] as usize;
-                        if let Some(&[r, g, b, a]) = palette.get(clut_idx) {
-                            if a > 0 {
-                                let dst_idx = (region_y * width + region_x) * 4;
-                                rgba[dst_idx..dst_idx + 4].copy_from_slice(&[r, g, b, a]);
-                            }
+                        if let Some(&[r, g, b, a]) = palette.get(clut_idx)
+                            && a > 0
+                        {
+                            let dst_idx = (region_y * width + region_x) * 4;
+                            rgba[dst_idx..dst_idx + 4].copy_from_slice(&[r, g, b, a]);
                         }
                     }
                 }
