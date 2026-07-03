@@ -13,6 +13,7 @@ const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js":   "text/javascript; charset=utf-8",
   ".ts":   "video/mp2t",
+  ".m3u8": "application/vnd.apple.mpegurl",
   ".tsx":  "text/javascript; charset=utf-8",
   ".css":  "text/css; charset=utf-8",
   ".wasm": "application/wasm",

@@ -77,6 +77,14 @@ test("PsF oracle PASS on a clean progressive stream", async ({ page }) => {
   expect(v.verdict, `oracle verdict (frames=${v.frames}, err=${v.error})`).toBe("pass");
 });
 
+test("HLS-of-TS: segments play through the bridge", async ({ page }) => {
+  const head = await page.request.get(`${BASE}/fixtures-hls/index.m3u8`).catch(() => null);
+  test.skip(!head || !head.ok(), "run scripts/make-hls-fixture.sh first");
+  const { stats, realErrors } = await runToDone(page, "/fixtures-hls/index.m3u8");
+  expect(stats.decoded, "frames decoded via HLS").toBeGreaterThan(0);
+  expect(realErrors, "no console errors").toEqual([]);
+});
+
 // ── MSE / fMP4 video fallback ──────────────────────────────────────────────
 
 async function waitForStats(page, timeoutMs = 15000) {

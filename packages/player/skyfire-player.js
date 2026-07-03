@@ -5,6 +5,7 @@
 // MPEG-TS and hands progressive H.264 access units up to WebCodecs.
 
 import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+import { makeSource } from "./hls-source.js";
 
 const PTS_HZ = 90_000;
 const ticksToMicros = (t) => Number(t) * 1_000_000 / PTS_HZ;
@@ -202,7 +203,7 @@ export class SkyfirePlayer {
     }
 
     const src = this.streamUrl;
-    const live = false; // opts don't expose live; keep finite-stream default (Task 3 can extend)
+    this._isLive = false;
 
     this._videoPath = null;
 
@@ -213,7 +214,7 @@ export class SkyfirePlayer {
       try {
         await this._consumeStream(src);
       } catch (e) {
-        if (live && attempt < MAX_RECONNECT) {
+        if (this._isLive && attempt < MAX_RECONNECT) {
           attempt++;
           this._status(`stream dropped — reconnecting (${attempt}/${MAX_RECONNECT})…`);
           this._sawKeyframe = false;
@@ -223,7 +224,7 @@ export class SkyfirePlayer {
         this._fatal("stream failed", e);
         return;
       }
-      if (live && attempt < MAX_RECONNECT) {
+      if (this._isLive && attempt < MAX_RECONNECT) {
         attempt++;
         this._status(`stream ended — reconnecting (${attempt}/${MAX_RECONNECT})…`);
         this._sawKeyframe = false;
@@ -270,6 +271,7 @@ export class SkyfirePlayer {
       try { this._fetchAbortController.abort(); } catch (_) {}
       this._fetchAbortController = null;
     }
+    try { this._source?.cancel(); } catch (_) {}
 
     // Cancel MSE drift rAF.
     if (this._mseDriftRaf) {
@@ -831,14 +833,18 @@ export class SkyfirePlayer {
     this._status(`tuning ${src} …`);
 
     this._fetchAbortController = new AbortController();
-    const resp = await fetch(src, { signal: this._fetchAbortController.signal });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
+    const source = makeSource(src, { signal: this._fetchAbortController.signal, hls: this.opts.hls });
+    this._source = source;
     let trackLogged = false;
     let pathDecided = false;
 
     for (;;) {
-      const { done, value } = await reader.read();
+      let done, value;
+      try {
+        ({ done, value } = await source.read());
+      } finally {
+        this._isLive = source.isLive;
+      }
 
       if (done) {
         if (!pathDecided && this.bridge.video_codec()) {
