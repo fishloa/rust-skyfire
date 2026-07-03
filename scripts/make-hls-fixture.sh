@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="${1:-$ROOT/fixtures/france2-8s.ts}"
+# Default fixture = h264-25fps.ts: a clean 15s progressive-H.264 TS that decodes
+# without error under headless Chromium WebCodecs (france2-8s.ts and gulli-15s.ts
+# hit a headless-only decoding-error quirk *as direct files too* — unrelated to
+# HLS — so they are unsuitable for the strict no-console-error e2e gate). Pass a
+# path to segment a different source, e.g.:
+#   scripts/make-hls-fixture.sh fixtures/france2-8s.ts
+# france2 is what proves DVB-subtitle PIDs survive segmentation (ffprobe the
+# segments) — the `segment` muxer keeps every PID; verified in issue #60.
+SRC="${1:-$ROOT/fixtures/h264-25fps.ts}"
 OUT="$ROOT/web/fixtures-hls"
 rm -rf "$OUT"; mkdir -p "$OUT"
 # `segment` muxer (NOT `-f hls`, which splits DVB-sub into WebVTT and errors).

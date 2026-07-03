@@ -22,7 +22,8 @@ export class DirectSource {
 
   async read() {
     if (!this._reader) {
-      const resp = await this._fetchImpl(this._url, { signal: this._signal });
+      const fetchImpl = this._fetchImpl;
+      const resp = await fetchImpl(this._url, { signal: this._signal });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       this._reader = resp.body.getReader();
     }
@@ -56,21 +57,22 @@ export class HlsSource {
   }
 
   async _refreshPlaylist() {
+    const fetchImpl = this._fetchImpl;
     let playlistUrl = this._url;
-    let resp = await this._fetchImpl(playlistUrl, { signal: this._signal });
+    let resp = await fetchImpl(playlistUrl, { signal: this._signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     let text = await resp.text();
-    let parsed = parsePlaylist(text, playlistUrl);
+    let parsed = parsePlaylist(text, resp.url || playlistUrl);
 
     if (parsed.kind === "master") {
       if (!parsed.variants || parsed.variants.length === 0) {
         throw new Error("HLS master playlist has no variants");
       }
       playlistUrl = parsed.variants[0].uri;
-      resp = await this._fetchImpl(playlistUrl, { signal: this._signal });
+      resp = await fetchImpl(playlistUrl, { signal: this._signal });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       text = await resp.text();
-      parsed = parsePlaylist(text, playlistUrl);
+      parsed = parsePlaylist(text, resp.url || playlistUrl);
       if (parsed.kind !== "media") {
         throw new Error("HLS variant playlist is not a media playlist");
       }
@@ -91,11 +93,12 @@ export class HlsSource {
   }
 
   async read() {
+    const fetchImpl = this._fetchImpl;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       if (this._pending.length > 0) {
         const seg = this._pending.shift();
-        const resp = await this._fetchImpl(seg.uri, { signal: this._signal });
+        const resp = await fetchImpl(seg.uri, { signal: this._signal });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
         return { done: false, value: new Uint8Array(buf) };

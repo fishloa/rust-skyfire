@@ -13,6 +13,7 @@ function diskFetch(u, _opts) {
   return Promise.resolve({
     ok: true,
     status: 200,
+    url: u,
     text: async () => data.toString("utf8"),
     arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
   });
@@ -143,42 +144,44 @@ segC.ts
 // ── A3 Tests: DirectSource, HlsSource, isHlsUrl, makeSource ────────────────
 
 // ── A3-1: HlsSource over the real fixture ──────────────────────────────────
-test.skipIf(!haveFixture)("A3-1: HlsSource drains real fixture — 3 segments, correct bytes", async () => {
+test.skipIf(!haveFixture)("A3-1: HlsSource drains the real fixture — every segment, in order, correct total bytes", async () => {
   const src = new HlsSource("http://x/index.m3u8", { fetchImpl: diskFetch });
 
-  const seg0Expected = readFileSync(join(HLS, "seg0.ts"));
-  const seg1Expected = readFileSync(join(HLS, "seg1.ts"));
-  const seg2Expected = readFileSync(join(HLS, "seg2.ts"));
-  const expectedTotal = seg0Expected.length + seg1Expected.length + seg2Expected.length;
+  // Derive the expected layout from the actual fixture on disk — fixture-agnostic
+  // (make-hls-fixture.sh may segment any source into any number of segments),
+  // still ungameable: asserts against the real files' count + byte sizes.
+  const playlist = readFileSync(join(HLS, "index.m3u8"), "utf8");
+  const segNames = playlist
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  expect(segNames.length).toBeGreaterThan(1); // multi-segment → exercises the fetch loop
+  const expectedTotal = segNames.reduce((n, s) => n + readFileSync(join(HLS, s)).length, 0);
 
   const values = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < segNames.length + 1; i++) {
     const result = await src.read();
     values.push(result);
     if (result.done) break;
   }
 
-  // Exactly 3 non-done reads
-  expect(values.length).toBe(4);
-  expect(values[0].done).toBe(false);
-  expect(values[1].done).toBe(false);
-  expect(values[2].done).toBe(false);
-  expect(values[3].done).toBe(true);
-  expect(values[3].value).toBeUndefined();
+  // One non-done read per segment, then a final done.
+  expect(values.length).toBe(segNames.length + 1);
+  for (let i = 0; i < segNames.length; i++) {
+    expect(values[i].done).toBe(false);
+    expect(values[i].value).toBeInstanceOf(Uint8Array);
+    expect(values[i].value.length).toBeGreaterThan(0);
+  }
+  expect(values[segNames.length].done).toBe(true);
+  expect(values[segNames.length].value).toBeUndefined();
 
-  // Each value is a non-empty Uint8Array
-  expect(values[0].value).toBeInstanceOf(Uint8Array);
-  expect(values[1].value).toBeInstanceOf(Uint8Array);
-  expect(values[2].value).toBeInstanceOf(Uint8Array);
-  expect(values[0].value.length).toBeGreaterThan(0);
-  expect(values[1].value.length).toBeGreaterThan(0);
-  expect(values[2].value.length).toBeGreaterThan(0);
-
-  // Total bytes matches sum of real file sizes
-  const totalBytes = values[0].value.length + values[1].value.length + values[2].value.length;
+  // Total bytes matches the sum of the real segment file sizes.
+  const totalBytes = values
+    .slice(0, segNames.length)
+    .reduce((n, v) => n + v.value.length, 0);
   expect(totalBytes).toBe(expectedTotal);
 
-  // isLive is false (ENDLIST present)
+  // isLive is false (ENDLIST present).
   expect(src.isLive).toBe(false);
 });
 
