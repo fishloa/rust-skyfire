@@ -1,0 +1,27 @@
+name: release-npm
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", registry-url: "https://registry.npmjs.org" }
+      - name: Build core wasm (bundler)
+        run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+      - name: Strip pkg/.gitignore (else npm excludes the wasm)
+        run: rm -f packages/core/pkg/.gitignore
+      - name: Publish @skyfire/core
+        run: npm publish --access public
+        working-directory: packages/core
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
+      - name: Publish @skyfire/player
+        run: npm publish --access public
+        working-directory: packages/player
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }

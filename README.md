@@ -61,6 +61,141 @@ The browser has a HW video decoder but refuses AC-3 audio. So:
 Scaffold + contract tests. Real implementation is delegated per GitHub **epic**
 and issue — see the open epics and `CLAUDE.md` for the orchestration model.
 
+## Use skyfire in the browser
+
+### Turn-key player: `@skyfire/player`
+
+The simplest way to embed a skyfire player in your page is to install
+[`@skyfire/player`](packages/player/) from npm:
+
+```bash
+npm i @skyfire/player
+```
+
+Then create a canvas and initialize the player:
+
+```html
+<canvas id="video" width="1280" height="720"></canvas>
+
+<script type="module">
+  import { SkyfirePlayer } from "@skyfire/player";
+
+  const canvas = document.getElementById("video");
+  const player = new SkyfirePlayer(canvas, {
+    streamUrl: "https://your-server/path/to/progressive-h264.ts",
+  });
+
+  await player.init();
+  player.play();
+
+  // Listen for events
+  player.on("tracks", (trackList) => {
+    console.log("Audio tracks:", trackList.audio);
+    console.log("Subtitles:", trackList.subtitles);
+  });
+
+  player.on("error", (err) => console.error(err));
+  player.on("ended", () => console.log("Stream ended"));
+
+  // Runtime controls
+  player.selectAudio(101); // select audio by PID
+  player.selectSubtitle(102); // select subtitle by PID
+  player.selectSubtitle(null); // disable subtitles
+  player.pause();
+  player.play();
+  player.destroy(); // cleanup
+</script>
+```
+
+**Events:** `tracks`, `stats`, `error`, `ended`.
+
+**Methods:** `play()`, `pause()`, `selectAudio(pid)`, `selectSubtitle(pid | null)`,
+`tracks()`, `on(event, callback)`, `destroy()`.
+
+### Low-level API: `@skyfire/core`
+
+If you need finer control over video/audio rendering or want to wire your own
+WebCodecs/WebAudio, use [`@skyfire/core`](packages/core/) directly:
+
+```js
+import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+
+// Initialize the WASM runtime
+await initSkyfire();
+
+// Create a bridge to demux TS + decode AC-3/E-AC-3
+const bridge = new SkyfireBridge();
+
+// Feed TS data (e.g., from fetch)
+const response = await fetch("https://your-server/stream.ts");
+const reader = response.body.getReader();
+let chunk;
+while (!(chunk = await reader.read()).done) {
+  bridge.feed(chunk.value);
+
+  // Drain video AUs, hand to WebCodecs VideoDecoder
+  for (const au of bridge.take_video_aus()) {
+    videoDecoder.decode(new EncodedVideoChunk({
+      type: au.isKeyframe ? "key" : "delta",
+      timestamp: au.ptsTicks ? Number(au.ptsTicks) : 0,
+      data: au.bytes,
+    }));
+  }
+
+  // Drain PCM audio, feed to WebAudio AudioWorklet
+  for (const pcm of bridge.take_audio_pcm()) {
+    audioWorklet.port.postMessage({ samples: pcm.samples });
+  }
+
+  // Drain subtitle cues for canvas blitting
+  for (const cue of bridge.take_subtitle_cues()) {
+    renderSubtitleCue(cue);
+  }
+}
+
+bridge.flush();
+```
+
+### Input stream contract
+
+Skyfire expects a **video-only-transcoded MPEG-TS** stream with the following
+constraints:
+
+- **Video:** progressive H.264 with `frame_mbs_only_flag=1` (no interlaced
+  frames). The server must deinterlace any incoming interlaced content.
+- **Audio:** untouched AC-3 or E-AC-3 (ETSI TS 102 366), stream-selectable by
+  PID.
+- **Subtitles:** DVB subtitles (EN 300 743) or teletext, stream-selectable by
+  PID, as separate PIDs.
+- **Timing:** PAT/PMT present; PCR and PTS intact for A/V synchronisation.
+
+See [epic #27](https://github.com/fishloa/rust-skyfire/issues/27) and
+[ADR 0008](docs/decisions/0008-video-only-transcode-wasm-bridge.md) for the full
+stream contract and rationale.
+
+### Publishing `@skyfire` packages (maintainers only)
+
+**Never publish from the CLI.** Publishing is automated via CI:
+
+1. Create the `@skyfire` npm organisation (if not already done).
+2. Add an `NPM_TOKEN` secret to the GitHub repo (Settings → Secrets and
+   variables → Actions → New repository secret).
+3. Tag a release and push:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+4. The `release-npm` GitHub Actions workflow (`.github/workflows/release-npm.yml`)
+   will:
+   - Build the WASM bridge (`skyfire-wasm` with `wasm-pack --target bundler`)
+   - Publish `@skyfire/core` to npm
+   - Publish `@skyfire/player` to npm
+
+**Fallback:** if the `@skyfire` npm organisation is unavailable, rename both
+package names to `skyfire-tv` (config-only change in the `package.json` files)
+and adjust the import paths in your code. The WASM and implementation remain
+unchanged.
+
 ## Licence
 
 MIT OR Apache-2.0.
