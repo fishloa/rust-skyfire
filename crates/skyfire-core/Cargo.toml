@@ -11,4 +11,4 @@ skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-sync.workspace = true
 dvb-si = "8"
-mpeg-ts = "0.1"
+mpeg-ts = "0.2"
