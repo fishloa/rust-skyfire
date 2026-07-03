@@ -3,29 +3,30 @@ use transmux::nalu_types::{AvcPps, AvcSps};
 use transmux::sps::{AvcSpsInfo, decode_avc_sps, rfc6381_avc1};
 use transmux::{AVCConfigurationBox, AVCDecoderConfigurationRecord};
 
-/// Decoder configuration ready for WebCodecs `VideoDecoder.configure`.
+/// Decoder configuration ready for `WebCodecs` `VideoDecoder.configure`.
 #[derive(Debug, Clone)]
 pub struct VideoConfig {
     /// RFC 6381 codec string (e.g. `avc1.640028`).
     pub codec: String,
     /// `AVCDecoderConfigurationRecord` bytes (`avcC` box) — bare record,
-    /// no box header, for WebCodecs `description`.
+    /// no box header, for `WebCodecs` `description`.
     pub description: Vec<u8>,
     /// True when the SPS has `frame_mbs_only_flag == 0` — i.e. the stream
-    /// is interlaced / field-coded (PAFF or MBAFF). WebCodecs cannot
+    /// is interlaced / field-coded (PAFF or MBAFF). `WebCodecs` cannot
     /// decode this; the shell must route it through the software decoder.
     pub interlaced: bool,
-    /// Coded luma width in pixels (from SPS, after frame_cropping).
+    /// Coded luma width in pixels (from SPS, after `frame_cropping`).
     pub width: u16,
-    /// Coded luma height in pixels (from SPS, after frame_cropping).
+    /// Coded luma height in pixels (from SPS, after `frame_cropping`).
     pub height: u16,
-    /// Transmux AVCConfigurationBox, for building an MSE init segment
+    /// Transmux `AVCConfigurationBox`, for building an MSE init segment
     /// (Task 4+).
     pub avcc_box: transmux::AVCConfigurationBox,
 }
 
-/// Build a WebCodecs `VideoDecoder` config by extracting SPS/PPS from
+/// Build a `WebCodecs` `VideoDecoder` config by extracting SPS/PPS from
 /// H.264 video access units.
+#[must_use]
 pub fn h264_decoder_config(access_units: &[crate::AccessUnit]) -> Option<VideoConfig> {
     let mut sps_bytes: Option<Vec<u8>> = None;
     let mut pps_bytes: Option<Vec<u8>> = None;
@@ -134,6 +135,7 @@ pub(crate) fn avc_record(
 ///
 /// Thin wrapper over `transmux::annexb_to_length_prefixed` (ISO/IEC 14496-15
 /// length-prefixed mdat form). Retained so existing call sites keep compiling.
+#[must_use]
 pub fn annexb_to_avcc(annexb: &[u8]) -> Vec<u8> {
     transmux::annexb_to_length_prefixed(annexb)
 }

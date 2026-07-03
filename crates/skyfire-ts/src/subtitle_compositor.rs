@@ -22,11 +22,13 @@ fn ycrcb_to_rgba(y: u8, cr: u8, cb: u8, t: u8) -> [u8; 4] {
     // BT.601 full-range (0-255)
     // Convert u8 to i16 for chroma to handle negative offsets (center=128)
     let y_f = f64::from(y);
-    let cr_f = f64::from(cr as i16 - 128);
-    let cb_f = f64::from(cb as i16 - 128);
-    let r = (y_f + 1.402_00 * cr_f).clamp(0.0, 255.0) as u8;
-    let g = (y_f - 0.344_14 * cb_f - 0.714_14 * cr_f).clamp(0.0, 255.0) as u8;
-    let b = (y_f + 1.772_00 * cb_f).clamp(0.0, 255.0) as u8;
+    let cr_f = f64::from(i16::from(cr) - 128);
+    let cb_f = f64::from(i16::from(cb) - 128);
+    let r = 1.402_00f64.mul_add(cr_f, y_f).clamp(0.0, 255.0) as u8;
+    let g = 0.714_14f64
+        .mul_add(-cr_f, 0.344_14f64.mul_add(-cb_f, y_f))
+        .clamp(0.0, 255.0) as u8;
+    let b = 1.772_00f64.mul_add(cb_f, y_f).clamp(0.0, 255.0) as u8;
     [r, g, b, t]
 }
 
@@ -317,7 +319,7 @@ fn expand_sub_block(block: &PixelDataSubBlock) -> Vec<u8> {
 
 /// Expand all sub-blocks for one field (top or bottom) into row-major pixels.
 ///
-/// EndOfLine markers separate rows; we return the flat pixel buffer and
+/// `EndOfLine` markers separate rows; we return the flat pixel buffer and
 /// derive the row width from the first row.
 fn expand_field(sub_blocks: &[PixelDataSubBlock]) -> (Vec<u8>, usize) {
     let mut all_pixels: Vec<u8> = Vec::new();
@@ -453,9 +455,9 @@ fn build_palette(clut: &ClutDefinitionSegment) -> Vec<[u8; 4]> {
 pub struct CompositorState {
     /// Active CLUT definition (owned bytes for lifetime independence).
     clut_bytes: Option<Vec<u8>>,
-    /// Region definitions, keyed by region_id (owned bytes).
+    /// Region definitions, keyed by `region_id` (owned bytes).
     region_bytes: std::collections::HashMap<u8, Vec<u8>>,
-    /// Object pixel data, keyed by object_id (owned bytes).
+    /// Object pixel data, keyed by `object_id` (owned bytes).
     object_bytes: std::collections::HashMap<u16, Vec<u8>>,
     /// Current page composition (owned bytes).
     page_bytes: Option<Vec<u8>>,
@@ -654,9 +656,9 @@ mod tests {
     /// Contains:
     /// - Display definition (720x288)
     /// - CLUT: index 1 = opaque red (Y=81, Cr=90, Cb=240 gives R~G=0,B=0 via BT.601)
-    /// - Region composition: 32x16, 8-bit, CLUT_id=1, places object 1 at (0,0)
+    /// - Region composition: 32x16, 8-bit, `CLUT_id=1`, places object 1 at (0,0)
     /// - Object data: id=1, interlaced, all pixels = index 1
-    /// - Page composition: region 1 at screen (10,20), page_time_out=5
+    /// - Page composition: region 1 at screen (10,20), `page_time_out=5`
     /// - End of display set
     fn build_minimal_display_pes() -> Vec<u8> {
         let mut buf = Vec::new();

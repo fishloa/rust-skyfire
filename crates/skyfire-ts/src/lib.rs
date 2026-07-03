@@ -1,10 +1,10 @@
 //! MPEG-TS demux for Skyfire — PSI (PAT/PMT) channel probing via dvb-si,
 //! elementary-stream + PTS extraction via dvb-pes, and H.264 decoder
-//! configuration (codec string + avcC) for WebCodecs.
+//! configuration (codec string + avcC) for `WebCodecs`.
 //!
 //! The browser receiver demuxes the raw TS served by an upstream DVB-S2
 //! receiver into per-ES streams (video / audio) tagged with PTS, then hands
-//! them to the WebCodecs video decoder and the WASM AC-3 audio decoder.
+//! them to the `WebCodecs` video decoder and the WASM AC-3 audio decoder.
 
 pub mod h264_config;
 pub mod subtitle_compositor;
@@ -42,7 +42,7 @@ pub enum VideoCodec {
 pub enum AudioCodec {
     Ac3,
     EAc3,
-    /// MPEG-1/2 Layer II audio (stream_type 0x03/0x04, DVB-SD).
+    /// MPEG-1/2 Layer II audio (`stream_type` 0x03/0x04, DVB-SD).
     Mp2,
 }
 
@@ -51,7 +51,7 @@ pub enum AudioCodec {
 pub struct AudioStream {
     pub pid: u16,
     pub codec: AudioCodec,
-    /// ISO 639-2 three-byte language code from the iso_639_language_descriptor
+    /// ISO 639-2 three-byte language code from the `iso_639_language_descriptor`
     /// (tag 0x0A), if present.  `None` when no language descriptor is found.
     pub language: Option<[u8; 3]>,
 }
@@ -83,7 +83,7 @@ pub struct SubtitleStream {
 pub struct ChannelMap {
     /// 13-bit video elementary-stream PID.
     pub video_pid: u16,
-    /// Video codec identified from the PMT stream_type.
+    /// Video codec identified from the PMT `stream_type`.
     pub video_codec: VideoCodec,
     /// Every audio elementary stream found in the PMT.
     pub audio_streams: Vec<AudioStream>,
@@ -107,6 +107,7 @@ pub type TrackList = ChannelMap;
 /// first complete channel map found.
 ///
 /// Returns `None` if no PAT+PMT could be extracted from the input.
+#[must_use]
 pub fn probe(raw: &[u8]) -> Option<ChannelMap> {
     let mut resync = TsResync::new();
     let mut demux = SiDemux::builder().follow_pat(true).build();
@@ -154,6 +155,7 @@ fn collect_pmt_pids(pat: &PatSection) -> Vec<u16> {
 ///
 /// Public for use by `skyfire-wasm`'s streaming bridge, which feeds PMT
 /// sections incrementally via its own `SiDemux` instance.
+#[must_use]
 pub fn build_channel_map_from_pmt(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<ChannelMap> {
     build_channel_map(pmt)
 }
@@ -236,7 +238,7 @@ fn subtitle_kind_from_descriptors(
 }
 
 /// Map a PMT `StreamType` to a `VideoCodec`, or `None` if not video.
-fn video_codec_from_stream_type(st: StreamType) -> Option<VideoCodec> {
+const fn video_codec_from_stream_type(st: StreamType) -> Option<VideoCodec> {
     match st {
         StreamType::H264 | StreamType::AdditionalViewH264 => Some(VideoCodec::H264),
         StreamType::Hevc
@@ -254,7 +256,7 @@ fn video_codec_from_stream_type(st: StreamType) -> Option<VideoCodec> {
 /// `None` if not a recognised audio stream.
 ///
 /// Most DVB streams signal AC-3/E-AC-3 via a registration descriptor
-/// (`format_identifier b"AC-3"`) when the stream_type is a user-private
+/// (`format_identifier b"AC-3"`) when the `stream_type` is a user-private
 /// value (typically 0x06 for AC-3, 0x81/0x87 for the ATSC stream types,
 /// or a PES-private-data stream with an AC-3 descriptor).
 fn audio_codec_from_stream_type(
@@ -274,7 +276,7 @@ fn audio_codec_from_stream_type(
         StreamType::Ac3 => return Some(AudioCodec::Ac3),
         StreamType::EAc3 => return Some(AudioCodec::EAc3),
         _ => {}
-    };
+    }
 
     // For PES-private-data (0x06), look for AC-3 / E-AC-3 descriptors.
     // ISO/IEC 13818-1 allows AC-3 to be signalled via:
@@ -354,23 +356,23 @@ pub struct TimedAccessUnit {
 /// ```
 ///
 /// Parse with `dvb_subtitle::PesDataField::parse(&bytes)` to access the
-/// segment tree (page_composition, region_composition, object_data, CLUT, …).
+/// segment tree (`page_composition`, `region_composition`, `object_data`, CLUT, …).
 /// The byte layout is the standard wire format — no Skyfire-specific framing.
 ///
 /// `end_pts` is derived from the `page_time_out` field in the
-/// page_composition_segment (in seconds × 90_000 ticks) added to `start_pts`.
-/// When no page_composition_segment is present, `end_pts == start_pts`
+/// `page_composition_segment` (in seconds × `90_000` ticks) added to `start_pts`.
+/// When no `page_composition_segment` is present, `end_pts == start_pts`
 /// (the JS layer should treat the cue as instantaneous / unknown duration).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubtitleCue {
     /// PES PTS in 90 kHz ticks.
     pub start_pts: u64,
-    /// Estimated end PTS = start_pts + page_time_out × 90_000.
-    /// Falls back to `start_pts` when no page_composition_segment is found.
+    /// Estimated end PTS = `start_pts` + `page_time_out` × `90_000`.
+    /// Falls back to `start_pts` when no `page_composition_segment` is found.
     pub end_pts: u64,
     /// PID this cue came from.
     pub pid: u16,
-    /// Raw PES data field bytes (ETSI EN 300 743, starting with data_identifier 0x20).
+    /// Raw PES data field bytes (ETSI EN 300 743, starting with `data_identifier` 0x20).
     pub bytes: Vec<u8>,
 }
 
@@ -378,10 +380,11 @@ pub struct SubtitleCue {
 ///
 /// Returns `None` when:
 /// - The payload does not start with the DVB subtitle `data_identifier` (0x20),
-///   indicating this is not a subtitle PES (e.g. padding_stream on the same PID).
+///   indicating this is not a subtitle PES (e.g. `padding_stream` on the same PID).
 /// - `dvb_subtitle::PesDataField::parse` fails (malformed PES data field).
 ///
 /// `start_pts` is the PTS extracted from the PES header (90 kHz ticks).
+#[must_use]
 pub fn parse_subtitle_pes(
     pid: u16,
     start_pts: Option<u64>,
@@ -408,9 +411,7 @@ pub fn parse_subtitle_pes(
 
     let pts = start_pts.unwrap_or(0);
     // page_time_out is in seconds; 90_000 ticks/second (ISO/IEC 13818-1 §2.7.4).
-    let end_pts = page_time_out_secs
-        .map(|t| pts.saturating_add(u64::from(t) * 90_000))
-        .unwrap_or(pts);
+    let end_pts = page_time_out_secs.map_or(pts, |t| pts.saturating_add(u64::from(t) * 90_000));
 
     Some(SubtitleCue {
         start_pts: pts,
@@ -474,8 +475,16 @@ impl EsDemux {
         if let Some(pes_bytes) = assem.feed(pusi, payload)
             && let Ok(pes) = PesPacket::parse(&pes_bytes)
         {
-            let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
-            let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
+            let pts_ticks = pes
+                .header
+                .as_ref()
+                .and_then(|h| h.pts)
+                .map(dvb_pes::Pts::ticks);
+            let dts_ticks = pes
+                .header
+                .as_ref()
+                .and_then(|h| h.dts)
+                .map(dvb_pes::Dts::ticks);
             self.units.push(AccessUnit {
                 pid,
                 pts_ticks,
@@ -491,8 +500,16 @@ impl EsDemux {
             if let Some(pes_bytes) = assem.flush()
                 && let Ok(pes) = PesPacket::parse(&pes_bytes)
             {
-                let pts_ticks = pes.header.as_ref().and_then(|h| h.pts).map(|p| p.ticks());
-                let dts_ticks = pes.header.as_ref().and_then(|h| h.dts).map(|d| d.ticks());
+                let pts_ticks = pes
+                    .header
+                    .as_ref()
+                    .and_then(|h| h.pts)
+                    .map(dvb_pes::Pts::ticks);
+                let dts_ticks = pes
+                    .header
+                    .as_ref()
+                    .and_then(|h| h.dts)
+                    .map(dvb_pes::Dts::ticks);
                 self.units.push(AccessUnit {
                     pid,
                     pts_ticks,
@@ -623,7 +640,7 @@ mod tests {
     // ES + PTS extraction tests
     // ------------------------------------------------------------------
 
-    /// Feed raw TS packets through EsDemux and return finished access units.
+    /// Feed raw TS packets through `EsDemux` and return finished access units.
     fn es_demux_fixture(name: &str) -> EsDemux {
         let data = load_fixture(name);
         let mut demux = EsDemux::new();

@@ -1,4 +1,4 @@
-//! Multichannel → stereo downmix for WebAudio output.
+//! Multichannel → stereo downmix for `WebAudio` output.
 //!
 //! Browsers reliably render only stereo; multichannel PCM routed to channels
 //! the device does not output goes silent (issue #43). We downmix to stereo in
@@ -42,8 +42,8 @@ pub fn downmix_s16le_to_stereo_f32(pcm_s16le: &[u8], channels: u16) -> Vec<f32> 
             2 => (frame[0], frame[1]),
             // WAVE order: L, R, C, LFE, Ls, Rs (LFE dropped).
             6 => (
-                frame[0] + k * frame[2] + k * frame[4],
-                frame[1] + k * frame[2] + k * frame[5],
+                k.mul_add(frame[4], k.mul_add(frame[2], frame[0])),
+                k.mul_add(frame[5], k.mul_add(frame[2], frame[1])),
             ),
             // Generic: ch0→L, ch1→R, ch2 (center-like)→both·k, ch3 (LFE when
             // ≥6 ch)→drop, remaining split L/R·k.
@@ -118,8 +118,8 @@ mod tests {
         let out = downmix_s16le_to_stereo_f32(&pcm, 6);
         assert_eq!(out.len(), 2, "one 5.1 frame → one stereo frame");
         let k = DOWNMIX_COEFF;
-        let want_l = (f32::from(l) + k * f32::from(c) + k * f32::from(ls)) / SCALE;
-        let want_r = (f32::from(r) + k * f32::from(c) + k * f32::from(rs)) / SCALE;
+        let want_l = k.mul_add(f32::from(ls), k.mul_add(f32::from(c), f32::from(l))) / SCALE;
+        let want_r = k.mul_add(f32::from(rs), k.mul_add(f32::from(c), f32::from(r))) / SCALE;
         assert!(
             (out[0] - want_l).abs() < 1e-6,
             "L: got {} want {}",

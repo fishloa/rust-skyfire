@@ -113,7 +113,7 @@ pub struct AudioClock {
     /// relative to the current anchor.
     ///
     /// This is the *continuous* media time represented by the current
-    /// anchor + wrap ticks alone (samples_played = 0, lip_sync = 0).
+    /// anchor + wrap ticks alone (`samples_played` = 0, `lip_sync` = 0).
     anchor_base_us: i64,
 }
 
@@ -156,7 +156,7 @@ impl AudioClock {
     ///
     /// The next call to [`push_pts`] will treat the new PTS as a full
     /// re‑anchor, resetting all accumulated state.
-    pub fn signal_underrun(&mut self) {
+    pub const fn signal_underrun(&mut self) {
         self.underrun_pending = true;
     }
 
@@ -187,13 +187,13 @@ impl AudioClock {
         // ── Expanded‑timeline delta (accounts for accumulated wraps) ──
         // The raw PTS is modulo 2³³. The real PTS = wrap_ticks + raw_pts.
         // Use i128 to avoid overflow on the difference.
-        let expanded_new = self.wrap_ticks as i128 + raw_pts as i128;
-        let expanded_old = self.wrap_ticks as i128 + self.anchor_pts_raw as i128;
+        let expanded_new = i128::from(self.wrap_ticks) + i128::from(raw_pts);
+        let expanded_old = i128::from(self.wrap_ticks) + i128::from(self.anchor_pts_raw);
         let expanded_delta_ticks = expanded_new - expanded_old;
         // Clamp to i64 range (realistic PTS deltas are much smaller).
-        let pts_delta_ticks_final = if expanded_delta_ticks > i64::MAX as i128 {
+        let pts_delta_ticks_final = if expanded_delta_ticks > i128::from(i64::MAX) {
             i64::MAX
-        } else if expanded_delta_ticks < i64::MIN as i128 {
+        } else if expanded_delta_ticks < i128::from(i64::MIN) {
             i64::MIN
         } else {
             expanded_delta_ticks as i64
@@ -206,11 +206,11 @@ impl AudioClock {
         if forward_wrap {
             self.wrap_ticks = self.wrap_ticks.saturating_add(PTS_RANGE);
             // Recompute expanded delta with updated wrap_ticks.
-            let expanded_new2 = self.wrap_ticks as i128 + raw_pts as i128;
+            let expanded_new2 = i128::from(self.wrap_ticks) + i128::from(raw_pts);
             let expanded_delta2 = expanded_new2 - expanded_old;
-            let final_delta = if expanded_delta2 > i64::MAX as i128 {
+            let final_delta = if expanded_delta2 > i128::from(i64::MAX) {
                 i64::MAX
-            } else if expanded_delta2 < i64::MIN as i128 {
+            } else if expanded_delta2 < i128::from(i64::MIN) {
                 i64::MIN
             } else {
                 expanded_delta2 as i64
@@ -303,7 +303,7 @@ pub enum FrameAction {
 /// Decide how to handle a video frame. `tol_us` is the half-frame tolerance
 /// (e.g. ~20 ms) that avoids thrashing on jitter.
 #[must_use]
-pub fn decide(frame_pts_us: i64, clock_us: i64, tol_us: i64) -> FrameAction {
+pub const fn decide(frame_pts_us: i64, clock_us: i64, tol_us: i64) -> FrameAction {
     if frame_pts_us < clock_us - tol_us {
         FrameAction::Drop
     } else if frame_pts_us > clock_us + tol_us {
@@ -347,7 +347,7 @@ pub struct VideoFrame {
 /// callers should check [`is_full`] before pushing.
 #[derive(Debug, Clone)]
 pub struct VideoFrameQueue {
-    /// PTS-ordered heap of pending frames (min-heap on pts_us).
+    /// PTS-ordered heap of pending frames (min-heap on `pts_us`).
     buf: Vec<VideoFrame>,
     /// Maximum number of frames the queue can hold.
     capacity: usize,
@@ -389,19 +389,19 @@ impl VideoFrameQueue {
 
     /// Number of frames currently in the queue.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Whether the queue is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
     /// Whether the queue is at capacity.
     #[must_use]
-    pub fn is_full(&self) -> bool {
+    pub const fn is_full(&self) -> bool {
         self.buf.len() >= self.capacity
     }
 
@@ -478,23 +478,23 @@ impl VideoFrameQueue {
 
     /// Current half-frame tolerance (µs).
     #[must_use]
-    pub fn tol_us(&self) -> i64 {
+    pub const fn tol_us(&self) -> i64 {
         self.tol_us
     }
 
     /// Maximum age behind the clock before forced drop (µs).
     #[must_use]
-    pub fn drop_late_us(&self) -> i64 {
+    pub const fn drop_late_us(&self) -> i64 {
         self.drop_late_us
     }
 
     /// Set the tolerance for future [`pop`] calls.
-    pub fn set_tol_us(&mut self, tol_us: i64) {
+    pub const fn set_tol_us(&mut self, tol_us: i64) {
         self.tol_us = tol_us;
     }
 
     /// Set the late-drop threshold for future [`pop`] calls.
-    pub fn set_drop_late_us(&mut self, drop_late_us: i64) {
+    pub const fn set_drop_late_us(&mut self, drop_late_us: i64) {
         self.drop_late_us = drop_late_us;
     }
 
@@ -622,7 +622,7 @@ pub struct SyncController {
 impl SyncController {
     /// Create a new sync controller.
     #[must_use]
-    pub fn new(clock: AudioClock, queue: VideoFrameQueue, catch_up: CatchUpConfig) -> Self {
+    pub const fn new(clock: AudioClock, queue: VideoFrameQueue, catch_up: CatchUpConfig) -> Self {
         Self {
             clock,
             queue,
@@ -710,10 +710,7 @@ impl SyncController {
             self.queue.dropped_late_count = self.queue.dropped_late_count.saturating_add(1);
             self.burst_drop_count += 1;
 
-            let dropped_frame = VideoFrame {
-                pts_us: head.pts_us,
-                handle: head.handle,
-            };
+            let dropped_frame = head;
 
             // Check if burst should end.
             let burst_ended = self.burst_drop_count >= self.catch_up.max_burst_drops
@@ -758,12 +755,12 @@ impl SyncController {
 
     /// Whether the video pipeline is stalled.
     #[must_use]
-    pub fn is_stalled(&self) -> bool {
+    pub const fn is_stalled(&self) -> bool {
         self.stalled
     }
 
     /// Signal an audio underrun to the wrapped clock.
-    pub fn signal_underrun(&mut self) {
+    pub const fn signal_underrun(&mut self) {
         self.clock.signal_underrun();
     }
 

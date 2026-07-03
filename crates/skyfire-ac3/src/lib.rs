@@ -1,8 +1,8 @@
 //! AC-3 / E-AC-3 decoder for Skyfire.
 //!
-//! WebCodecs has no AC-3/E-AC-3 audio decoder (this is the gap that killed the
+//! `WebCodecs` has no AC-3/E-AC-3 audio decoder (this is the gap that killed the
 //! old MSE attempt). Audio is light, so a pure-Rust decoder compiled to WASM is
-//! cheap: decode to interleaved PCM and push through a WebAudio `AudioWorklet`.
+//! cheap: decode to interleaved PCM and push through a `WebAudio` `AudioWorklet`.
 //!
 //! Powered by [`oxideav-ac3`](https://crates.io/crates/oxideav-ac3) (MIT).
 
@@ -26,7 +26,7 @@ pub struct DecodedAudio {
     /// Interleaved 16-bit signed little-endian PCM samples.
     /// Length = `samples * channels * 2` bytes.
     pub pcm_s16le: Vec<u8>,
-    /// Sample rate in Hz (e.g., 48_000).
+    /// Sample rate in Hz (e.g., `48_000`).
     pub sample_rate: u32,
     /// Number of audio channels.
     pub channels: u16,
@@ -122,12 +122,11 @@ impl IncrementalDecoder {
             let bsid = data[offset + 5] >> 3;
             // bsid ≤ 10 is base AC-3 (A/52 §E.2.3.1.6); 11–16 is Annex E (E-AC-3).
             let (frame_len, frame_rate) = if bsid <= 10 {
-                match syncinfo::parse(&data[offset..]) {
-                    Ok(si) => (si.frame_length as usize, si.sample_rate),
-                    Err(_) => {
-                        offset += 1;
-                        continue;
-                    }
+                if let Ok(si) = syncinfo::parse(&data[offset..]) {
+                    (si.frame_length as usize, si.sample_rate)
+                } else {
+                    offset += 1;
+                    continue;
                 }
             } else {
                 // E-AC-3: frmsiz = byte2[2:0]<<8 | byte3; length = (frmsiz+1)·2.
@@ -169,7 +168,7 @@ impl IncrementalDecoder {
                         sample_rate = Some(frame_rate);
                     }
                     Ok(_) => {}
-                    Err(Error::NeedMore) | Err(Error::Eof) => break,
+                    Err(Error::NeedMore | Error::Eof) => break,
                     Err(e) => return Err(e.to_string()),
                 }
             }
