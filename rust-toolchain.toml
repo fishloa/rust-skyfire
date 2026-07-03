@@ -1,0 +1,5 @@
+# Pin the project to a single Rust release for reproducible local + CI builds.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
