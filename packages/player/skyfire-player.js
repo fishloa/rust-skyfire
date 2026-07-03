@@ -839,8 +839,12 @@ export class SkyfirePlayer {
     let pathDecided = false;
 
     for (;;) {
-      const { done, value } = await source.read();
-      this._isLive = source.isLive;
+      let done, value;
+      try {
+        ({ done, value } = await source.read());
+      } finally {
+        this._isLive = source.isLive;
+      }
 
       if (done) {
         if (!pathDecided && this.bridge.video_codec()) {

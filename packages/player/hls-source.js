@@ -76,6 +76,7 @@ export class HlsSource {
       if (parsed.kind !== "media") {
         throw new Error("HLS variant playlist is not a media playlist");
       }
+      this._url = playlistUrl;
     }
 
     this._targetDuration = parsed.targetDuration || 2;
@@ -202,7 +203,6 @@ export function parsePlaylist(text, baseUrl) {
   let pendingDuration = 0;
   let pendingDiscontinuity = false;
   let seq = 0;
-  let seqInitialized = false;
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
@@ -210,7 +210,6 @@ export function parsePlaylist(text, baseUrl) {
     if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
       mediaSequence = parseInt(line.slice("#EXT-X-MEDIA-SEQUENCE:".length), 10);
       seq = mediaSequence;
-      seqInitialized = true;
     } else if (line.startsWith("#EXT-X-TARGETDURATION:")) {
       targetDuration = parseInt(line.slice("#EXT-X-TARGETDURATION:".length), 10);
     } else if (line.startsWith("#EXTINF:")) {
