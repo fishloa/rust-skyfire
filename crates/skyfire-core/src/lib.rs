@@ -19,7 +19,7 @@ pub use skyfire_ts as ts;
 
 use mpeg_ts::resync::TsResync;
 use skyfire_sync::{AudioClock, VideoFrameQueue};
-use skyfire_ts::{h264_config, AccessUnit, ChannelMap, EsDemux};
+use skyfire_ts::{AccessUnit, ChannelMap, EsDemux, h264_config};
 
 /// Engine build identifier (crate version).
 #[must_use]
@@ -237,10 +237,10 @@ impl Engine {
         for au in units {
             if Some(au.pid) == audio_pid {
                 // Capture the first audio PTS for clock anchoring.
-                if self.first_audio_pts.is_none() {
-                    if let Some(pts) = au.pts_ticks {
-                        self.first_audio_pts = Some(pts);
-                    }
+                if self.first_audio_pts.is_none()
+                    && let Some(pts) = au.pts_ticks
+                {
+                    self.first_audio_pts = Some(pts);
                 }
                 self.audio_es_buf.extend_from_slice(&au.es_bytes);
             } else if au.pid == video_pid {

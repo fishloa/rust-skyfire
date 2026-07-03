@@ -608,15 +608,15 @@ impl SkyfireBridge {
                             Ok(AnyTableSection::PmtSection(pmt)) => {
                                 if let Some(ref pids) = self.pmt_pids {
                                     let event_pid: u16 = event.pid().into();
-                                    if pids.contains(&event_pid) {
-                                        if let Some(ch) = build_channel_map_bridge(&pmt) {
-                                            // Default selected audio to first audio stream.
-                                            if self.selected_audio_pid.is_none() {
-                                                self.selected_audio_pid =
-                                                    ch.audio_streams.first().map(|s| s.pid);
-                                            }
-                                            self.channel = Some(ch);
+                                    if pids.contains(&event_pid)
+                                        && let Some(ch) = build_channel_map_bridge(&pmt)
+                                    {
+                                        // Default selected audio to first audio stream.
+                                        if self.selected_audio_pid.is_none() {
+                                            self.selected_audio_pid =
+                                                ch.audio_streams.first().map(|s| s.pid);
                                         }
+                                        self.channel = Some(ch);
                                     }
                                 }
                             }
@@ -934,10 +934,10 @@ impl SkyfireBridge {
 
         for au in units {
             // Update latest PTS clock from video or selected-audio PID.
-            if Some(au.pid) == video_pid || Some(au.pid) == audio_pid {
-                if let Some(pts) = au.pts_ticks {
-                    self.latest_pts = Some(pts as i64);
-                }
+            if (Some(au.pid) == video_pid || Some(au.pid) == audio_pid)
+                && let Some(pts) = au.pts_ticks
+            {
+                self.latest_pts = Some(pts as i64);
             }
 
             if Some(au.pid) == video_pid {
@@ -992,42 +992,43 @@ impl SkyfireBridge {
                     _ => {
                         // Default to AC-3/E-AC-3 decoder.
                         let _ = self.audio_decoder.decode_au(&au.es_bytes).map(|opt| {
-                            if let Some(decoded) = opt {
-                                if decoded.sample_rate > 0 && decoded.channels > 0 {
-                                    self.last_audio_channels = decoded.channels;
-                                    // Default: downmix multichannel to stereo in
-                                    // WASM (browsers reliably render only stereo;
-                                    // discrete 5.1 goes silent, #43). When the
-                                    // JS side has confirmed a multichannel-capable
-                                    // device it disables downmix for native
-                                    // discrete output (#39 opt-in passthrough).
-                                    let (channels, samples_f32) =
-                                        if self.downmix_audio || decoded.channels <= 2 {
-                                            (
-                                                2u16,
-                                                skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
-                                                    &decoded.pcm_s16le,
-                                                    decoded.channels,
-                                                ),
-                                            )
-                                        } else {
-                                            let native: Vec<f32> = decoded
-                                                .pcm_s16le
-                                                .chunks_exact(2)
-                                                .map(|b| {
-                                                    f32::from(i16::from_le_bytes([b[0], b[1]]))
-                                                        / 32_768.0_f32
-                                                })
-                                                .collect();
-                                            (decoded.channels, native)
-                                        };
-                                    self.audio_pcm_pending.push(WasmPcmChunk {
-                                        pts_ticks,
-                                        sample_rate: decoded.sample_rate,
-                                        channels,
-                                        samples: samples_f32,
-                                    });
-                                }
+                            if let Some(decoded) = opt
+                                && decoded.sample_rate > 0
+                                && decoded.channels > 0
+                            {
+                                self.last_audio_channels = decoded.channels;
+                                // Default: downmix multichannel to stereo in
+                                // WASM (browsers reliably render only stereo;
+                                // discrete 5.1 goes silent, #43). When the
+                                // JS side has confirmed a multichannel-capable
+                                // device it disables downmix for native
+                                // discrete output (#39 opt-in passthrough).
+                                let (channels, samples_f32) =
+                                    if self.downmix_audio || decoded.channels <= 2 {
+                                        (
+                                            2u16,
+                                            skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
+                                                &decoded.pcm_s16le,
+                                                decoded.channels,
+                                            ),
+                                        )
+                                    } else {
+                                        let native: Vec<f32> = decoded
+                                            .pcm_s16le
+                                            .chunks_exact(2)
+                                            .map(|b| {
+                                                f32::from(i16::from_le_bytes([b[0], b[1]]))
+                                                    / 32_768.0_f32
+                                            })
+                                            .collect();
+                                        (decoded.channels, native)
+                                    };
+                                self.audio_pcm_pending.push(WasmPcmChunk {
+                                    pts_ticks,
+                                    sample_rate: decoded.sample_rate,
+                                    channels,
+                                    samples: samples_f32,
+                                });
                             }
                         });
                     }
@@ -1037,11 +1038,11 @@ impl SkyfireBridge {
                 // then feed through the compositor.
                 // Non-subtitle PES on the same PID (e.g. padding_stream) are
                 // silently dropped when data_identifier ≠ 0x20.
-                if au.es_bytes.first() == Some(&dvb_subtitle::DataIdentifier) {
-                    if let Ok(field) = dvb_subtitle::PesDataField::parse(&au.es_bytes) {
-                        self.subtitle_compositor
-                            .feed_pes(au.pid, au.pts_ticks, &field);
-                    }
+                if au.es_bytes.first() == Some(&dvb_subtitle::DataIdentifier)
+                    && let Ok(field) = dvb_subtitle::PesDataField::parse(&au.es_bytes)
+                {
+                    self.subtitle_compositor
+                        .feed_pes(au.pid, au.pts_ticks, &field);
                 }
             }
         }

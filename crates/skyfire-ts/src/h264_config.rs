@@ -1,6 +1,6 @@
 use broadcast_common::Serialize;
 use transmux::nalu_types::{AvcPps, AvcSps};
-use transmux::sps::{decode_avc_sps, rfc6381_avc1, AvcSpsInfo};
+use transmux::sps::{AvcSpsInfo, decode_avc_sps, rfc6381_avc1};
 use transmux::{AVCConfigurationBox, AVCDecoderConfigurationRecord};
 
 /// Decoder configuration ready for WebCodecs `VideoDecoder.configure`.

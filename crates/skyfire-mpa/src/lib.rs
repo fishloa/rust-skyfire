@@ -7,7 +7,7 @@
 //! Powered by [`symphonia`](https://crates.io/crates/symphonia) (MPL-2.0).
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, CODEC_TYPE_MP2};
+use symphonia::core::codecs::{CODEC_TYPE_MP2, Decoder};
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 

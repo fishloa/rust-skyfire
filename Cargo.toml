@@ -12,9 +12,9 @@ members = [
 
 [workspace.package]
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.81"
+rust-version = "1.94"
 repository = "https://github.com/fishloa/rust-skyfire"
 
 # Skyfire — an in-browser DVB TV player: WebCodecs (HW video) + WASM (AC-3 audio).

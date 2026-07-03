@@ -65,9 +65,11 @@ fn json_flag_produces_valid_json() {
     assert_eq!(cm["video_pid"], 0x0100);
     assert_eq!(cm["video_codec"], "H264");
     let audio = cm["audio_streams"].as_array().unwrap();
-    assert!(audio
-        .iter()
-        .any(|a| a["pid"] == 0x0101 && a["codec"] == "EAc3"));
+    assert!(
+        audio
+            .iter()
+            .any(|a| a["pid"] == 0x0101 && a["codec"] == "EAc3")
+    );
 }
 
 #[test]
