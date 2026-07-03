@@ -129,6 +129,17 @@ decomposition and are **closed as superseded** by the rebuilt, verified client.
   `@skyfire/core` (WASM bridge facade + types) and `@skyfire/player` (turnkey
   WebCodecs+WebAudio player) published to npm; CI-only release workflow on
   `v*` tags. iOS real-device verification remains external-resource-gated.
+- **Idiom modernization, part 1** (PR #59) — Rust 1.94 / edition-2024 sweep:
+  108 machine-safe clippy pedantic/nursery fixes; CI gate + 3/3 e2e green.
+- **transmux `TsDemux` / Media-IR adoption — evaluated, PARKED (blocked
+  upstream).** Skyfire's demux is already thin glue over `dvb_si`/`dvb_pes`/
+  `mpeg_ts`/`dvb_subtitle`, and the H.264 segment layer already uses `transmux`.
+  transmux 0.10 `TsDemux` cannot replace it without regressing three core
+  capabilities — it is whole-buffer (not streaming), drops per-sample audio PTS
+  (breaks the audio-master clock), and drops DVB-subtitle PES + PCR. Filed as
+  upstream blockers: rust-broadcast **#555** (streaming demux), **#556**
+  (per-sample audio PTS), **#557** (subtitle/PCR passthrough). Revisit once all
+  three land.
 
 **Remaining open work is external-resource-gated:** an iOS-17 device
 (MSE-fallback verify), a DVB-subtitle capture (#40), a zenith PsF sample
