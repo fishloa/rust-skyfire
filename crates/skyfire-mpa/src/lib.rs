@@ -17,7 +17,7 @@ pub struct DecodedMpa {
     /// Interleaved 16-bit signed little-endian PCM samples.
     /// Length = `samples * channels * 2` bytes.
     pub pcm_s16le: Vec<u8>,
-    /// Sample rate in Hz (e.g., 48_000).
+    /// Sample rate in Hz (e.g., `48_000`).
     pub sample_rate: u32,
     /// Number of audio channels.
     pub channels: u16,

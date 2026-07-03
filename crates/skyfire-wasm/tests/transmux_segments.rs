@@ -9,7 +9,7 @@
 //!   contains `moof` and `mdat`, and has `sample_count > 0`.
 //! - Every top-level box of both the init and every media segment re-parses
 //!   successfully via transmux's box iterator (proving real ISOBMFF).
-//! - Sample accounting: sum of sample_count across all media segments equals
+//! - Sample accounting: sum of `sample_count` across all media segments equals
 //!   the number of video AUs the demux produces, minus at most 1 (the
 //!   possible pre-keyframe drop).
 

@@ -2,8 +2,8 @@
 //!
 //! Wires the receiver together: [`ts`] demuxes the MPEG-TS into elementary
 //! streams + PTS, [`ac3`] decodes AC-3/E-AC-3 audio to PCM, and [`sync`] runs
-//! the audio-master clock that the (browser-side WebCodecs) video pipeline
-//! chases. The WebCodecs video decode, `AudioWorklet`, and canvas render live
+//! the audio-master clock that the (browser-side `WebCodecs`) video pipeline
+//! chases. The `WebCodecs` video decode, `AudioWorklet`, and canvas render live
 //! in the `web/` shell and are driven via the `skyfire-wasm` bindings.
 //!
 //! # Engine
@@ -11,7 +11,7 @@
 //! The [`Engine`] struct is the top-level entry point. Feed it raw MPEG-TS
 //! bytes; it auto-detects the program's audio/video PIDs, demuxes, decodes
 //! E-AC-3 audio to PCM, collects H.264 video access units, builds the
-//! WebCodecs config, and exposes the audio-master clock + video present queue.
+//! `WebCodecs` config, and exposes the audio-master clock + video present queue.
 
 pub use skyfire_ac3 as ac3;
 pub use skyfire_sync as sync;
@@ -23,7 +23,7 @@ use skyfire_ts::{AccessUnit, ChannelMap, EsDemux, h264_config};
 
 /// Engine build identifier (crate version).
 #[must_use]
-pub fn version() -> &'static str {
+pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
@@ -32,7 +32,7 @@ pub fn version() -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Top-level engine: consumes raw MPEG-TS bytes, produces decoded audio PCM,
-/// H.264 video access units with PTS, and a WebCodecs video config.
+/// H.264 video access units with PTS, and a `WebCodecs` video config.
 ///
 /// # Usage
 ///
@@ -148,15 +148,15 @@ impl Engine {
         &self.pcm_output
     }
 
-    /// Audio sample rate in Hz (e.g. 48_000), or 0 if no audio decoded yet.
+    /// Audio sample rate in Hz (e.g. `48_000`), or 0 if no audio decoded yet.
     #[must_use]
-    pub fn audio_sample_rate(&self) -> u32 {
+    pub const fn audio_sample_rate(&self) -> u32 {
         self.audio_sample_rate
     }
 
     /// Number of audio channels, or 0 if no audio decoded yet.
     #[must_use]
-    pub fn audio_channels(&self) -> u16 {
+    pub const fn audio_channels(&self) -> u16 {
         self.audio_channels
     }
 
@@ -169,7 +169,7 @@ impl Engine {
         &self.video_units
     }
 
-    /// Build the WebCodecs `VideoDecoder` config (codec string + avcC) from
+    /// Build the `WebCodecs` `VideoDecoder` config (codec string + avcC) from
     /// the accumulated video access units.
     ///
     /// Returns `None` if no SPS/PPS have been extracted yet.
@@ -183,43 +183,43 @@ impl Engine {
     /// The clock is anchored to the first audio PTS seen. Callers advance
     /// the clock as PCM samples are pushed to the DAC.
     #[must_use]
-    pub fn clock(&self) -> &AudioClock {
+    pub const fn clock(&self) -> &AudioClock {
         &self.clock
     }
 
     /// Mutable reference to the audio-master media clock.
     #[must_use]
-    pub fn clock_mut(&mut self) -> &mut AudioClock {
+    pub const fn clock_mut(&mut self) -> &mut AudioClock {
         &mut self.clock
     }
 
     /// The PTS-ordered video-frame present queue.
     #[must_use]
-    pub fn queue(&self) -> &VideoFrameQueue {
+    pub const fn queue(&self) -> &VideoFrameQueue {
         &self.queue
     }
 
     /// Mutable reference to the video present queue.
     #[must_use]
-    pub fn queue_mut(&mut self) -> &mut VideoFrameQueue {
+    pub const fn queue_mut(&mut self) -> &mut VideoFrameQueue {
         &mut self.queue
     }
 
     /// Whether the engine has produced audio PCM.
     #[must_use]
-    pub fn has_audio(&self) -> bool {
+    pub const fn has_audio(&self) -> bool {
         !self.pcm_output.is_empty()
     }
 
     /// Whether the engine has collected video access units.
     #[must_use]
-    pub fn has_video(&self) -> bool {
+    pub const fn has_video(&self) -> bool {
         !self.video_units.is_empty()
     }
 
     /// The current channel map.
     #[must_use]
-    pub fn channel(&self) -> &ChannelMap {
+    pub const fn channel(&self) -> &ChannelMap {
         &self.channel
     }
 
@@ -254,26 +254,23 @@ impl Engine {
             return;
         }
 
-        match skyfire_ac3::decode_all_eac3(&self.audio_es_buf) {
-            Ok(decoded) => {
-                if decoded.sample_rate == 0 || decoded.channels == 0 {
-                    return;
-                }
-                self.audio_sample_rate = decoded.sample_rate;
-                self.audio_channels = decoded.channels;
-                self.pcm_output = decoded.pcm_s16le;
+        if let Ok(decoded) = skyfire_ac3::decode_all_eac3(&self.audio_es_buf) {
+            if decoded.sample_rate == 0 || decoded.channels == 0 {
+                return;
+            }
+            self.audio_sample_rate = decoded.sample_rate;
+            self.audio_channels = decoded.channels;
+            self.pcm_output = decoded.pcm_s16le;
 
-                // Set up the audio clock.
-                if let Some(pts) = self.first_audio_pts {
-                    self.clock = AudioClock::new(pts, decoded.sample_rate);
-                    // Advance the clock by all decoded samples.
-                    let sample_frames = self.pcm_output.len() / (decoded.channels as usize * 2);
-                    let _ = self.clock.advance(sample_frames as u64);
-                }
+            // Set up the audio clock.
+            if let Some(pts) = self.first_audio_pts {
+                self.clock = AudioClock::new(pts, decoded.sample_rate);
+                // Advance the clock by all decoded samples.
+                let sample_frames = self.pcm_output.len() / (decoded.channels as usize * 2);
+                let _ = self.clock.advance(sample_frames as u64);
             }
-            Err(_) => {
-                // Decode failed — leave PCM empty.
-            }
+        } else {
+            // Decode failed — leave PCM empty.
         }
 
         self.audio_decoded = true;

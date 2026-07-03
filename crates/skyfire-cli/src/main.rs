@@ -74,25 +74,22 @@ fn print_text(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
     }
 
     println!();
-    match skyfire_ts::probe(data) {
-        Some(map) => {
+    if let Some(map) = skyfire_ts::probe(data) {
+        println!(
+            "Channel map: video PID {vp:#06x} ({vc:?})",
+            vp = map.video_pid,
+            vc = map.video_codec,
+        );
+        for a in &map.audio_streams {
             println!(
-                "Channel map: video PID {vp:#06x} ({vc:?})",
-                vp = map.video_pid,
-                vc = map.video_codec,
+                "  audio PID {pid:#06x} ({codec:?})",
+                pid = a.pid,
+                codec = a.codec,
             );
-            for a in &map.audio_streams {
-                println!(
-                    "  audio PID {pid:#06x} ({codec:?})",
-                    pid = a.pid,
-                    codec = a.codec,
-                );
-            }
         }
-        None => {
-            eprintln!("error: no PAT/PMT channel map found in input");
-            std::process::exit(1);
-        }
+    } else {
+        eprintln!("error: no PAT/PMT channel map found in input");
+        std::process::exit(1);
     }
 }
 
