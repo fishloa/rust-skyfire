@@ -33,3 +33,6 @@ web/playwright-report/
 
 packages/*/pkg/
 packages/*/*.tgz
+
+# SDD scratch (subagent ledger/reports)
+.superpowers/
