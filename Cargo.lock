@@ -515,6 +515,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp4-emsg"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d143b467e70a64b28d1d150a23c771a4eb1f04aec745b225e5f6e48e151854d"
+dependencies = [
+ "broadcast-common",
+ "thiserror",
+]
+
+[[package]]
 name = "mpeg-pes"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -940,13 +950,14 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c45a617dea6415b63100a32814b8f24551af805ad8db769a5fef6b0ca98ee92"
+checksum = "3d52f002a585fbd692dec2d23579fe7ef7fdb423f0966ada820d9f3fdd1a412f"
 dependencies = [
  "aes",
  "broadcast-common",
  "ctr",
+ "mp4-emsg",
  "mpeg-pes",
  "mpeg-ps",
  "mpeg-ts",
