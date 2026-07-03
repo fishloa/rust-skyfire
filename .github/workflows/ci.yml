@@ -70,5 +70,5 @@ jobs:
       - run: rm -f packages/core/pkg/.gitignore
       - run: cd packages/core && npm pack --dry-run
       - run: cd packages/player && npm pack --dry-run
-      - run: npx -y typescript@5 tsc --noEmit packages/core/index.d.ts
+      - run: npx -y -p typescript@5 tsc --noEmit packages/core/index.d.ts
 
