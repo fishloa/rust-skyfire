@@ -10,6 +10,9 @@ pub mod subtitle_compositor;
 
 pub use transmux::ts_demux::DemuxEvent;
 
+/// MPEG-TS packet size in bytes (ISO/IEC 13818-1 §2.4.3.2).
+pub const TS_PACKET_LEN: usize = 188;
+
 use dvb_si::descriptors::any::{AnyDescriptor, DescriptorLoop};
 use transmux::pipeline::CodecConfig;
 use transmux::ts_demux::StreamingTsDemux;

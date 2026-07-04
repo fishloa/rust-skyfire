@@ -763,11 +763,11 @@ dependencies = [
 name = "skyfire-core"
 version = "0.1.1"
 dependencies = [
- "dvb-si",
- "mpeg-ts",
+ "broadcast-common",
  "skyfire-ac3",
  "skyfire-sync",
  "skyfire-ts",
+ "transmux",
 ]
 
 [[package]]
