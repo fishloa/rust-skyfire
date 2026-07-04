@@ -852,21 +852,17 @@ impl SkyfireBridge {
                 }
                 let pts = sample.source_timing.as_ref().map(|t| t.pts);
                 let dts = sample.source_timing.as_ref().map(|t| t.dts);
-                // Some broadcast H.264 streams use open GOPs without IDR frames;
-                // they insert in-band SPS (NAL type 7) at each GOP boundary instead.
-                // Treat SPS-bearing AUs as keyframes for segmentation and WasmVideoAu.
-                let is_keyframe = sample.is_sync || avcc_has_sps_or_idr(&sample.data);
+                // transmux 0.14 (rust-broadcast#595) sets is_sync on open-GOP
+                // random-access points (IDR / recovery-point SEI / SPS-led AU),
+                // so no client-side keyframe re-derivation is needed.
                 self.video_aus.push(WasmVideoAu {
                     pts_ticks: pts,
                     dts_ticks: dts,
-                    is_keyframe,
+                    is_keyframe: sample.is_sync,
                     bytes: sample.data.clone(),
                 });
-                // Feed to segmenter with corrected is_sync for open-GOP streams.
                 if let Some(ref mut seg) = self.segmenter {
-                    let mut seg_sample = sample;
-                    seg_sample.is_sync = is_keyframe;
-                    let _ = seg.push(track_id, seg_sample);
+                    let _ = seg.push(track_id, sample);
                 }
             }
             TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
@@ -957,28 +953,6 @@ impl Default for SkyfireBridge {
 
 fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
     String::from_utf8_lossy(lang).into_owned()
-}
-
-/// True if the AVCC length-prefixed sample data contains an IDR (type 5) or SPS (type 7) NAL.
-/// Broadcast H.264 streams may use open GOPs with no IDR; SPS insertion marks GOP boundaries.
-fn avcc_has_sps_or_idr(data: &[u8]) -> bool {
-    let mut i = 0usize;
-    while i + 5 <= data.len() {
-        let nal_len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
-        if nal_len == 0 {
-            break;
-        }
-        let nal_type = data[i + 4] & 0x1f;
-        if nal_type == 5 || nal_type == 7 {
-            return true;
-        }
-        let next = match i.checked_add(4).and_then(|v| v.checked_add(nal_len)) {
-            Some(n) if n <= data.len() => n,
-            _ => break,
-        };
-        i = next;
-    }
-    false
 }
 
 /// Parse the sample_count from a trun box in a media segment.
