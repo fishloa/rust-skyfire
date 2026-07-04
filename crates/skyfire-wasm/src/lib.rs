@@ -708,15 +708,15 @@ impl SkyfireBridge {
         let Some(cfg) = self.cached_video_config.as_ref() else {
             return Vec::new();
         };
-        let track = transmux::TrackSpec {
-            track_id: 1,
-            timescale: 90_000,
-            config: transmux::CodecConfig::Avc {
+        let track = transmux::TrackSpec::new(
+            1,
+            90_000,
+            transmux::CodecConfig::Avc {
                 config: cfg.avcc_box.clone(),
                 width: cfg.width,
                 height: cfg.height,
             },
-        };
+        );
         transmux::build_init_segment(&[track], 90_000).unwrap_or_default()
     }
 

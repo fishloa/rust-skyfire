@@ -256,7 +256,7 @@ mod tests {
 
         let expected_avcc: &[u8] = &[
             0x01, // version
-            0xf4, // profile_idc = 244 (High 4:4:4)
+            0xf4, // profile_idc = 244 (High 4:4:4 Predictive)
             0x00, // constraint_flags
             0x0c, // level_idc = 12 (1.2)
             0xff, // reserved + lengthSizeMinusOne=3
@@ -269,6 +269,12 @@ mod tests {
             0x00, 0x06, // PPS length = 6
             // PPS NAL unit:
             0x68, 0xeb, 0xe3, 0xc4, 0x48, 0x44,
+            // High-profile extension (profile_idc=244 ∈ high-profile set per #563):
+            // chroma_format_idc=3 (YUV 4:4:4) | reserved=0x3f → 0xfc
+            0xfc, // bit_depth_luma_minus8=0 (8-bit) | reserved=0x1f → 0xf8
+            0xf8, // bit_depth_chroma_minus8=0 (8-bit) | reserved=0x1f → 0xf8
+            0xf8, // numSequenceParameterSetExt=0
+            0x00,
         ];
         assert_eq!(
             config.description, expected_avcc,
