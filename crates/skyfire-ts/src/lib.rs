@@ -28,6 +28,19 @@ pub enum VideoCodec {
     H265,
 }
 
+/// Canonical video-codec string for public APIs.
+///
+/// This is the single source of truth — every API emits the same string.
+/// The match is exhaustive (no `_ =>` catch-all) so adding a variant is a
+/// compile error, never a silent misclassification.
+#[must_use]
+pub fn video_codec_str(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "H264",
+        VideoCodec::H265 => "H265",
+    }
+}
+
 /// Identifies an audio codec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCodec {
@@ -35,6 +48,21 @@ pub enum AudioCodec {
     EAc3,
     /// MPEG-1/2 Layer II audio (`stream_type` 0x03/0x04, DVB-SD).
     Mp2,
+}
+
+/// Canonical audio-codec string for public APIs.
+///
+/// UPPERCASE forms (`"AC3"`, `"EAC3"`, `"MP2"`) — the bridge/player contract.
+/// This is the single source of truth: every API emits the same string.
+/// The match is exhaustive (no `_ =>` catch-all) so adding a variant is a
+/// compile error, never a silent misclassification.
+#[must_use]
+pub fn audio_codec_str(codec: AudioCodec) -> &'static str {
+    match codec {
+        AudioCodec::Ac3 => "AC3",
+        AudioCodec::EAc3 => "EAC3",
+        AudioCodec::Mp2 => "MP2",
+    }
 }
 
 /// Identifies a subtitle/text stream kind.

@@ -2,7 +2,7 @@ export function initSkyfire(): Promise<void>;
 
 export interface WasmAudioTrack {
   pid: number;
-  codec: string;
+  codec: "AC3" | "EAC3" | "MP2";
   language?: string;
 }
 

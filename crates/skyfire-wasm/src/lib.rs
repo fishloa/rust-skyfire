@@ -10,6 +10,7 @@
 //! The browser shell in `web/` drives those APIs with the data surfaced here.
 
 use skyfire_core::Engine;
+use skyfire_ts::{audio_codec_str, video_codec_str};
 use wasm_bindgen::prelude::*;
 
 /// Result of probing MPEG-TS bytes for the channel map (PAT+PMT).
@@ -22,7 +23,7 @@ pub struct ProbeResult {
     pub video_codec: String,
     /// PIDs of audio elementary streams (at least one for DVB).
     audio_pids: Vec<u16>,
-    /// Audio codec identifiers, parallel to `audio_pids`: `"EAc3"`, `"Ac3"`, or `"Mp2"`.
+    /// Audio codec identifiers, parallel to `audio_pids`: `"AC3"`, `"EAC3"`, or `"MP2"`.
     audio_codecs: Vec<String>,
 }
 
@@ -119,8 +120,7 @@ impl WasmEngine {
             .find(|t| matches!(t.kind, skyfire_core::ts::TrackKind::Video(_)))?;
         let video_pid = video_track.pid.unwrap_or(0);
         let video_codec = match video_track.kind {
-            skyfire_core::ts::TrackKind::Video(skyfire_core::ts::VideoCodec::H264) => "H264",
-            skyfire_core::ts::TrackKind::Video(skyfire_core::ts::VideoCodec::H265) => "H265",
+            skyfire_core::ts::TrackKind::Video(c) => video_codec_str(c),
             _ => "H264",
         };
 
@@ -132,16 +132,9 @@ impl WasmEngine {
         let audio_codecs: Vec<String> = tracks
             .iter()
             .filter(|t| matches!(t.kind, skyfire_core::ts::TrackKind::Audio(_)))
-            .map(|t| {
-                match t.kind {
-                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::Ac3) => "Ac3",
-                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::EAc3) => {
-                        "EAc3"
-                    }
-                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::Mp2) => "Mp2",
-                    _ => "EAc3",
-                }
-                .to_string()
+            .map(|t| match t.kind {
+                skyfire_core::ts::TrackKind::Audio(c) => audio_codec_str(c).to_string(),
+                _ => "EAC3".to_string(),
             })
             .collect();
 
@@ -291,7 +284,7 @@ use broadcast_common::traits::Parse;
 use broadcast_common::traits::Serialize as BcSerialize;
 use skyfire_ts::DemuxEvent;
 use skyfire_ts::TrackMeta;
-use skyfire_ts::{AudioCodec, SubtitleKind, TrackKind, VideoCodec};
+use skyfire_ts::{AudioCodec, SubtitleKind, TrackKind};
 
 /// Track-list produced once the first PMT has been parsed.
 #[wasm_bindgen]
@@ -599,8 +592,7 @@ impl SkyfireBridge {
         let video_meta = self.tracks.get(&video_id)?;
         let video_pid = video_meta.pid.unwrap_or(0);
         let video_codec = match video_meta.kind {
-            TrackKind::Video(VideoCodec::H264) => "H264",
-            TrackKind::Video(VideoCodec::H265) => "H265",
+            TrackKind::Video(c) => video_codec_str(c),
             _ => "H264",
         };
 
@@ -611,12 +603,9 @@ impl SkyfireBridge {
             .map(|m| WasmAudioTrack {
                 pid: m.pid.unwrap_or(0),
                 codec: match m.kind {
-                    TrackKind::Audio(AudioCodec::Ac3) => "AC3",
-                    TrackKind::Audio(AudioCodec::EAc3) => "EAC3",
-                    TrackKind::Audio(AudioCodec::Mp2) => "MP2",
-                    _ => "EAC3",
-                }
-                .to_string(),
+                    TrackKind::Audio(c) => audio_codec_str(c).to_string(),
+                    _ => "EAC3".to_string(),
+                },
                 language: m.language.map(|l| lang_bytes_to_string(&l)),
             })
             .collect();
@@ -1355,6 +1344,73 @@ mod tests {
             keyframe_count,
             codec
         );
+    }
+
+    // ── codec-string consistency (audit P0) ──────────────────────────────────
+
+    /// Assert that `WasmEngine::probe` and `SkyfireBridge::track_list`
+    /// report the exact same audio codec string(s) for the same fixture.
+    ///
+    /// This is the ungameable oracle from the audit report: today they differ
+    /// ("EAc3" vs "EAC3"), so a wrong/partial fix fails this test.
+    #[test]
+    fn codec_strings_consistent_across_public_apis() {
+        // Use a small fixture (200 KB) so probe + bridge can complete
+        // comfortably within the 30 s timeout.
+        let data = load_fixture("ac3-51.ts");
+
+        // --- WasmEngine::probe ---
+        let we = WasmEngine::new();
+        let pr = we.probe(&data).expect("probe must succeed for ac3-51.ts");
+
+        // --- SkyfireBridge::track_list ---
+        let mut bridge = SkyfireBridge::new();
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+        let tl = bridge
+            .track_list()
+            .expect("track_list must be Some after feeding ac3-51.ts");
+
+        // Probe and track_list must return the same audio codec strings
+        // for the same fixture.
+        let probe_codecs = pr.audio_codecs();
+        assert_eq!(
+            probe_codecs.len(),
+            tl.audio.len(),
+            "probe and track_list must report the same number of audio tracks"
+        );
+
+        for (i, (probe_codec, bridge_track)) in probe_codecs.iter().zip(tl.audio.iter()).enumerate()
+        {
+            assert_eq!(
+                probe_codec, &bridge_track.codec,
+                "audio track #{i}: probe reports \"{probe_codec}\" but \
+                 track_list reports \"{}\"",
+                bridge_track.codec
+            );
+        }
+
+        // Sanity: the codec strings are uppercase (the bridge/player contract).
+        // Only check alphabetic characters (digits are not case-sensitive).
+        for codec in &probe_codecs {
+            assert!(
+                codec
+                    .chars()
+                    .all(|c| c.is_uppercase() || !c.is_alphabetic()),
+                "audio codec \"{codec}\" from probe must be all-uppercase"
+            );
+        }
+        for track in &tl.audio {
+            assert!(
+                track
+                    .codec
+                    .chars()
+                    .all(|c| c.is_uppercase() || !c.is_alphabetic()),
+                "audio codec \"{}\" from track_list must be all-uppercase",
+                track.codec
+            );
+        }
     }
 
     // ── subtitle tests (issue #34) ─────────────────────────────────────────
