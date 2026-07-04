@@ -352,7 +352,10 @@ impl Engine {
             return;
         }
 
-        if let Ok(decoded) = skyfire_ac3::decode_all_eac3(&self.audio_es_buf) {
+        // Use IncrementalDecoder (handles both AC-3 bsid≤10 and E-AC-3
+        // bsid 11-16) instead of the E-AC-3-only decode_all_eac3.
+        let mut dec = skyfire_ac3::IncrementalDecoder::new();
+        if let Ok(Some(decoded)) = dec.decode_au(&self.audio_es_buf) {
             if decoded.sample_rate == 0 || decoded.channels == 0 {
                 return;
             }
@@ -621,5 +624,147 @@ mod tests {
         let queue = engine.queue();
         assert!(queue.is_empty(), "queue starts empty");
         assert_eq!(queue.len(), 0);
+    }
+
+    // ── AC-3 (base) oracle ──────────────────────────────────────────
+
+    /// Extract the audio ES bytes for the first audio track in a TS
+    /// fixture.  Reuses the same demuxing logic as `engine_for_fixture`.
+    fn extract_audio_es_ts(name: &str) -> Vec<u8> {
+        let data = load_fixture(name);
+        let mut demux = TsDemux::new();
+        let mut audio_track_id: Option<u32> = None;
+        let mut es: Vec<u8> = Vec::new();
+        for chunk in data.chunks(4096) {
+            demux.feed(chunk);
+            while let Some(ev) = demux.poll_event() {
+                match ev {
+                    DemuxEvent::TrackAdded(track) => {
+                        let meta = track_meta(&track.spec);
+                        if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id.is_none() {
+                            audio_track_id = Some(track.spec.track_id);
+                        }
+                    }
+                    DemuxEvent::Sample { track_id, sample } => {
+                        if Some(track_id) == audio_track_id {
+                            es.extend_from_slice(&sample.data);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        demux.finish();
+        while let Some(ev) = demux.poll_event() {
+            if let DemuxEvent::Sample { track_id, sample } = ev
+                && Some(track_id) == audio_track_id
+            {
+                es.extend_from_slice(&sample.data);
+            }
+        }
+        es
+    }
+
+    #[test]
+    fn engine_orf2_ac3_base_pcm_oracle() {
+        // orf2-ac3-51.ts contains base AC-3 (bsid=6).  The old E-AC-3-only
+        // decode_all_eac3 *cannot* produce the correct PCM; the
+        // IncrementalDecoder (which dispatches by bsid) *can*.  This test
+        // demands byte-level agreement, making it an ungameable oracle.
+        let engine = engine_for_fixture("orf2-ac3-51.ts");
+
+        assert!(engine.has_audio(), "engine must produce audio PCM");
+        assert_eq!(engine.audio_channels(), 6, "must be 5.1 (6 channels)");
+
+        let pcm = engine.audio_pcm();
+        let bytes_per_sample: usize = 2;
+        let channels = engine.audio_channels() as usize;
+        assert!(pcm.len() >= 2);
+        assert_eq!(
+            pcm.len() % (bytes_per_sample * channels),
+            0,
+            "PCM buffer length must be a multiple of channels * bytes_per_sample"
+        );
+
+        let sample_count = pcm.len() / (bytes_per_sample * channels);
+        // ~7 s of 48 kHz stereo → ~340,000 samples per channel.
+        assert!(
+            sample_count >= 50_000,
+            "expected >= 50_000 samples per channel for base AC-3 fixture, got {sample_count}"
+        );
+
+        // PCM must not be all-silent (E-AC-3-only decode would produce silence).
+        let pcm_i16: Vec<i16> = pcm
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let non_silent = pcm_i16.iter().filter(|&&s| s != 0).count();
+        assert!(
+            non_silent > sample_count / 100,
+            "decoded PCM must not be all-silent: {non_silent} / {sample_count}"
+        );
+
+        // Byte-level oracle: independently extract the audio ES from the TS
+        // and decode with IncrementalDecoder.
+        let es = extract_audio_es_ts("orf2-ac3-51.ts");
+        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new();
+        let oracle = oracle_dec
+            .decode_au(&es)
+            .expect("oracle IncrementalDecoder must succeed")
+            .expect("oracle must produce PCM");
+        assert!(oracle.pcm_s16le.len() >= 2, "oracle PCM must be non-empty");
+
+        assert_eq!(
+            engine.audio_pcm(),
+            oracle.pcm_s16le.as_slice(),
+            "engine PCM for base AC-3 must byte-match IncrementalDecoder output"
+        );
+    }
+
+    #[test]
+    fn engine_ac3_51_base_pcm_oracle() {
+        // ac3-51.ts is a synthetic base-AC-3 fixture — additional coverage.
+        let engine = engine_for_fixture("ac3-51.ts");
+
+        assert!(engine.has_audio(), "engine must produce audio PCM");
+
+        let pcm = engine.audio_pcm();
+        let bytes_per_sample: usize = 2;
+        let channels = engine.audio_channels() as usize;
+        assert!(pcm.len() >= 2);
+        assert_eq!(
+            pcm.len() % (bytes_per_sample * channels),
+            0,
+            "PCM buffer length must be a multiple of channels * bytes_per_sample"
+        );
+
+        let sample_count = pcm.len() / (bytes_per_sample * channels);
+        assert!(
+            sample_count >= 5_000,
+            "expected >= 5_000 samples per channel for ac3-51.ts, got {sample_count}"
+        );
+
+        let pcm_i16: Vec<i16> = pcm
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let non_silent = pcm_i16.iter().filter(|&&s| s != 0).count();
+        assert!(
+            non_silent > sample_count / 100,
+            "decoded PCM must not be all-silent: {non_silent} / {sample_count}"
+        );
+
+        // Byte-level oracle.
+        let es = extract_audio_es_ts("ac3-51.ts");
+        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new();
+        let oracle = oracle_dec
+            .decode_au(&es)
+            .expect("oracle IncrementalDecoder must succeed")
+            .expect("oracle must produce PCM");
+        assert_eq!(
+            engine.audio_pcm(),
+            oracle.pcm_s16le.as_slice(),
+            "engine PCM for ac3-51.ts must byte-match IncrementalDecoder output"
+        );
     }
 }
