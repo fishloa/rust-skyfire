@@ -274,7 +274,6 @@ impl WasmEngine {
 // the fly; no separate probe/init/finalize step is required.
 
 use broadcast_common::traits::Parse;
-use broadcast_common::traits::Serialize as BcSerialize;
 use skyfire_ts::DemuxEvent;
 use skyfire_ts::TrackMeta;
 use skyfire_ts::{AudioCodec, SubtitleKind, TrackKind};
@@ -784,20 +783,8 @@ impl SkyfireBridge {
             self.video_track_id = Some(track_id);
 
             if let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config {
-                let record = &config.config;
-                let codec = transmux::rfc6381_avc1(
-                    record.profile_indication,
-                    record.profile_compatibility,
-                    record.level_indication,
-                );
-                let len = record.serialized_len();
-                let mut buf = vec![0u8; len];
-                if record.serialize_into(&mut buf).is_ok() {
-                    self.cached_video_config = Some(CachedVideoConfig {
-                        codec,
-                        description: buf,
-                    });
-                }
+                let (codec, description) = skyfire_ts::build_avcc_config(&config.config);
+                self.cached_video_config = Some(CachedVideoConfig { codec, description });
             }
 
             let ts = transmux::TrackSpec::new(track_id, 90_000, track.spec.config.clone());
@@ -823,20 +810,8 @@ impl SkyfireBridge {
         if Some(track.spec.track_id) == self.video_track_id
             && let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config
         {
-            let record = &config.config;
-            let codec = transmux::rfc6381_avc1(
-                record.profile_indication,
-                record.profile_compatibility,
-                record.level_indication,
-            );
-            let len = record.serialized_len();
-            let mut buf = vec![0u8; len];
-            if record.serialize_into(&mut buf).is_ok() {
-                self.cached_video_config = Some(CachedVideoConfig {
-                    codec,
-                    description: buf,
-                });
-            }
+            let (codec, description) = skyfire_ts::build_avcc_config(&config.config);
+            self.cached_video_config = Some(CachedVideoConfig { codec, description });
         }
         self.tracks.insert(track.spec.track_id, meta);
     }
@@ -929,11 +904,7 @@ impl SkyfireBridge {
                             ),
                         )
                     } else {
-                        let native: Vec<f32> = decoded
-                            .pcm_s16le
-                            .chunks_exact(2)
-                            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0_f32)
-                            .collect();
+                        let native = skyfire_ac3::downmix::s16le_slice_to_f32(&decoded.pcm_s16le);
                         (decoded.channels, native)
                     };
                     self.audio_pcm_pending.push(WasmPcmChunk {

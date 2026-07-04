@@ -4,11 +4,9 @@
 // The browser owns presentation + control; SkyfireBridge parses the
 // MPEG-TS and hands progressive H.264 access units up to WebCodecs.
 
-import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@skyfire/core";
 import { makeSource } from "./hls-source.js";
 
-const PTS_HZ = 90_000;
-const ticksToMicros = (t) => Number(t) * 1_000_000 / PTS_HZ;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**

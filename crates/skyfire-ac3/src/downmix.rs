@@ -12,6 +12,22 @@
 /// −3 dB center/surround downmix coefficient (ITU-R BS.775; issue #43 spec).
 pub const DOWNMIX_COEFF: f32 = 0.707;
 
+/// Scale factor: `1.0 / 32_768.0` — converts i16 PCM to f32 in [-1.0, 1.0).
+const S16LE_SCALE: f32 = 1.0 / 32_768.0;
+
+/// Convert an interleaved S16LE PCM slice into an interleaved `Vec<f32>` in
+/// [-1.0, 1.0).  Each consecutive two bytes are interpreted as a
+/// little-endian `i16` and divided by 32768.
+///
+/// This is the canonical S16LE→f32 conversion — callers that previously
+/// inlined this pattern should use this helper instead.
+#[must_use]
+pub fn s16le_slice_to_f32(pcm: &[u8]) -> Vec<f32> {
+    pcm.chunks_exact(2)
+        .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) * S16LE_SCALE)
+        .collect()
+}
+
 /// Downmix interleaved S16LE PCM to interleaved stereo `f32`.
 ///
 /// - `channels == 1` (mono): duplicated to both L and R.
@@ -22,14 +38,9 @@ pub const DOWNMIX_COEFF: f32 = 0.707;
 ///   dropped, remaining channels split L/R·k. Output clamped to [-1.0, 1.0].
 #[must_use]
 pub fn downmix_s16le_to_stereo_f32(pcm_s16le: &[u8], channels: u16) -> Vec<f32> {
-    const SCALE: f32 = 32_768.0;
     let ch = channels.max(1) as usize;
 
-    // Decode interleaved i16 → f32 in [-1, 1).
-    let flat: Vec<f32> = pcm_s16le
-        .chunks_exact(2)
-        .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / SCALE)
-        .collect();
+    let flat: Vec<f32> = s16le_slice_to_f32(pcm_s16le);
 
     let frames = flat.len() / ch;
     let mut out = Vec::with_capacity(frames * 2);

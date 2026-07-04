@@ -1,3 +1,8 @@
+> **SUPERSEDED** — historical; the shipped design is
+> [docs/superpowers/specs/2026-07-04-adopt-streaming-tsdemux-design.md](2026-07-04-adopt-streaming-tsdemux-design.md).
+> Types named below (EsDemux/TsResync/h264_config/AccessUnit/ChannelMap) were
+> removed in Part 2.
+
 # Adopt `transmux` — drop bespoke H.264 container code + add fMP4/MSE video fallback
 
 - **Date:** 2026-07-01

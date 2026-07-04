@@ -8,6 +8,7 @@
 // window.__sfOracle = { verdict, frames, error } is set for headless harnesses.
 
 import init, { SkyfireBridge } from "./pkg/skyfire_wasm.js";
+import { PTS_HZ, ticksToMicros } from "./skyfire-core-web.js";
 
 const verdictEl = document.getElementById("verdict");
 const logEl = document.getElementById("log");
@@ -16,9 +17,6 @@ const ctx = canvas.getContext("2d", { alpha: false });
 
 function log(m) { logEl.textContent += m + "\n"; console.log("[oracle]", m); }
 function setVerdict(cls, text) { verdictEl.className = cls; verdictEl.textContent = text; }
-
-const PTS_HZ = 90_000;
-const ticksToMicros = (t) => Number(t) * 1e6 / PTS_HZ;
 
 let frames = 0;
 let decodeError = null;

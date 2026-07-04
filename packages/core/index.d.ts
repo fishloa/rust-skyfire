@@ -1,5 +1,11 @@
 export function initSkyfire(): Promise<void>;
 
+/** MPEG-TS PTS clock frequency (90 kHz). */
+export const PTS_HZ: 90_000;
+
+/** Convert 90 kHz PTS ticks to microseconds. */
+export function ticksToMicros(ticks: number | bigint): number;
+
 export interface WasmAudioTrack {
   pid: number;
   codec: "AC3" | "EAC3" | "MP2";

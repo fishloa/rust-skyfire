@@ -8,11 +8,13 @@
 
 pub mod subtitle_compositor;
 
+pub use transmux::avc_config::AVCDecoderConfigurationRecord;
 pub use transmux::ts_demux::DemuxEvent;
 
 /// MPEG-TS packet size in bytes (ISO/IEC 13818-1 §2.4.3.2).
 pub const TS_PACKET_LEN: usize = 188;
 
+use broadcast_common::traits::Serialize as BcSerialize;
 use dvb_si::descriptors::any::{AnyDescriptor, DescriptorLoop};
 use transmux::pipeline::CodecConfig;
 use transmux::ts_demux::StreamingTsDemux;
@@ -62,6 +64,29 @@ pub fn audio_codec_str(codec: AudioCodec) -> &'static str {
         AudioCodec::Ac3 => "AC3",
         AudioCodec::EAc3 => "EAC3",
         AudioCodec::Mp2 => "MP2",
+    }
+}
+
+/// Build the `WebCodecs` `VideoDecoder` configuration from an
+/// `AVCDecoderConfigurationRecord`.
+///
+/// Returns the RFC-6381 codec string (e.g. `"avc1.640028"`) and the serialised
+/// avcC description bytes.  This is the single canonical implementation —
+/// callers that previously duplicated this logic now call here.
+#[must_use]
+pub fn build_avcc_config(record: &AVCDecoderConfigurationRecord) -> (String, Vec<u8>) {
+    let codec = transmux::rfc6381_avc1(
+        record.profile_indication,
+        record.profile_compatibility,
+        record.level_indication,
+    );
+    let len = record.serialized_len();
+    let mut buf = vec![0u8; len];
+    if record.serialize_into(&mut buf).is_ok() {
+        (codec, buf)
+    } else {
+        // Should never happen — serialised_len reserves the exact size.
+        (codec, Vec::new())
     }
 }
 

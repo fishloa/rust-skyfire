@@ -1,3 +1,8 @@
+> **SUPERSEDED** — historical; the shipped design is
+> [docs/superpowers/specs/2026-07-04-adopt-streaming-tsdemux-design.md](../specs/2026-07-04-adopt-streaming-tsdemux-design.md).
+> Types named below (EsDemux/TsResync/h264_config/AccessUnit/ChannelMap) were
+> removed in Part 2.
+
 # Adopt transmux Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
