@@ -120,11 +120,28 @@ new SkyfireBridge()
 
 - **`take_video_media_segment(): MediaSegment | undefined`** — Drain the next complete GOP as a CMAF media segment, or `undefined` until a full GOP is buffered.
 
-- **`take_audio_pcm(): PcmChunk[]`** — Drain all decoded PCM chunks since the last call. Each chunk corresponds to one audio access unit.
+- **`take_audio_pcm(): PcmChunk[]`** — Drain all decoded PCM chunks since the last call. Each chunk corresponds to one audio access unit. See `PcmChunk` interface below.
 
 - **`take_subtitle_cues(): SubtitleCue[]`** — Drain all composited subtitle cues since the last call. Each cue contains RGBA region bitmaps ready for overlay.
 
 - **`pcr_pts(): bigint | undefined`** — Latest PCR-derived clock value in 90 kHz ticks.
+
+### Type reference
+
+```ts
+interface PcmChunk {
+  samples: Float32Array;  // Interleaved PCM samples (e.g. L,R,L,R for stereo)
+  sample_rate: number;    // Sample rate in Hz
+  channels: number;       // Number of audio channels
+  pts_ticks?: bigint;     // PTS in 90 kHz ticks
+}
+
+interface MediaSegment {
+  bytes: Uint8Array;
+  base_media_decode_time: bigint;
+  sample_count: number;
+}
+```
 
 ## License
 

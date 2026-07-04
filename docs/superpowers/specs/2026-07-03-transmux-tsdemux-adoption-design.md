@@ -1,3 +1,8 @@
+> **SUPERSEDED** — historical; the shipped design is
+> [docs/superpowers/specs/2026-07-04-adopt-streaming-tsdemux-design.md](2026-07-04-adopt-streaming-tsdemux-design.md).
+> Types named below (EsDemux/TsResync/h264_config/AccessUnit/ChannelMap) were
+> removed in Part 2.
+
 # transmux 0.10 TsDemux / Media-IR adoption — evaluation
 
 **Date:** 2026-07-03
