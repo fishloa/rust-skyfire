@@ -8,9 +8,7 @@ description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extr
 
 [dependencies]
 broadcast-common = "8"
-dvb-pes = "0.1"
 dvb-si = "8"
-mpeg-ts = "0.2"
 dvb-subtitle = "0.2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
