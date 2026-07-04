@@ -65,7 +65,7 @@ pub struct VideoFrameQueue {
     /// Frames with `pts_us < clock_us - drop_late_us` are dropped.
     drop_late_us: i64,
     /// Lag tracking: number of frames dropped because they were late.
-    pub dropped_late_count: u64,
+    dropped_late_count: u64,
     /// Lag tracking: number of frames dropped because the queue was full.
     pub dropped_full_count: u64,
     /// Number of frames presented (popped via [`Present`]).
@@ -155,7 +155,7 @@ impl VideoFrameQueue {
             let head = self.peek()?;
             if head.pts_us < clock_us - self.drop_late_us {
                 // Frame is too far behind — drop it.
-                self.pop_head();
+                self.pop_head_inner();
                 self.dropped_late_count = self.dropped_late_count.saturating_add(1);
                 continue;
             }
@@ -163,11 +163,11 @@ impl VideoFrameQueue {
             match action {
                 FrameAction::Present => {
                     self.presented_count = self.presented_count.saturating_add(1);
-                    return Some((FrameAction::Present, self.pop_head_unchecked()));
+                    return Some((FrameAction::Present, self.pop_head_inner_unchecked()));
                 }
                 FrameAction::Drop => {
                     self.dropped_late_count = self.dropped_late_count.saturating_add(1);
-                    self.pop_head();
+                    self.pop_head_inner();
                     continue;
                 }
                 FrameAction::Hold => return Some((FrameAction::Hold, head)),
@@ -207,9 +207,16 @@ impl VideoFrameQueue {
         self.drop_late_us = drop_late_us;
     }
 
+    /// Pop the head frame and return it, counting it as a late drop.
+    pub(crate) fn pop_head_counted(&mut self) -> Option<VideoFrame> {
+        let frame = self.pop_head_inner()?;
+        self.dropped_late_count = self.dropped_late_count.saturating_add(1);
+        Some(frame)
+    }
+
     // ── private heap helpers ──────────────────────────────────────
 
-    pub(crate) fn pop_head(&mut self) -> Option<VideoFrame> {
+    fn pop_head_inner(&mut self) -> Option<VideoFrame> {
         if self.buf.is_empty() {
             return None;
         }
@@ -222,7 +229,7 @@ impl VideoFrameQueue {
         Some(head)
     }
 
-    fn pop_head_unchecked(&mut self) -> VideoFrame {
+    fn pop_head_inner_unchecked(&mut self) -> VideoFrame {
         debug_assert!(!self.buf.is_empty());
         if self.buf.len() == 1 {
             return self.buf.pop().unwrap();

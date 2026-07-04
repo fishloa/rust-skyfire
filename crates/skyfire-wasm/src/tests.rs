@@ -253,7 +253,7 @@ fn bridge_streaming_france2_8s() {
     );
 
     for au in &aus {
-        let pts = au.pts_ticks.expect("video AU must have PTS");
+        let pts = au.pts_ticks().expect("video AU must have PTS");
         assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
     }
 
@@ -317,7 +317,7 @@ fn bridge_streaming_france2_8s_live_pump() {
     assert!(keyframe_count > 0, "must have at least one keyframe AU");
 
     for au in &all_video_aus {
-        if let Some(pts) = au.pts_ticks {
+        if let Some(pts) = au.pts_ticks() {
             assert!(pts < (1 << 33), "PTS must be under 33-bit cap");
         }
     }

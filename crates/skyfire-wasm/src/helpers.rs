@@ -1,5 +1,5 @@
 /// Convert a 3-byte ISO 639-2 language code to a `String`.
-pub fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
+pub(crate) fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
     String::from_utf8_lossy(lang).into_owned()
 }
 
@@ -7,7 +7,7 @@ pub fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
 ///
 /// `trun` is nested inside `moof`→`traf`→`trun`, so we scan all byte offsets
 /// rather than walking only top-level boxes.
-pub fn parse_sample_count_from_segment(bytes: &[u8]) -> u32 {
+pub(crate) fn parse_sample_count_from_segment(bytes: &[u8]) -> u32 {
     // Scan for the 4-byte box-type b"trun" at any offset.
     // Layout when scanning by TYPE field offset (i = offset of "trun" bytes):
     //   +0..+3  type = b"trun"
@@ -35,7 +35,7 @@ pub fn parse_sample_count_from_segment(bytes: &[u8]) -> u32 {
 ///
 /// `tfdt` is nested inside `moof`→`traf`→`tfdt`, so we scan all byte offsets.
 /// Layout: size(4) + type(4) + version(1) + flags(3) + decode_time(4 or 8)
-pub fn parse_base_media_decode_time(bytes: &[u8]) -> u64 {
+pub(crate) fn parse_base_media_decode_time(bytes: &[u8]) -> u64 {
     let mut i = 0usize;
     while i + 4 <= bytes.len() {
         if bytes[i..i + 4] == *b"tfdt" {

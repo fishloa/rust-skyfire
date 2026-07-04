@@ -41,5 +41,4 @@ mod sync_controller;
 
 pub use audio_clock::AudioClock;
 pub use frame_queue::{FrameAction, VideoFrame, VideoFrameQueue, decide};
-pub use pts::{PTS_90KHZ, PTS_RANGE, pts_33_to_us, pts_delta_33};
 pub use sync_controller::{CatchUpConfig, Latency, SyncController};

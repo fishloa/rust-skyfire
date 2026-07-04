@@ -1,15 +1,15 @@
 /// 33‑bit PTS range (0 .. 2³³). ISO/IEC 13818‑1 §2.4.3.7.
-pub const PTS_RANGE: u64 = 1u64 << 33;
+pub(crate) const PTS_RANGE: u64 = 1u64 << 33;
 
 /// 90 kHz PTS clock frequency.
-pub const PTS_90KHZ: u64 = 90_000;
+pub(crate) const PTS_90KHZ: u64 = 90_000;
 
 /// Convert a raw 33‑bit (modulo 2³³) PTS at 90 kHz into microseconds.
 ///
 /// The result is always in `[0, (PTS_RANGE / PTS_90KHZ) × 10⁶)` ≈ [0, 47.7 s).
 /// Callers combine this with wrap‑aware logic to produce monotonic media time.
 #[must_use]
-pub fn pts_33_to_us(raw: u64) -> i64 {
+pub(crate) fn pts_33_to_us(raw: u64) -> i64 {
     debug_assert!(raw < PTS_RANGE, "PTS must be 33-bit (0 .. {PTS_RANGE})");
     ((raw.saturating_mul(100)) / 9) as i64
 }
@@ -20,7 +20,7 @@ pub fn pts_33_to_us(raw: u64) -> i64 {
 /// `(-PTS_RANGE/2, +PTS_RANGE/2]` (at 90 kHz ticks). A positive result means
 /// `new` is ahead of `old` in the wrapped timeline.
 #[must_use]
-pub fn pts_delta_33(new_raw: u64, old_raw: u64) -> i64 {
+pub(crate) fn pts_delta_33(new_raw: u64, old_raw: u64) -> i64 {
     debug_assert!(new_raw < PTS_RANGE);
     debug_assert!(old_raw < PTS_RANGE);
     let raw_diff = new_raw.wrapping_sub(old_raw) & (PTS_RANGE - 1);

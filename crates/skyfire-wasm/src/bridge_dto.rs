@@ -167,7 +167,7 @@ impl WasmSubtitleCue {
 // ── Internal DTOs (not exposed to JS directly) ──────────────────────────────
 
 /// Cached WebCodecs video configuration derived from the first video TrackAdded event.
-pub struct CachedVideoConfig {
+pub(crate) struct CachedVideoConfig {
     /// Codec string, e.g. `"avc1.640028"`.
     pub codec: String,
     /// Serialized `AVCDecoderConfigurationRecord` bytes.

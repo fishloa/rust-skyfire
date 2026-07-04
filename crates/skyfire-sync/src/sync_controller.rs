@@ -151,8 +151,7 @@ impl SyncController {
 
         if in_burst_or_catching {
             // Drop the head frame as part of catch‑up burst.
-            self.queue.pop_head();
-            self.queue.dropped_late_count = self.queue.dropped_late_count.saturating_add(1);
+            let _ = self.queue.pop_head_counted();
             self.burst_drop_count += 1;
 
             let dropped_frame = head;
