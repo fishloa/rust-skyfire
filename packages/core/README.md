@@ -1,16 +1,16 @@
-# @skyfire/core
+# @firemedia/skyfire-core
 
 In-browser DVB TV player bridge: MPEG-TS demux + WASM AC-3/E-AC-3 decode + audio-master A/V sync + DVB-subtitle compositing. The host wires WebCodecs (video), WebAudio (decoded PCM audio), and canvas (subtitle overlay).
 
 ## Installation
 
 ```bash
-npm install @skyfire/core
+npm install @firemedia/skyfire-core
 ```
 
 ## Usage
 
-`@skyfire/core` exports:
+`@firemedia/skyfire-core` exports:
 - `initSkyfire()`: Async initializer for the WASM module (call once before constructing a bridge).
 - `SkyfireBridge`: The main class that demuxes MPEG-TS, decodes selected audio tracks, and composites subtitles.
 
@@ -19,7 +19,7 @@ npm install @skyfire/core
 The bridge is a stateful processor: feed raw TS bytes, poll the outputs, and wire the samples to WebCodecs/WebAudio/canvas.
 
 ```js
-import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+import { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";
 
 // Initialize the WASM module once
 await initSkyfire();

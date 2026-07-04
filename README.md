@@ -63,13 +63,13 @@ and issue — see the open epics and `CLAUDE.md` for the orchestration model.
 
 ## Use skyfire in the browser
 
-### Turn-key player: `@skyfire/player`
+### Turn-key player: `@firemedia/skyfire-player`
 
 The simplest way to embed a skyfire player in your page is to install
-[`@skyfire/player`](packages/player/) from npm:
+[`@firemedia/skyfire-player`](packages/player/) from npm:
 
 ```bash
-npm i @skyfire/player
+npm i @firemedia/skyfire-player
 ```
 
 Then create a canvas and initialize the player:
@@ -78,7 +78,7 @@ Then create a canvas and initialize the player:
 <canvas id="video" width="1280" height="720"></canvas>
 
 <script type="module">
-  import { SkyfirePlayer } from "@skyfire/player";
+  import { SkyfirePlayer } from "@firemedia/skyfire-player";
 
   const canvas = document.getElementById("video");
   const player = new SkyfirePlayer(canvas, {
@@ -112,13 +112,13 @@ Then create a canvas and initialize the player:
 **Methods:** `play()`, `pause()`, `selectAudio(pid)`, `selectSubtitle(pid | null)`,
 `tracks()`, `on(event, callback)`, `destroy()`.
 
-### Low-level API: `@skyfire/core`
+### Low-level API: `@firemedia/skyfire-core`
 
 If you need finer control over video/audio rendering or want to wire your own
-WebCodecs/WebAudio, use [`@skyfire/core`](packages/core/) directly:
+WebCodecs/WebAudio, use [`@firemedia/skyfire-core`](packages/core/) directly:
 
 ```js
-import { initSkyfire, SkyfireBridge } from "@skyfire/core";
+import { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";
 
 // Initialize the WASM runtime
 await initSkyfire();
@@ -188,8 +188,8 @@ stream contract and rationale.
 4. The `release-npm` GitHub Actions workflow (`.github/workflows/release-npm.yml`)
    will:
    - Build the WASM bridge (`skyfire-wasm` with `wasm-pack --target bundler`)
-   - Publish `@skyfire/core` to npm
-   - Publish `@skyfire/player` to npm
+   - Publish `@firemedia/skyfire-core` to npm
+   - Publish `@firemedia/skyfire-player` to npm
 
 **Fallback:** if the `@skyfire` npm organisation is unavailable, rename both
 package names to `skyfire-tv` (config-only change in the `package.json` files)

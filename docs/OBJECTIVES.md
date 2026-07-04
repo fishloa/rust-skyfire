@@ -126,7 +126,7 @@ The original epics **#1–#8** (and sub-issues #9–#19) were the pre-#27
 decomposition and are **closed as superseded** by the rebuilt, verified client.
 
 - **NPM packaging** ([#41](https://github.com/fishloa/rust-skyfire/issues/41)) —
-  `@skyfire/core` (WASM bridge facade + types) and `@skyfire/player` (turnkey
+  `@firemedia/skyfire-core` (WASM bridge facade + types) and `@firemedia/skyfire-player` (turnkey
   WebCodecs+WebAudio player) published to npm; CI-only release workflow on
   `v*` tags. iOS real-device verification remains external-resource-gated.
 - **Idiom modernization, part 1** (PR #59) — Rust 1.94 / edition-2024 sweep:

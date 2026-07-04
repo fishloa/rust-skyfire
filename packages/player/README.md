@@ -1,16 +1,16 @@
-# @skyfire/player
+# @firemedia/skyfire-player
 
 Turnkey in-browser DVB TV player. Wraps WebCodecs hardware video decode, WASM
 AC-3/E-AC-3 audio decode, audio-master A/V sync, and DVB-subtitle overlay behind
-a single `SkyfirePlayer` class. Built on [`@skyfire/core`](../core/README.md).
+a single `SkyfirePlayer` class. Built on [`@firemedia/skyfire-core`](../core/README.md).
 
 ## Install
 
 ```bash
-npm install @skyfire/player
+npm install @firemedia/skyfire-player
 ```
 
-`@skyfire/core` is a peer dependency — it will be installed automatically as a
+`@firemedia/skyfire-core` is a peer dependency — it will be installed automatically as a
 declared dependency.
 
 ## Quick start
@@ -25,7 +25,7 @@ declared dependency.
 ```
 
 ```js
-import { SkyfirePlayer } from "@skyfire/player";
+import { SkyfirePlayer } from "@firemedia/skyfire-player";
 
 const canvas = document.getElementById("player-canvas");
 const player = new SkyfirePlayer(canvas, {
