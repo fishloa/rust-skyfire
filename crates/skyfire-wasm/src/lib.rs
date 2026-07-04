@@ -758,6 +758,11 @@ impl SkyfireBridge {
                     if let Some(ref mut seg) = self.segmenter {
                         seg.mark_discontinuity();
                     }
+                    // Reset AC-3/E-AC-3 and MP2 decoder IMDCT state at HLS splices
+                    // to avoid glitched PCM.  Mirror the same resets used by
+                    // select_audio() on a PID change.
+                    self.audio_decoder.reset();
+                    self.mpa_decoder.reset();
                 }
                 _ => {}
             }
@@ -806,6 +811,26 @@ impl SkyfireBridge {
 
     fn on_track_updated(&mut self, track: transmux::Track) {
         let meta = skyfire_ts::track_meta(&track.spec);
+        // If the video track's config changed (e.g. in-band SPS update), rebuild
+        // cached_video_config — mirrors what skyfire-core's Engine already does.
+        if Some(track.spec.track_id) == self.video_track_id
+            && let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config
+        {
+            let record = &config.config;
+            let codec = transmux::rfc6381_avc1(
+                record.profile_indication,
+                record.profile_compatibility,
+                record.level_indication,
+            );
+            let len = record.serialized_len();
+            let mut buf = vec![0u8; len];
+            if record.serialize_into(&mut buf).is_ok() {
+                self.cached_video_config = Some(CachedVideoConfig {
+                    codec,
+                    description: buf,
+                });
+            }
+        }
         self.tracks.insert(track.spec.track_id, meta);
     }
 
@@ -817,7 +842,12 @@ impl SkyfireBridge {
 
         match meta.kind {
             TrackKind::Video(_) if Some(track_id) == self.video_track_id => {
-                if let Some(ref st) = sample.source_timing {
+                // Seed latest_pcr from video PTS only before the first real PCR
+                // event arrives.  DemuxEvent::Pcr is the authoritative source and
+                // must not be overwritten by every video sample.
+                if self.latest_pcr.is_none()
+                    && let Some(ref st) = sample.source_timing
+                {
                     self.latest_pcr = Some(st.pts as i64);
                 }
                 let pts = sample.source_timing.as_ref().map(|t| t.pts);
@@ -942,10 +972,10 @@ fn avcc_has_sps_or_idr(data: &[u8]) -> bool {
         if nal_type == 5 || nal_type == 7 {
             return true;
         }
-        let next = i + 4 + nal_len;
-        if next <= i {
-            break;
-        }
+        let next = match i.checked_add(4).and_then(|v| v.checked_add(nal_len)) {
+            Some(n) if n <= data.len() => n,
+            _ => break,
+        };
         i = next;
     }
     false
@@ -957,8 +987,12 @@ fn avcc_has_sps_or_idr(data: &[u8]) -> bool {
 /// rather than walking only top-level boxes.
 fn parse_sample_count_from_segment(bytes: &[u8]) -> u32 {
     // Scan for the 4-byte box-type b"trun" at any offset.
-    // Layout of a FullBox (trun): size(4) + type(4) + version(1) + flags(3) + sample_count(4)
-    // So sample_count sits at bytes[i+12..i+16] where i is the start of the trun box.
+    // Layout when scanning by TYPE field offset (i = offset of "trun" bytes):
+    //   +0..+3  type = b"trun"
+    //   +4      version (1 byte)
+    //   +5..+7  flags (3 bytes)
+    //   +8..+11 sample_count (4 bytes)
+    // So sample_count sits at bytes[i+8..i+11] where i is the type-field offset.
     let mut total = 0u32;
     let mut i = 0usize;
     while i + 4 <= bytes.len() {

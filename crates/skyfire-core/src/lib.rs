@@ -564,6 +564,41 @@ mod tests {
     }
 
     #[test]
+    fn engine_h264_25fps_video_config_golden() {
+        // Locks transmux 4:4:4 avcC recovery for h264-25fps.ts (issue #563).
+        // High 4:4:4 Predictive profile: profile_idc=244 (0xF4), level_idc=12 (0x0C).
+        let engine = engine_for_fixture("h264-25fps.ts");
+        let config = engine.video_config().expect("must build H.264 config");
+
+        // RFC-6381 codec string: avc1.<profile_idc><profile_compatibility><level_idc> hex.
+        assert_eq!(config.codec, "avc1.F4000C");
+
+        // Golden avcC bytes — AVCDecoderConfigurationRecord (record only, no box header)
+        // as recovered by transmux from h264-25fps.ts (High 4:4:4 Predictive profile).
+        let expected_avcc: &[u8] = &[
+            0x01, // configurationVersion
+            0xf4, // profile_idc = 244 (High 4:4:4 Predictive)
+            0x00, // profile_compatibility
+            0x0c, // level_idc = 12
+            0xff, // reserved(6)+lengthSizeMinusOne = 0xfc|0x03 = 0xff
+            0xe1, // reserved(3)+numSPS(1) = 0xe0|0x01 = 0xe1
+            0x00, 0x19, // SPS length = 25
+            // SPS NAL unit:
+            0x67, 0xf4, 0x00, 0x0c, 0x91, 0x9b, 0x28, 0x20, 0x27, 0x60, 0x22, 0x00, 0x00, 0x03,
+            0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x64, 0x1e, 0x28, 0x53, 0x2c,
+            0x01, // numPPS = 1
+            0x00, 0x06, // PPS length = 6
+            // PPS NAL unit:
+            0x68, 0xeb, 0xe3, 0xc4, 0x48, 0x44, // High-profile ext fields:
+            0xff, 0xf8, 0xf8, 0x00,
+        ];
+        assert_eq!(
+            config.description, expected_avcc,
+            "avcC golden bytes mismatch for h264-25fps.ts (High 4:4:4 Predictive)"
+        );
+    }
+
+    #[test]
     fn engine_audio_clock_anchored_on_first_pts() {
         let engine = engine_for_fixture("gulli-15s.ts");
 
