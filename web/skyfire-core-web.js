@@ -17,9 +17,9 @@
 //   - This file: used ONLY by the example app in web/ (served raw by web/serve.ts).
 //   - packages/core: used by npm consumers that bundle their app (not this file).
 //
-// The import map in web/index.html points @skyfire/core at THIS file so that
+// The import map in web/index.html points @firemedia/skyfire-core at THIS file so that
 // the bare specifier resolves correctly without a bundler.  npm/bundler consumers
-// resolve @skyfire/core via packages/core/package.json as usual.
+// resolve @firemedia/skyfire-core via packages/core/package.json as usual.
 
 import initWasm, { SkyfireBridge } from "./pkg/skyfire_wasm.js";
 
@@ -33,8 +33,8 @@ export function initSkyfire() {
 
 export { SkyfireBridge };
 
-// PTS/tick helpers — mirror packages/core/skyfire-core.js so `@skyfire/core`
+// PTS/tick helpers — mirror packages/core/skyfire-core.js so `@firemedia/skyfire-core`
 // exposes the same surface under the web-target import map (the player + the
-// psf-oracle page import these from "@skyfire/core").
+// psf-oracle page import these from "@firemedia/skyfire-core").
 export const PTS_HZ = 90_000;
 export const ticksToMicros = (t) => (Number(t) * 1_000_000) / PTS_HZ;

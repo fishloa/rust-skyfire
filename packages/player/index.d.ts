@@ -1,4 +1,4 @@
-import type { TrackList } from "@skyfire/core";
+import type { TrackList } from "@firemedia/skyfire-core";
 
 export interface SkyfirePlayerOptions {
   streamUrl: string;

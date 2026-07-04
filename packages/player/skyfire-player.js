@@ -1,10 +1,10 @@
-// @skyfire/player — SkyfirePlayer: turnkey in-browser DVB TV player.
+// @firemedia/skyfire-player — SkyfirePlayer: turnkey in-browser DVB TV player.
 //
 // Extracted from web/player.js (behaviour-preserving — ADR 0008).
 // The browser owns presentation + control; SkyfireBridge parses the
 // MPEG-TS and hands progressive H.264 access units up to WebCodecs.
 
-import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@skyfire/core";
+import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@firemedia/skyfire-core";
 import { makeSource } from "./hls-source.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

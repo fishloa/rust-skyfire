@@ -1,4 +1,4 @@
-// @skyfire/core — WASM demux + AC-3/E-AC-3 decode + A/V-sync + DVB-sub composite.
+// @firemedia/skyfire-core — WASM demux + AC-3/E-AC-3 decode + A/V-sync + DVB-sub composite.
 // The host wires WebCodecs / WebAudio / canvas. See README for the API.
 import initWasm, { SkyfireBridge } from "./pkg/skyfire_wasm.js";
 

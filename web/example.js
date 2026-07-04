@@ -1,4 +1,4 @@
-// web/example.js — example consumer of @skyfire/player.
+// web/example.js — example consumer of @firemedia/skyfire-player.
 //
 // This file drives SkyfirePlayer and wires the existing HTML controls
 // (#audio-select, #sub-select, #playpause, #mute, #overlay, #error).
@@ -10,7 +10,7 @@
 //   ?video=mse      — force MSE video path (skip WebCodecs)
 //   ?live=1         — (reserved; SkyfirePlayer v1 does not yet reconnect — see opts)
 
-import { SkyfirePlayer } from "@skyfire/player";
+import { SkyfirePlayer } from "@firemedia/skyfire-player";
 
 const canvas     = document.getElementById("canvas");
 const overlay    = document.getElementById("overlay");

@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skyfire — DVB Player</title>
 <!--
-  Import map — resolves bare @skyfire/* specifiers for the raw-browser example
+  Import map — resolves bare @firemedia/* specifiers for the raw-browser example
   (no bundler).  The example uses the --target web WASM build in web/pkg/ via
   web/skyfire-core-web.js.  npm consumers use packages/core (--target bundler)
-  and resolve @skyfire/core through their bundler instead.
+  and resolve @firemedia/skyfire-core through their bundler instead.
 -->
 <script type="importmap">
 {
   "imports": {
-    "@skyfire/player": "../packages/player/skyfire-player.js",
-    "@skyfire/core":   "./skyfire-core-web.js"
+    "@firemedia/skyfire-player": "../packages/player/skyfire-player.js",
+    "@firemedia/skyfire-core":   "./skyfire-core-web.js"
   }
 }
 </script>
