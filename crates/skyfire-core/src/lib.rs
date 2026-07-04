@@ -17,7 +17,6 @@ pub use skyfire_ac3 as ac3;
 pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
-use broadcast_common::traits::Serialize as BcSerialize;
 use skyfire_sync::{AudioClock, VideoFrameQueue};
 use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, track_meta};
 use transmux::pipeline::CodecConfig;
@@ -215,19 +214,8 @@ impl Engine {
             config: avcc_box, ..
         } = config
         {
-            let record = &avcc_box.config;
-            let codec = transmux::rfc6381_avc1(
-                record.profile_indication,
-                record.profile_compatibility,
-                record.level_indication,
-            );
-            let len = record.serialized_len();
-            let mut buf = vec![0u8; len];
-            record.serialize_into(&mut buf).ok()?;
-            Some(VideoConfig {
-                codec,
-                description: buf,
-            })
+            let (codec, description) = skyfire_ts::build_avcc_config(&avcc_box.config);
+            Some(VideoConfig { codec, description })
         } else {
             None
         }

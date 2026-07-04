@@ -11,3 +11,11 @@ export function initSkyfire() {
 }
 
 export { SkyfireBridge };
+
+// ── Canonical timestamp helpers (single source of truth) ────────────────
+
+/** MPEG-TS PTS clock frequency (90 kHz). */
+export const PTS_HZ = 90_000;
+
+/** Convert 90 kHz PTS ticks to microseconds. */
+export const ticksToMicros = (t) => Number(t) * 1_000_000 / PTS_HZ;

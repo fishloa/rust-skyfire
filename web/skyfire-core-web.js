@@ -32,3 +32,9 @@ export function initSkyfire() {
 }
 
 export { SkyfireBridge };
+
+// PTS/tick helpers — mirror packages/core/skyfire-core.js so `@skyfire/core`
+// exposes the same surface under the web-target import map (the player + the
+// psf-oracle page import these from "@skyfire/core").
+export const PTS_HZ = 90_000;
+export const ticksToMicros = (t) => (Number(t) * 1_000_000) / PTS_HZ;

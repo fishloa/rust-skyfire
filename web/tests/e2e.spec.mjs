@@ -34,8 +34,15 @@ async function runToDone(page, src, { click = false, capMs = 20000 } = {}) {
     };
     tick();
   }), capMs);
-  // favicon 404 is the only tolerated console error.
-  const realErrors = errors.filter((e) => !/favicon/.test(e));
+  // Tolerated console errors (environmental, not code faults):
+  //  - favicon 404.
+  //  - headless Chromium with no audio output device emits "AudioContext
+  //    encountered an error from the audio device or the WebAudio renderer"
+  //    (audio still DECODES; playback just has no device — see the audioFrames
+  //    gating in the real-1080p test).
+  const realErrors = errors.filter(
+    (e) => !/favicon/.test(e) && !/AudioContext encountered an error from the audio device/.test(e),
+  );
   return { stats, realErrors };
 }
 
