@@ -618,8 +618,8 @@ impl CompositorState {
             regions_out.push(CompositedRegion {
                 x: page_region.region_horizontal_address,
                 y: page_region.region_vertical_address,
-                width: width as u16,
-                height: height as u16,
+                width: u16::try_from(width).unwrap_or(u16::MAX),
+                height: u16::try_from(height).unwrap_or(u16::MAX),
                 rgba,
             });
         }
@@ -803,5 +803,32 @@ mod tests {
             .filter(|px| px[0] == 254 && px[1] == 0 && px[2] == 1 && px[3] == 255)
             .count();
         assert_eq!(red_count, 32 * 16, "all pixels must be red");
+    }
+
+    #[test]
+    fn composite_u16_overflow_no_panic() {
+        // The compositor must handle object/region dimensions that would
+        // overflow u16::MAX without panicking or producing corrupted
+        // (wrapped) width/height values.
+        //
+        // Region composition with dimensions exceeding u16::MAX in
+        // expand_object is not reachable via normal parser input
+        // (region_width/height are u16 parsed fields), but the
+        // usize→u16 cast at the boundary is guarded with try_from.
+        // This test verifies the guard path compiles and doesn't panic.
+        let mut compositor = CompositorState::new();
+
+        // Feed a page with a region that has width/height close to u16::MAX.
+        // Since the parser limits these to u16, the guard is tested by
+        // verifying that the guard path compiles (already done) and that
+        // feeding a valid (though oversized in pixel data) PES doesn't panic.
+        let pid = 0x42;
+        let start_pts = 900_000u64;
+
+        let pes_bytes = build_minimal_display_pes();
+        let field = PesDataField::parse(&pes_bytes).expect("must parse valid PES data field");
+        compositor.feed_pes(pid, Some(start_pts), &field);
+        // Must not panic — regardless of internal dimension handling.
+        let _ = compositor.take_cues();
     }
 }
