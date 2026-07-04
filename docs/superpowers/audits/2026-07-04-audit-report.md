@@ -88,6 +88,32 @@ one real API defect (codec casing), and one latent legacy-path bug (Engine AC-3)
   type (`Float32Array`); OBJECTIVES Part-2 PR cite. (§E)
 - Remove unused `skyfire-ac3` dep from `skyfire-cli/Cargo.toml`. (§D)
 
+## Execution status (updated 2026-07-04)
+
+**P0 — DONE** (delegated to deepseek-v4-flash, each verified against the full gate + browser e2e):
+- Engine base-AC-3 via IncrementalDecoder — PR #72.
+- Codec-string unification (§F) + robustness (§C: mpa/ac3 panics, subtitle u16
+  truncation, swallowed bridge errors → logged + counters) + dead-code removal
+  (§H: decode_eac3_packet, parse_subtitle_pes/SubtitleCue, bridge-guard-test.js,
+  video_is_interlaced, unused cli dep) — PR #73.
+- 5.1 multichannel (the AC-3++ ask): investigated — **already built + channel-order
+  correct** (oxideav-ac3 reorders AC-3→WAVE via `wave_order`; player passes through
+  discretely; downmix fallback). Nothing to build; live 5.1 verification is
+  hardware-gated. Not a defect.
+
+**Dimension re-score after P0:** §F GREEN (was YELLOW); §C/§H improved to near-GREEN
+(remaining items are P2 maintainability, below).
+
+**Remaining (P1/P2/P3), not yet executed:**
+- P2 maintainability: avcC config-build dedup (×3), module splits (skyfire-sync,
+  skyfire-wasm), JS de-dup (ticksToMicros/PTS_HZ, s16le helper, load_fixture),
+  high-value pedantic lints.
+- P1 tests: remaining no-panic coverage already largely added in WP2; a base-AC-3
+  Engine oracle now exists (PR #72). 7 dead fixtures (g0–g6, m6-clean) still
+  unreferenced — remove or add smoke tests.
+- P3 docs: SUPERSEDED banners on the old plan/parked specs, COSTS timestamp, npm
+  README PcmChunk type, OBJECTIVES PR cites.
+
 ## Feed back into the gate (§A)
 
 Promote to automated checks so these never regress:
