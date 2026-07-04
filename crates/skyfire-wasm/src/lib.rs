@@ -103,59 +103,73 @@ impl WasmEngine {
     /// Probe raw MPEG-TS bytes for the channel map (PAT+PMT).
     ///
     /// Returns `null` if no PAT/PMT could be extracted.
+    ///
+    /// Internally feeds the bytes into a temporary Engine to discover tracks,
+    /// then returns the video PID/codec and audio PIDs/codecs.
     #[wasm_bindgen]
     pub fn probe(&self, data: &[u8]) -> Option<ProbeResult> {
-        let channel = Engine::probe(data)?;
-        let audio_pids: Vec<u16> = channel.audio_streams.iter().map(|s| s.pid).collect();
-        let audio_codecs: Vec<String> = channel
-            .audio_streams
+        let mut engine = Engine::new();
+        engine.feed(data);
+        engine.finish();
+        engine.finalize();
+
+        let tracks = engine.tracks();
+        let video_track = tracks
             .iter()
-            .map(|s| audio_codec_str(s.codec).to_string())
+            .find(|t| matches!(t.kind, skyfire_core::ts::TrackKind::Video(_)))?;
+        let video_pid = video_track.pid.unwrap_or(0);
+        let video_codec = match video_track.kind {
+            skyfire_core::ts::TrackKind::Video(skyfire_core::ts::VideoCodec::H264) => "H264",
+            skyfire_core::ts::TrackKind::Video(skyfire_core::ts::VideoCodec::H265) => "H265",
+            _ => "H264",
+        };
+
+        let audio_pids: Vec<u16> = tracks
+            .iter()
+            .filter(|t| matches!(t.kind, skyfire_core::ts::TrackKind::Audio(_)))
+            .map(|t| t.pid.unwrap_or(0))
             .collect();
+        let audio_codecs: Vec<String> = tracks
+            .iter()
+            .filter(|t| matches!(t.kind, skyfire_core::ts::TrackKind::Audio(_)))
+            .map(|t| {
+                match t.kind {
+                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::Ac3) => "Ac3",
+                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::EAc3) => {
+                        "EAc3"
+                    }
+                    skyfire_core::ts::TrackKind::Audio(skyfire_core::ts::AudioCodec::Mp2) => "Mp2",
+                    _ => "EAc3",
+                }
+                .to_string()
+            })
+            .collect();
+
+        if audio_pids.is_empty() {
+            return None;
+        }
+
         Some(ProbeResult {
-            video_pid: channel.video_pid,
-            video_codec: video_codec_str(channel.video_codec).to_string(),
+            video_pid,
+            video_codec: video_codec.to_string(),
             audio_pids,
             audio_codecs,
         })
     }
 
-    /// Initialize the engine from a channel map (typically obtained via `probe()`).
+    /// Initialize the engine. In the new API, the engine is self-configuring;
+    /// this method creates a fresh engine (ignoring the channel hint, which is
+    /// now auto-detected from the TS stream).
     #[wasm_bindgen]
     pub fn init_with_channel(
         &mut self,
-        video_pid: u16,
-        video_codec: &str,
-        audio_pids: Vec<u16>,
-        audio_codecs: Vec<String>,
+        _video_pid: u16,
+        _video_codec: &str,
+        _audio_pids: Vec<u16>,
+        _audio_codecs: Vec<String>,
     ) {
-        let vc = match video_codec {
-            "H264" => skyfire_core::ts::VideoCodec::H264,
-            "H265" => skyfire_core::ts::VideoCodec::H265,
-            _ => return,
-        };
-        let mut streams = Vec::with_capacity(audio_pids.len().min(audio_codecs.len()));
-        for (pid, codec_str) in audio_pids.into_iter().zip(audio_codecs.iter()) {
-            let ac = match codec_str.as_str() {
-                "EAc3" | "AC3" => skyfire_core::ts::AudioCodec::EAc3,
-                "Ac3" => skyfire_core::ts::AudioCodec::Ac3,
-                "Mp2" => skyfire_core::ts::AudioCodec::Mp2,
-                _ => skyfire_core::ts::AudioCodec::EAc3,
-            };
-            streams.push(skyfire_core::ts::AudioStream {
-                pid,
-                codec: ac,
-                language: None,
-            });
-        }
-        let channel = skyfire_core::ts::ChannelMap {
-            video_pid,
-            video_codec: vc,
-            audio_streams: streams,
-            subtitle_streams: Vec::new(),
-            pcr_pid: video_pid,
-        };
-        self.engine = Some(Engine::with_channel(channel));
+        // Engine is now self-configuring via TsDemux — no manual channel setup needed.
+        self.engine = Some(Engine::new());
     }
 
     /// Feed raw MPEG-TS bytes into the engine.
@@ -170,7 +184,7 @@ impl WasmEngine {
     #[wasm_bindgen]
     pub fn flush(&mut self) {
         if let Some(ref mut e) = self.engine {
-            e.flush();
+            e.finish();
         }
     }
 
@@ -236,8 +250,8 @@ impl WasmEngine {
         let units = self.engine.as_ref()?.video_units();
         let au = units.get(index)?;
         Some(WasmVideoUnit {
-            bytes: au.es_bytes.clone(),
-            pts_ticks: au.pts_ticks,
+            bytes: au.data.clone(),
+            pts_ticks: Some(au.pts),
         })
     }
 
@@ -258,35 +272,11 @@ impl WasmEngine {
             .unwrap_or_default()
     }
 
-    /// True when the video stream is interlaced (SPS `frame_mbs_only_flag
-    /// == 0`). WebCodecs cannot decode such streams — under ADR 0008 the
-    /// server (zenith) deinterlaces to progressive before the browser sees
-    /// it, so this should report `false` on a `/skyfire/<slug>` stream;
-    /// kept as a diagnostic.
+    /// Always returns `false` — zenith deinterlaces to progressive before the browser sees it
+    /// (ADR 0008). Kept for API compatibility.
     #[wasm_bindgen]
     pub fn video_is_interlaced(&self) -> bool {
-        self.engine
-            .as_ref()
-            .and_then(|e| e.video_config())
-            .map(|c| c.interlaced)
-            .unwrap_or(false)
-    }
-}
-
-// ── helpers ────────────────────────────────────────────────────────────────
-
-fn video_codec_str(c: skyfire_core::ts::VideoCodec) -> &'static str {
-    match c {
-        skyfire_core::ts::VideoCodec::H264 => "H264",
-        skyfire_core::ts::VideoCodec::H265 => "H265",
-    }
-}
-
-fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
-    match c {
-        skyfire_core::ts::AudioCodec::Ac3 => "Ac3",
-        skyfire_core::ts::AudioCodec::EAc3 => "EAc3",
-        skyfire_core::ts::AudioCodec::Mp2 => "Mp2",
+        false
     }
 }
 
@@ -298,13 +288,10 @@ fn audio_codec_str(c: skyfire_core::ts::AudioCodec) -> &'static str {
 // the fly; no separate probe/init/finalize step is required.
 
 use broadcast_common::traits::Parse;
-use mpeg_ts::resync::TsResync as BridgeTsResync;
-use skyfire_ac3::IncrementalDecoder;
-use skyfire_mpa::IncrementalMpaDecoder;
-use skyfire_ts::{
-    AudioCodec as TsAudioCodec, ChannelMap, EsDemux, SubtitleKind as TsSubtitleKind,
-    VideoCodec as TsVideoCodec,
-};
+use broadcast_common::traits::Serialize as BcSerialize;
+use skyfire_ts::DemuxEvent;
+use skyfire_ts::TrackMeta;
+use skyfire_ts::{AudioCodec, SubtitleKind, TrackKind, VideoCodec};
 
 /// Track-list produced once the first PMT has been parsed.
 #[wasm_bindgen]
@@ -472,6 +459,14 @@ impl WasmSubtitleCue {
 // SkyfireBridge
 // ---------------------------------------------------------------------------
 
+/// Cached WebCodecs video configuration derived from the first video TrackAdded event.
+struct CachedVideoConfig {
+    /// Codec string, e.g. `"avc1.640028"`.
+    codec: String,
+    /// Serialized `AVCDecoderConfigurationRecord` bytes.
+    description: Vec<u8>,
+}
+
 /// Streaming WASM bridge between the browser and the Skyfire demux engine.
 ///
 /// Unlike [`WasmEngine`] (which requires probe→init→feed→finalize), this
@@ -484,59 +479,42 @@ impl WasmSubtitleCue {
 /// 5. Use `pcr_pts()` for the A/V sync clock.
 #[wasm_bindgen]
 pub struct SkyfireBridge {
-    resync: BridgeTsResync,
-    es_demux: EsDemux,
-
-    // PSI path: reuse the probe machinery incrementally.
-    si_demux: dvb_si::demux::SiDemux,
-    pmt_pids: Option<Vec<u16>>,
-    channel: Option<ChannelMap>,
-
-    // User selections.
+    demux: skyfire_ts::TsDemux,
+    /// track_id → TrackMeta
+    tracks: std::collections::HashMap<u32, TrackMeta>,
+    /// Track ID of the first video track seen.
+    video_track_id: Option<u32>,
+    /// Cached WebCodecs video config.
+    cached_video_config: Option<CachedVideoConfig>,
+    /// Selected audio PID.
     selected_audio_pid: Option<u16>,
+    /// Selected subtitle PID.
     selected_subtitle_pid: Option<u16>,
+    /// Play/pause state.
     playing: bool,
-
-    // Accumulated video AUs (drained by `take_video_aus`).
+    /// Accumulated video AUs (already AVCC length-prefixed from transmux).
     video_aus: Vec<WasmVideoAu>,
-
-    // Cached WebCodecs video config, built once from the first keyframe
-    // AUs.  Persists across `take_video_aus()` drains.
-    cached_video_config: Option<skyfire_ts::h264_config::VideoConfig>,
-
-    // Incremental E-AC-3/AC-3 decoder — holds IMDCT state across AU boundaries.
-    audio_decoder: IncrementalDecoder,
-
-    // Incremental MPEG-1/2 Layer II decoder.
-    mpa_decoder: IncrementalMpaDecoder,
-
-    // Decoded PCM chunks pending drain by `take_audio_pcm`.
+    /// MSE segmenter (lazy-built on first video TrackAdded).
+    segmenter: Option<transmux::Segmenter>,
+    /// Ready media segment bytes, pending drain.
+    ready_segments: std::collections::VecDeque<Vec<u8>>,
+    /// AC-3/E-AC-3 incremental decoder.
+    audio_decoder: skyfire_ac3::IncrementalDecoder,
+    /// MPEG-1/2 Layer II incremental decoder.
+    mpa_decoder: skyfire_mpa::IncrementalMpaDecoder,
+    /// PCM chunks pending drain.
     audio_pcm_pending: Vec<WasmPcmChunk>,
-
-    // Subtitle compositor (accumulates segments, composites display sets).
+    /// Subtitle compositor.
     subtitle_compositor: skyfire_ts::subtitle_compositor::CompositorState,
-
-    // Composited subtitle cues pending drain by `take_subtitle_cues`.
+    /// Subtitle cues pending drain.
     subtitle_cues_pending: Vec<WasmSubtitleCue>,
-
-    // Latest PCR / PTS seen (90 kHz ticks).
-    latest_pts: Option<i64>,
-
-    // Access units drained before the PMT was parsed (channel is None).
-    // Replayed once the channel map becomes known.
-    pre_channel_aus: Vec<skyfire_ts::AccessUnit>,
-
-    // CMAF media segment sequence number (starts at 1, increments per segment).
-    media_seq: u32,
-    // Set to true when flush() has been called (end of stream).
+    /// Latest PCR/PTS value in 90 kHz ticks.
+    latest_pcr: Option<i64>,
+    /// Whether the stream has ended (flush() was called).
     ended: bool,
-
-    // Audio output: when true (default), multichannel is downmixed to stereo in
-    // WASM (safe everywhere, #43). When false, native multichannel PCM is
-    // emitted for discrete output on capable devices (#39 opt-in passthrough).
+    /// When true (default), downmix multichannel to stereo.
     downmix_audio: bool,
-    // Native (pre-downmix) channel count of the last decoded audio frame, so JS
-    // can decide whether the device can render discrete multichannel.
+    /// Native channel count of last decoded audio (before downmix).
     last_audio_channels: u16,
 }
 
@@ -547,102 +525,49 @@ impl SkyfireBridge {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            resync: BridgeTsResync::new(),
-            es_demux: EsDemux::new(),
-            si_demux: dvb_si::demux::SiDemux::builder().follow_pat(true).build(),
-            pmt_pids: None,
-            channel: None,
+            demux: skyfire_ts::TsDemux::new(),
+            tracks: std::collections::HashMap::new(),
+            video_track_id: None,
+            cached_video_config: None,
             selected_audio_pid: None,
             selected_subtitle_pid: None,
             playing: false,
             video_aus: Vec::new(),
-            cached_video_config: None,
-            audio_decoder: IncrementalDecoder::new(),
-            mpa_decoder: IncrementalMpaDecoder::new(),
+            segmenter: None,
+            ready_segments: std::collections::VecDeque::new(),
+            audio_decoder: skyfire_ac3::IncrementalDecoder::new(),
+            mpa_decoder: skyfire_mpa::IncrementalMpaDecoder::new(),
             audio_pcm_pending: Vec::new(),
             subtitle_compositor: skyfire_ts::subtitle_compositor::CompositorState::new(),
             subtitle_cues_pending: Vec::new(),
-            latest_pts: None,
-            pre_channel_aus: Vec::new(),
-            media_seq: 1,
+            latest_pcr: None,
             ended: false,
             downmix_audio: true,
             last_audio_channels: 0,
         }
     }
 
-    /// Native channel count of the most recently decoded audio (before any
-    /// downmix), or 0 if none yet. JS uses this to decide whether the output
-    /// device can render discrete multichannel (#39).
+    /// Native channel count of the most recently decoded audio (before any downmix), or 0 if none yet.
     #[wasm_bindgen]
     #[must_use]
     pub fn audio_native_channels(&self) -> u16 {
         self.last_audio_channels
     }
 
-    /// Enable (default) or disable the WASM stereo downmix. Disable to emit
-    /// native multichannel PCM for discrete output on a capable device (#39);
-    /// re-enabling restores the safe stereo downmix (#43).
+    /// Enable (default) or disable the WASM stereo downmix.
     #[wasm_bindgen]
     pub fn set_audio_downmix(&mut self, enabled: bool) {
         self.downmix_audio = enabled;
     }
 
     /// Push a raw TS chunk into the bridge.
-    ///
-    /// Demuxes PAT/PMT on the fly and accumulates video AUs.
     #[wasm_bindgen]
     pub fn feed(&mut self, bytes: &[u8]) {
-        use dvb_si::tables::any::AnyTableSection;
-
-        for chunk in bytes.chunks(4096) {
-            for pkt in self.resync.feed(chunk) {
-                // PSI path: discover PAT/PMT.
-                if self.channel.is_none() {
-                    for event in self.si_demux.feed(&pkt) {
-                        match event.table_section() {
-                            Ok(AnyTableSection::PatSection(pat)) => {
-                                let pids: Vec<u16> = pat.programmes().map(|e| e.pid).collect();
-                                self.pmt_pids = Some(pids);
-                            }
-                            Ok(AnyTableSection::PmtSection(pmt)) => {
-                                if let Some(ref pids) = self.pmt_pids {
-                                    let event_pid: u16 = event.pid().into();
-                                    if pids.contains(&event_pid)
-                                        && let Some(ch) = build_channel_map_bridge(&pmt)
-                                    {
-                                        // Default selected audio to first audio stream.
-                                        if self.selected_audio_pid.is_none() {
-                                            self.selected_audio_pid =
-                                                ch.audio_streams.first().map(|s| s.pid);
-                                        }
-                                        self.channel = Some(ch);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // ES path: feed packet to PES assembler.
-                self.es_demux.feed_packet(&pkt);
-            }
-        }
-
-        // Drain completed access units.
-        self.drain_access_units();
-
-        // If the channel map was just discovered, replay any access units
-        // that were drained before we knew the video/audio PIDs.
-        self.replay_pre_channel_aus();
+        self.demux.feed(bytes);
+        self.drain_events();
     }
 
     /// Select which audio PID to route and decode.
-    ///
-    /// If the PID changes, the AC-3/E-AC-3 and MPEG audio decoder states are
-    /// reset so the new stream decodes cleanly (PTS continuity is handled in
-    /// issue #33).
     #[wasm_bindgen]
     pub fn select_audio(&mut self, pid: u16) {
         if self.selected_audio_pid != Some(pid) {
@@ -653,9 +578,6 @@ impl SkyfireBridge {
     }
 
     /// Select a subtitle PID, or `None` to disable subtitles.
-    ///
-    /// Calling this clears any buffered subtitle cues from the previously
-    /// selected PID (or disables subtitle output when `pid` is `None`).
     #[wasm_bindgen]
     pub fn select_subtitle(&mut self, pid: Option<u16>) {
         if self.selected_subtitle_pid != pid {
@@ -664,76 +586,83 @@ impl SkyfireBridge {
         self.selected_subtitle_pid = pid;
     }
 
-    /// Set the play/pause state (stored; gates nothing critical yet).
+    /// Set the play/pause state.
     #[wasm_bindgen]
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
     }
 
-    /// Returns the track list once a PMT has been parsed, or `None`.
+    /// Returns the track list once at least one video track has been seen, or `None`.
     #[wasm_bindgen]
     pub fn track_list(&self) -> Option<WasmTrackList> {
-        let ch = self.channel.as_ref()?;
-        let audio: Vec<WasmAudioTrack> = ch
-            .audio_streams
-            .iter()
-            .map(|s| WasmAudioTrack {
-                pid: s.pid,
-                codec: bridge_audio_codec_str(s.codec).to_string(),
-                language: s.language.map(|l| lang_bytes_to_string(&l)),
+        let video_id = self.video_track_id?;
+        let video_meta = self.tracks.get(&video_id)?;
+        let video_pid = video_meta.pid.unwrap_or(0);
+        let video_codec = match video_meta.kind {
+            TrackKind::Video(VideoCodec::H264) => "H264",
+            TrackKind::Video(VideoCodec::H265) => "H265",
+            _ => "H264",
+        };
+
+        let mut audio: Vec<WasmAudioTrack> = self
+            .tracks
+            .values()
+            .filter(|m| matches!(m.kind, TrackKind::Audio(_)))
+            .map(|m| WasmAudioTrack {
+                pid: m.pid.unwrap_or(0),
+                codec: match m.kind {
+                    TrackKind::Audio(AudioCodec::Ac3) => "AC3",
+                    TrackKind::Audio(AudioCodec::EAc3) => "EAC3",
+                    TrackKind::Audio(AudioCodec::Mp2) => "MP2",
+                    _ => "EAC3",
+                }
+                .to_string(),
+                language: m.language.map(|l| lang_bytes_to_string(&l)),
             })
             .collect();
-        let subtitles: Vec<WasmSubtitleTrack> = ch
-            .subtitle_streams
-            .iter()
-            .map(|s| WasmSubtitleTrack {
-                pid: s.pid,
-                kind: bridge_subtitle_kind_str(s.kind).to_string(),
-                language: s.language.map(|l| lang_bytes_to_string(&l)),
+        audio.sort_by_key(|a| a.pid);
+
+        let mut subtitles: Vec<WasmSubtitleTrack> = self
+            .tracks
+            .values()
+            .filter(|m| matches!(m.kind, TrackKind::Subtitle(_)))
+            .map(|m| WasmSubtitleTrack {
+                pid: m.pid.unwrap_or(0),
+                kind: match m.kind {
+                    TrackKind::Subtitle(SubtitleKind::DvbSubtitles) => "DvbSubtitles",
+                    TrackKind::Subtitle(SubtitleKind::Teletext) => "Teletext",
+                    _ => "DvbSubtitles",
+                }
+                .to_string(),
+                language: m.language.map(|l| lang_bytes_to_string(&l)),
             })
             .collect();
+        subtitles.sort_by_key(|s| s.pid);
+
         Some(WasmTrackList {
-            video_pid: ch.video_pid,
-            video_codec: bridge_video_codec_str(ch.video_codec).to_string(),
+            video_pid,
+            video_codec: video_codec.to_string(),
             audio,
             subtitles,
         })
     }
 
-    /// CMAF initialization segment (`ftyp` + fragmented-init `moov`) for
-    /// the video track, for MSE playback. Empty until SPS/PPS have been seen.
-    /// Track id = 1, timescale = 90_000 (matches TS PTS).
+    /// CMAF initialization segment (`ftyp` + `moov`). Empty until a video track has been seen.
     #[wasm_bindgen]
     pub fn video_init_segment(&self) -> Vec<u8> {
-        let Some(cfg) = self.cached_video_config.as_ref() else {
-            return Vec::new();
-        };
-        let track = transmux::TrackSpec::new(
-            1,
-            90_000,
-            transmux::CodecConfig::Avc {
-                config: cfg.avcc_box.clone(),
-                width: cfg.width,
-                height: cfg.height,
-            },
-        );
-        transmux::build_init_segment(&[track], 90_000).unwrap_or_default()
+        self.segmenter
+            .as_ref()
+            .and_then(|s| s.init_segment().ok())
+            .unwrap_or_default()
     }
 
-    /// WebCodecs codec string (e.g. `"avc1.640028"`) once SPS has been seen.
-    ///
-    /// Returns `None` until sufficient video AUs have been fed to extract an SPS.
-    /// Once extracted, the config is cached and survives `take_video_aus()` drains.
+    /// WebCodecs codec string (e.g. `"avc1.640028"`), or `None` if not yet available.
     #[wasm_bindgen]
     pub fn video_codec(&self) -> Option<String> {
         self.cached_video_config.as_ref().map(|c| c.codec.clone())
     }
 
-    /// WebCodecs `avcC` description bytes (`Uint8Array`), or empty if not yet available.
-    ///
-    /// This is the `AVCDecoderConfigurationRecord` per ISO/IEC 14496-15.
-    /// When present, the player should configure `VideoDecoder` with `description`
-    /// (AVCC mode); when absent, Annex-B mode requires SPS+PPS in-band.
+    /// WebCodecs `avcC` description bytes, or empty if not yet available.
     #[wasm_bindgen]
     pub fn video_config_description(&self) -> Vec<u8> {
         self.cached_video_config
@@ -743,88 +672,22 @@ impl SkyfireBridge {
     }
 
     /// Drain all completed video access units since the last call.
-    ///
-    /// Returns AVCC length-prefixed bytes with PTS/DTS and a keyframe flag.
-    /// Configure the `VideoDecoder` with the avcC `description` from
-    /// `video_config_description()` for AVCC mode.
     #[wasm_bindgen]
     pub fn take_video_aus(&mut self) -> Vec<WasmVideoAu> {
-        let mut aus = std::mem::take(&mut self.video_aus);
-        for au in &mut aus {
-            au.bytes = skyfire_ts::h264_config::annexb_to_avcc(&au.bytes);
-        }
-        aus
+        std::mem::take(&mut self.video_aus)
     }
 
-    /// Drain the next complete GOP (keyframe → just before the next keyframe)
-    /// as a CMAF media segment. Returns `None` until a full GOP is buffered.
-    /// Sample durations are the DTS deltas (90 kHz); composition offset =
-    /// pts − dts.
+    /// Drain the next complete media segment. Returns `None` until a full segment is ready.
     #[wasm_bindgen]
     pub fn take_video_media_segment(&mut self) -> Option<WasmMediaSegment> {
-        // Drop leading non-keyframe AUs (cannot start a segment mid-GOP).
-        while self.video_aus.first().is_some_and(|a| !a.is_keyframe) {
-            self.video_aus.remove(0);
-        }
-        if self.video_aus.is_empty() {
-            return None;
-        }
-        // Find the end of the GOP: next keyframe (exclusive).
-        let gop_end = self.video_aus.iter().skip(1).position(|a| a.is_keyframe);
-        let end = match gop_end {
-            Some(pos) => pos + 1, // +1 because .skip(1) shifts positions
-            None => {
-                // No following keyframe: emit only if the stream has ended.
-                if self.ended {
-                    self.video_aus.len()
-                } else {
-                    return None;
-                }
+        if let Some(ref mut seg) = self.segmenter {
+            for bytes in seg.take_ready() {
+                self.ready_segments.push_back(bytes);
             }
-        };
-
-        let gop: Vec<_> = self.video_aus.drain(0..end).collect();
-        let dts_vec: Vec<u64> = gop
-            .iter()
-            .map(|a| a.dts_ticks.or(a.pts_ticks).unwrap_or(0))
-            .collect();
-        let base_media_decode_time = dts_vec[0];
-
-        let mut samples = Vec::with_capacity(gop.len());
-        for (i, au) in gop.iter().enumerate() {
-            let duration = if i + 1 < dts_vec.len() {
-                (dts_vec[i + 1].saturating_sub(dts_vec[i])) as u32
-            } else {
-                // Last sample: reuse previous delta, else a 25 fps default.
-                if i > 0 {
-                    (dts_vec[i].saturating_sub(dts_vec[i - 1])) as u32
-                } else {
-                    3600
-                }
-            };
-            let pts = au.pts_ticks.unwrap_or(dts_vec[i]);
-            let composition_offset = (pts as i64 - dts_vec[i] as i64) as i32;
-            samples.push(transmux::Sample::from_annexb(
-                &au.bytes,
-                duration,
-                au.is_keyframe,
-                composition_offset,
-            ));
         }
-
-        let sample_count = samples.len() as u32;
-        let seq = self.media_seq;
-        self.media_seq += 1;
-        let bytes = transmux::build_media_segment(
-            seq,
-            &[transmux::FragmentTrackData {
-                track_id: 1,
-                base_media_decode_time,
-                samples: &samples,
-            }],
-        )
-        .unwrap_or_default();
-
+        let bytes = self.ready_segments.pop_front()?;
+        let sample_count = parse_sample_count_from_segment(&bytes);
+        let base_media_decode_time = parse_base_media_decode_time(&bytes);
         Some(WasmMediaSegment {
             base_media_decode_time,
             bytes,
@@ -833,26 +696,14 @@ impl SkyfireBridge {
     }
 
     /// Drain all decoded PCM chunks produced since the last call.
-    ///
-    /// Each chunk corresponds to one audio access unit decoded from the
-    /// selected audio PID.  Samples are interleaved f32 (WebAudio-ready).
     #[wasm_bindgen]
     pub fn take_audio_pcm(&mut self) -> Vec<WasmPcmChunk> {
         std::mem::take(&mut self.audio_pcm_pending)
     }
 
     /// Drain all composited subtitle cues since the last call.
-    ///
-    /// Each cue corresponds to one DVB subtitle display-set from the selected
-    /// subtitle PID.  Each cue contains RGBA region bitmaps ready for the
-    /// JS overlay (no further parsing needed).
-    ///
-    /// Returns an empty `Vec` when no subtitle PID is selected
-    /// (`select_subtitle(None)`) or when the selected PID carries no subtitle
-    /// PES packets in the fed data (e.g. a fixture without subtitle tracks).
     #[wasm_bindgen]
     pub fn take_subtitle_cues(&mut self) -> Vec<WasmSubtitleCue> {
-        // Drain the compositor, converting to WasmSubtitleCue.
         for cue in self.subtitle_compositor.take_cues() {
             let regions = cue
                 .regions
@@ -875,187 +726,192 @@ impl SkyfireBridge {
     }
 
     /// Latest PCR-derived clock value in 90 kHz ticks.
-    ///
-    /// The `EsDemux` / `SiDemux` layer does not separately surface PCR values;
-    /// we derive this from the most recently seen video or selected-audio PTS,
-    /// which is within one PCR interval (~40 ms for DVB) of the true PCR.
-    /// A future issue can replace this with raw PCR extraction if sub-millisecond
-    /// accuracy is required (verified 2026-06-22).
     #[wasm_bindgen]
     pub fn pcr_pts(&self) -> Option<i64> {
-        self.latest_pts
+        self.latest_pcr
     }
 
-    /// Signal end-of-stream: flush any partial PES packets held in the
-    /// PES assemblers, then run the same access-unit processing as `feed()`.
-    ///
-    /// After calling `flush()`, a subsequent `take_video_aus()` /
-    /// `take_audio_pcm()` will return any tail access units that were
-    /// held back because the final PES end had not yet been signalled by
-    /// a downstream PUSI packet.  Safe to call once at stream end;
-    /// idempotent — calling it more than once does nothing harmful.
+    /// Signal end-of-stream: flush any partial access units and emit the final segment.
     #[wasm_bindgen]
     pub fn flush(&mut self) {
-        self.es_demux.flush();
-        self.drain_access_units();
+        self.demux.finish();
+        self.drain_events();
+        if let Some(ref mut seg) = self.segmenter {
+            let _ = seg.flush();
+        }
         self.ended = true;
     }
 
     // ── internal ────────────────────────────────────────────────────────────
 
-    fn drain_access_units(&mut self) {
-        let units = self.es_demux.drain();
-        if units.is_empty() {
-            return;
+    fn drain_events(&mut self) {
+        while let Some(ev) = self.demux.poll_event() {
+            match ev {
+                DemuxEvent::TrackAdded(track) => self.on_track_added(track),
+                DemuxEvent::TrackUpdated(track) => self.on_track_updated(track),
+                DemuxEvent::Sample { track_id, sample } => self.on_sample(track_id, sample),
+                DemuxEvent::Pcr(pcr) => {
+                    // pcr_27mhz is 27 MHz; convert to 90 kHz by dividing by 300.
+                    self.latest_pcr = Some((pcr.pcr_27mhz / 300) as i64);
+                }
+                DemuxEvent::Discontinuity { .. } => {
+                    if let Some(ref mut seg) = self.segmenter {
+                        seg.mark_discontinuity();
+                    }
+                }
+                _ => {}
+            }
         }
-
-        // When the channel map isn't known yet, buffer all AUs for later replay.
-        if self.channel.is_none() {
-            self.pre_channel_aus.extend(units);
-            return;
-        }
-
-        self.route_access_units(units.into_iter());
     }
 
-    /// Process a stream of access units through the per-PID routing logic.
-    fn route_access_units(&mut self, units: impl Iterator<Item = skyfire_ts::AccessUnit>) {
-        let video_pid = self.channel.as_ref().map(|ch| ch.video_pid);
-        let audio_pid = self.selected_audio_pid;
-        let subtitle_pid = self.selected_subtitle_pid;
+    fn on_track_added(&mut self, track: transmux::Track) {
+        let meta = skyfire_ts::track_meta(&track.spec);
+        let track_id = track.spec.track_id;
 
-        // Look up the codec for the selected audio PID.
-        let audio_codec = audio_pid.and_then(|pid| {
-            self.channel
-                .as_ref()
-                .and_then(|ch| ch.audio_streams.iter().find(|s| s.pid == pid))
-                .map(|s| s.codec)
-        });
+        if matches!(meta.kind, TrackKind::Video(_)) && self.video_track_id.is_none() {
+            self.video_track_id = Some(track_id);
 
-        for au in units {
-            // Update latest PTS clock from video or selected-audio PID.
-            if (Some(au.pid) == video_pid || Some(au.pid) == audio_pid)
-                && let Some(pts) = au.pts_ticks
-            {
-                self.latest_pts = Some(pts as i64);
+            if let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config {
+                let record = &config.config;
+                let codec = transmux::rfc6381_avc1(
+                    record.profile_indication,
+                    record.profile_compatibility,
+                    record.level_indication,
+                );
+                let len = record.serialized_len();
+                let mut buf = vec![0u8; len];
+                if record.serialize_into(&mut buf).is_ok() {
+                    self.cached_video_config = Some(CachedVideoConfig {
+                        codec,
+                        description: buf,
+                    });
+                }
             }
 
-            if Some(au.pid) == video_pid {
-                let is_keyframe = annexb_has_idr_or_sps(&au.es_bytes);
-                // Store Annex-B bytes internally; conversion to AVCC happens
-                // in `take_video_aus()` once the avcC description is available.
+            let ts = transmux::TrackSpec::new(track_id, 90_000, track.spec.config.clone());
+            if let Ok(seg) = transmux::Segmenter::new(vec![ts], 90_000, 2.0) {
+                self.segmenter = Some(seg);
+            }
+        }
+
+        if matches!(meta.kind, TrackKind::Audio(_))
+            && self.selected_audio_pid.is_none()
+            && let Some(pid) = meta.pid
+        {
+            self.selected_audio_pid = Some(pid);
+        }
+
+        self.tracks.insert(track_id, meta);
+    }
+
+    fn on_track_updated(&mut self, track: transmux::Track) {
+        let meta = skyfire_ts::track_meta(&track.spec);
+        self.tracks.insert(track.spec.track_id, meta);
+    }
+
+    fn on_sample(&mut self, track_id: u32, sample: transmux::Sample) {
+        let meta = match self.tracks.get(&track_id).cloned() {
+            Some(m) => m,
+            None => return,
+        };
+
+        match meta.kind {
+            TrackKind::Video(_) if Some(track_id) == self.video_track_id => {
+                if let Some(ref st) = sample.source_timing {
+                    self.latest_pcr = Some(st.pts as i64);
+                }
+                let pts = sample.source_timing.as_ref().map(|t| t.pts);
+                let dts = sample.source_timing.as_ref().map(|t| t.dts);
+                // Some broadcast H.264 streams use open GOPs without IDR frames;
+                // they insert in-band SPS (NAL type 7) at each GOP boundary instead.
+                // Treat SPS-bearing AUs as keyframes for segmentation and WasmVideoAu.
+                let is_keyframe = sample.is_sync || avcc_has_sps_or_idr(&sample.data);
                 self.video_aus.push(WasmVideoAu {
-                    pts_ticks: au.pts_ticks,
-                    dts_ticks: au.dts_ticks,
+                    pts_ticks: pts,
+                    dts_ticks: dts,
                     is_keyframe,
-                    bytes: au.es_bytes,
+                    bytes: sample.data.clone(),
                 });
-                // Try to build the video config once we have enough data.
-                if self.cached_video_config.is_none() {
-                    let video_pid_val = video_pid.unwrap_or(0);
-                    let aus: Vec<skyfire_ts::AccessUnit> = self
-                        .video_aus
-                        .iter()
-                        .map(|a| skyfire_ts::AccessUnit {
-                            pid: video_pid_val,
-                            pts_ticks: a.pts_ticks,
-                            dts_ticks: a.dts_ticks,
-                            es_bytes: a.bytes.clone(),
-                        })
-                        .collect();
-                    self.cached_video_config = skyfire_ts::h264_config::h264_decoder_config(&aus);
-                }
-            } else if Some(au.pid) == audio_pid {
-                let pts_ticks = au.pts_ticks;
-                // Route to the appropriate decoder based on codec.
-                match audio_codec {
-                    Some(TsAudioCodec::Mp2) => {
-                        let _ = self.mpa_decoder.decode_au(&au.es_bytes).map(|opt| {
-                            if let Some(decoded) = opt {
-                                let samples_f32: Vec<f32> = decoded
-                                    .pcm_s16le
-                                    .chunks_exact(2)
-                                    .map(|b| {
-                                        let s = i16::from_le_bytes([b[0], b[1]]);
-                                        f32::from(s) / 32_768.0_f32
-                                    })
-                                    .collect();
-                                self.audio_pcm_pending.push(WasmPcmChunk {
-                                    pts_ticks,
-                                    sample_rate: decoded.sample_rate,
-                                    channels: decoded.channels,
-                                    samples: samples_f32,
-                                });
-                            }
-                        });
-                    }
-                    _ => {
-                        // Default to AC-3/E-AC-3 decoder.
-                        let _ = self.audio_decoder.decode_au(&au.es_bytes).map(|opt| {
-                            if let Some(decoded) = opt
-                                && decoded.sample_rate > 0
-                                && decoded.channels > 0
-                            {
-                                self.last_audio_channels = decoded.channels;
-                                // Default: downmix multichannel to stereo in
-                                // WASM (browsers reliably render only stereo;
-                                // discrete 5.1 goes silent, #43). When the
-                                // JS side has confirmed a multichannel-capable
-                                // device it disables downmix for native
-                                // discrete output (#39 opt-in passthrough).
-                                let (channels, samples_f32) =
-                                    if self.downmix_audio || decoded.channels <= 2 {
-                                        (
-                                            2u16,
-                                            skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
-                                                &decoded.pcm_s16le,
-                                                decoded.channels,
-                                            ),
-                                        )
-                                    } else {
-                                        let native: Vec<f32> = decoded
-                                            .pcm_s16le
-                                            .chunks_exact(2)
-                                            .map(|b| {
-                                                f32::from(i16::from_le_bytes([b[0], b[1]]))
-                                                    / 32_768.0_f32
-                                            })
-                                            .collect();
-                                        (decoded.channels, native)
-                                    };
-                                self.audio_pcm_pending.push(WasmPcmChunk {
-                                    pts_ticks,
-                                    sample_rate: decoded.sample_rate,
-                                    channels,
-                                    samples: samples_f32,
-                                });
-                            }
-                        });
-                    }
-                }
-            } else if Some(au.pid) == subtitle_pid {
-                // DVB subtitle PES: parse with dvb-subtitle (ETSI EN 300 743),
-                // then feed through the compositor.
-                // Non-subtitle PES on the same PID (e.g. padding_stream) are
-                // silently dropped when data_identifier ≠ 0x20.
-                if au.es_bytes.first() == Some(&dvb_subtitle::DataIdentifier)
-                    && let Ok(field) = dvb_subtitle::PesDataField::parse(&au.es_bytes)
-                {
-                    self.subtitle_compositor
-                        .feed_pes(au.pid, au.pts_ticks, &field);
+                // Feed to segmenter with corrected is_sync for open-GOP streams.
+                if let Some(ref mut seg) = self.segmenter {
+                    let mut seg_sample = sample;
+                    seg_sample.is_sync = is_keyframe;
+                    let _ = seg.push(track_id, seg_sample);
                 }
             }
+            TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
+                let pts_ticks = sample.source_timing.as_ref().map(|t| t.pts);
+                self.decode_audio(codec, pts_ticks, &sample.data);
+            }
+            TrackKind::Subtitle(_) if meta.pid == self.selected_subtitle_pid => {
+                let pid = meta.pid.unwrap_or(0);
+                let pts_ticks = sample.source_timing.as_ref().map(|t| t.pts);
+                if sample.data.first() == Some(&dvb_subtitle::DataIdentifier)
+                    && let Ok(field) = dvb_subtitle::PesDataField::parse(&sample.data)
+                {
+                    self.subtitle_compositor.feed_pes(pid, pts_ticks, &field);
+                }
+            }
+            _ => {}
         }
     }
 
-    /// Replay any access units that were buffered before the channel map was
-    /// known.  Called after `self.channel` transitions from `None` to `Some`.
-    fn replay_pre_channel_aus(&mut self) {
-        if self.channel.is_none() || self.pre_channel_aus.is_empty() {
-            return;
+    fn decode_audio(&mut self, codec: AudioCodec, pts_ticks: Option<u64>, data: &[u8]) {
+        match codec {
+            AudioCodec::Mp2 => {
+                let _ = self.mpa_decoder.decode_au(data).map(|opt| {
+                    if let Some(decoded) = opt {
+                        let samples_f32: Vec<f32> = decoded
+                            .pcm_s16le
+                            .chunks_exact(2)
+                            .map(|b| {
+                                let s = i16::from_le_bytes([b[0], b[1]]);
+                                f32::from(s) / 32_768.0_f32
+                            })
+                            .collect();
+                        self.audio_pcm_pending.push(WasmPcmChunk {
+                            pts_ticks,
+                            sample_rate: decoded.sample_rate,
+                            channels: decoded.channels,
+                            samples: samples_f32,
+                        });
+                    }
+                });
+            }
+            _ => {
+                let _ = self.audio_decoder.decode_au(data).map(|opt| {
+                    if let Some(decoded) = opt
+                        && decoded.sample_rate > 0
+                        && decoded.channels > 0
+                    {
+                        self.last_audio_channels = decoded.channels;
+                        let (channels, samples_f32) = if self.downmix_audio || decoded.channels <= 2
+                        {
+                            (
+                                2u16,
+                                skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
+                                    &decoded.pcm_s16le,
+                                    decoded.channels,
+                                ),
+                            )
+                        } else {
+                            let native: Vec<f32> = decoded
+                                .pcm_s16le
+                                .chunks_exact(2)
+                                .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0_f32)
+                                .collect();
+                            (decoded.channels, native)
+                        };
+                        self.audio_pcm_pending.push(WasmPcmChunk {
+                            pts_ticks,
+                            sample_rate: decoded.sample_rate,
+                            channels,
+                            samples: samples_f32,
+                        });
+                    }
+                });
+            }
         }
-        let units: Vec<skyfire_ts::AccessUnit> = std::mem::take(&mut self.pre_channel_aus);
-        self.route_access_units(units.into_iter());
     }
 }
 
@@ -1069,77 +925,91 @@ impl Default for SkyfireBridge {
 // Bridge helpers
 // ---------------------------------------------------------------------------
 
-/// Scan Annex-B bytes for NAL type 5 (IDR) or 7 (SPS).
-/// A start-code (0x00 0x00 0x01 or 0x00 0x00 0x00 0x01) followed by a NAL
-/// header byte whose lower 5 bits are 5 or 7 marks a keyframe.
-fn annexb_has_idr_or_sps(bytes: &[u8]) -> bool {
-    let len = bytes.len();
+fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
+    String::from_utf8_lossy(lang).into_owned()
+}
+
+/// True if the AVCC length-prefixed sample data contains an IDR (type 5) or SPS (type 7) NAL.
+/// Broadcast H.264 streams may use open GOPs with no IDR; SPS insertion marks GOP boundaries.
+fn avcc_has_sps_or_idr(data: &[u8]) -> bool {
     let mut i = 0usize;
-    while i + 3 < len {
-        // Match 3-byte or 4-byte start code.
-        let (sc3, sc4) = (
-            bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1,
-            i + 3 < len
-                && bytes[i] == 0
-                && bytes[i + 1] == 0
-                && bytes[i + 2] == 0
-                && bytes[i + 3] == 1,
-        );
-        if sc4 {
-            let nal_offset = i + 4;
-            if nal_offset < len {
-                let nal_type = bytes[nal_offset] & 0x1f;
-                if nal_type == 5 || nal_type == 7 {
-                    return true;
-                }
-            }
-            i += 4;
-        } else if sc3 {
-            let nal_offset = i + 3;
-            if nal_offset < len {
-                let nal_type = bytes[nal_offset] & 0x1f;
-                if nal_type == 5 || nal_type == 7 {
-                    return true;
-                }
-            }
-            i += 3;
-        } else {
-            i += 1;
+    while i + 5 <= data.len() {
+        let nal_len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        if nal_len == 0 {
+            break;
         }
+        let nal_type = data[i + 4] & 0x1f;
+        if nal_type == 5 || nal_type == 7 {
+            return true;
+        }
+        let next = i + 4 + nal_len;
+        if next <= i {
+            break;
+        }
+        i = next;
     }
     false
 }
 
-/// Build a `ChannelMap` from a PMT section via the public helper in skyfire-ts.
-fn build_channel_map_bridge(pmt: &dvb_si::tables::pmt::PmtSection<'_>) -> Option<ChannelMap> {
-    skyfire_ts::build_channel_map_from_pmt(pmt)
-}
-
-fn bridge_video_codec_str(c: TsVideoCodec) -> &'static str {
-    match c {
-        TsVideoCodec::H264 => "H264",
-        TsVideoCodec::H265 => "H265",
+/// Parse the sample_count from a trun box in a media segment.
+///
+/// `trun` is nested inside `moof`→`traf`→`trun`, so we scan all byte offsets
+/// rather than walking only top-level boxes.
+fn parse_sample_count_from_segment(bytes: &[u8]) -> u32 {
+    // Scan for the 4-byte box-type b"trun" at any offset.
+    // Layout of a FullBox (trun): size(4) + type(4) + version(1) + flags(3) + sample_count(4)
+    // So sample_count sits at bytes[i+12..i+16] where i is the start of the trun box.
+    let mut total = 0u32;
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        if bytes[i..i + 4] == *b"trun" {
+            // i is where the type field is; box start is i-4
+            if i >= 4 && i + 12 <= bytes.len() {
+                let sc =
+                    u32::from_be_bytes([bytes[i + 8], bytes[i + 9], bytes[i + 10], bytes[i + 11]]);
+                total += sc;
+            }
+        }
+        i += 1;
     }
+    total
 }
 
-fn bridge_audio_codec_str(c: TsAudioCodec) -> &'static str {
-    match c {
-        TsAudioCodec::Ac3 => "AC3",
-        TsAudioCodec::EAc3 => "EAC3",
-        TsAudioCodec::Mp2 => "MP2",
+/// Parse base_media_decode_time from a tfdt box in a media segment.
+///
+/// `tfdt` is nested inside `moof`→`traf`→`tfdt`, so we scan all byte offsets.
+/// Layout: size(4) + type(4) + version(1) + flags(3) + decode_time(4 or 8)
+fn parse_base_media_decode_time(bytes: &[u8]) -> u64 {
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        if bytes[i..i + 4] == *b"tfdt" {
+            // i is the type field offset; version is at i+4, decode_time at i+8
+            if i + 8 <= bytes.len() {
+                let version = bytes[i + 4];
+                if version == 1 && i + 16 <= bytes.len() {
+                    return u64::from_be_bytes([
+                        bytes[i + 8],
+                        bytes[i + 9],
+                        bytes[i + 10],
+                        bytes[i + 11],
+                        bytes[i + 12],
+                        bytes[i + 13],
+                        bytes[i + 14],
+                        bytes[i + 15],
+                    ]);
+                } else if i + 12 <= bytes.len() {
+                    return u32::from_be_bytes([
+                        bytes[i + 8],
+                        bytes[i + 9],
+                        bytes[i + 10],
+                        bytes[i + 11],
+                    ]) as u64;
+                }
+            }
+        }
+        i += 1;
     }
-}
-
-fn bridge_subtitle_kind_str(k: TsSubtitleKind) -> &'static str {
-    match k {
-        TsSubtitleKind::DvbSubtitles => "DvbSubtitles",
-        TsSubtitleKind::Teletext => "Teletext",
-    }
-}
-
-fn lang_bytes_to_string(lang: &[u8; 3]) -> String {
-    // ISO 639-2 codes are ASCII — lossless conversion.
-    String::from_utf8_lossy(lang).into_owned()
+    0
 }
 
 // ── native host test (not wasm-bindgen test) ────────────────────────────────

@@ -74,20 +74,33 @@ fn media_segments_cover_all_samples() {
 fn init_and_media_reparse_and_account_all_aus() {
     // Baseline AU count straight from the demux.
     let expected_aus = {
-        use mpeg_ts::resync::TsResync;
-        use skyfire_ts::EsDemux;
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")
             .join("gulli-15s.ts");
         let data = std::fs::read(path).unwrap();
-        let (mut d, mut r) = (EsDemux::new(), TsResync::new());
-        for chunk in data.chunks(4096) {
-            for pkt in r.feed(chunk) {
-                d.feed_packet(&pkt);
+        let mut demux = skyfire_ts::TsDemux::new();
+        demux.feed(&data);
+        demux.finish();
+        let mut video_track_ids: std::collections::HashSet<u32> = Default::default();
+        let mut all_events: Vec<skyfire_ts::DemuxEvent> = Vec::new();
+        while let Some(ev) = demux.poll_event() {
+            all_events.push(ev);
+        }
+        for ev in &all_events {
+            if let skyfire_ts::DemuxEvent::TrackAdded(t) = ev {
+                let meta = skyfire_ts::track_meta(&t.spec);
+                if matches!(meta.kind, skyfire_ts::TrackKind::Video(_)) {
+                    video_track_ids.insert(t.spec.track_id);
+                }
             }
         }
-        d.flush();
-        d.drain().into_iter().filter(|a| a.pid == 0x0100).count()
+        all_events
+            .iter()
+            .filter(|ev| {
+                matches!(ev, skyfire_ts::DemuxEvent::Sample { track_id, .. }
+                    if video_track_ids.contains(track_id))
+            })
+            .count()
     };
 
     let mut bridge = SkyfireBridge::new();

@@ -663,4 +663,40 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn gulli_15s_video_is_sync_count() {
+        // gulli-15s.ts is an open-GOP H.264 stream: no IDR frames (NAL type 5).
+        // GOP boundaries are marked by in-band SPS (NAL type 7). transmux correctly
+        // reports is_sync=false for all samples. The bridge compensates via
+        // avcc_has_sps_or_idr() when feeding to the Segmenter.
+        let events = demux_fixture("gulli-15s.ts");
+        let vid_id = events
+            .iter()
+            .find_map(|ev| {
+                if let DemuxEvent::TrackAdded(t) = ev {
+                    let meta = track_meta(&t.spec);
+                    if matches!(meta.kind, TrackKind::Video(_)) {
+                        return Some(t.spec.track_id);
+                    }
+                }
+                None
+            })
+            .expect("video track");
+        let sync: usize = events
+            .iter()
+            .filter(|ev| {
+                matches!(ev, DemuxEvent::Sample { track_id, sample } if *track_id == vid_id && sample.is_sync)
+            })
+            .count();
+        let total: usize = events
+            .iter()
+            .filter(|ev| matches!(ev, DemuxEvent::Sample { track_id, .. } if *track_id == vid_id))
+            .count();
+        assert!(total > 0, "must have video samples");
+        assert_eq!(
+            sync, 0,
+            "gulli-15s is open-GOP (no IDR frames); expected sync=0, got {sync}/{total}"
+        );
+    }
 }

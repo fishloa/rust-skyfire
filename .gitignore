@@ -37,3 +37,4 @@ packages/*/*.tgz
 
 # SDD scratch (subagent ledger/reports)
 .superpowers/
+.claude/
