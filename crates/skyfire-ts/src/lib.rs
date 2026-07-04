@@ -667,9 +667,11 @@ mod tests {
     #[test]
     fn gulli_15s_video_is_sync_count() {
         // gulli-15s.ts is an open-GOP H.264 stream: no IDR frames (NAL type 5).
-        // GOP boundaries are marked by in-band SPS (NAL type 7). transmux correctly
-        // reports is_sync=false for all samples. The bridge compensates via
-        // avcc_has_sps_or_idr() when feeding to the Segmenter.
+        // GOP boundaries are marked by in-band SPS (NAL type 7). transmux 0.14
+        // (rust-broadcast#595) recognises open-GOP random-access points (SPS-led /
+        // recovery-point-SEI AUs), so is_sync is now true on GOP starts — a subset
+        // of samples, not zero and not all. This is what lets the Segmenter cut
+        // without any client-side is_sync override.
         let events = demux_fixture("gulli-15s.ts");
         let vid_id = events
             .iter()
@@ -694,9 +696,10 @@ mod tests {
             .filter(|ev| matches!(ev, DemuxEvent::Sample { track_id, .. } if *track_id == vid_id))
             .count();
         assert!(total > 0, "must have video samples");
-        assert_eq!(
-            sync, 0,
-            "gulli-15s is open-GOP (no IDR frames); expected sync=0, got {sync}/{total}"
+        assert!(
+            sync > 0 && sync < total,
+            "gulli-15s open-GOP: transmux 0.14 must flag GOP-start RAPs (a subset), \
+             not zero and not all — got {sync}/{total}"
         );
     }
 }

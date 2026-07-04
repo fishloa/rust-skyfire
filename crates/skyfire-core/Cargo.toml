@@ -11,4 +11,4 @@ skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-sync.workspace = true
 broadcast-common = "8"
-transmux = "0.12"
+transmux = "0.14"
