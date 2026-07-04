@@ -284,15 +284,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
-name = "dvb-pes"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7687d02802412e99b6f25b86115e14b93da4d5e0debff29140e77fde245c7b63"
-dependencies = [
- "mpeg-pes 0.1.3",
-]
-
-[[package]]
 name = "dvb-si"
 version = "8.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -526,16 +517,6 @@ dependencies = [
 
 [[package]]
 name = "mpeg-pes"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5edaf7e13f192ef2b5c8bf359685df2e4a90bd16499c66edee8d4df882d40f1"
-dependencies = [
- "broadcast-common",
- "thiserror",
-]
-
-[[package]]
-name = "mpeg-pes"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09eabb8ef6098a500bb05052c0f9a80392bb53ed959cfb3b3e27e38de16b511b"
@@ -552,7 +533,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "085684d9d25bfffa42143d5802070d9fe455fea90860f5d9aba2b877bc0b6737"
 dependencies = [
  "broadcast-common",
- "mpeg-pes 0.2.0",
+ "mpeg-pes",
  "serde",
  "thiserror",
 ]
@@ -782,11 +763,11 @@ dependencies = [
 name = "skyfire-core"
 version = "0.1.1"
 dependencies = [
- "dvb-si",
- "mpeg-ts",
+ "broadcast-common",
  "skyfire-ac3",
  "skyfire-sync",
  "skyfire-ts",
+ "transmux",
 ]
 
 [[package]]
@@ -805,11 +786,9 @@ name = "skyfire-ts"
 version = "0.1.1"
 dependencies = [
  "broadcast-common",
- "dvb-pes",
  "dvb-si",
  "dvb-subtitle",
  "flate2",
- "mpeg-ts",
  "skyfire-ac3",
  "transmux",
 ]
@@ -819,9 +798,7 @@ name = "skyfire-wasm"
 version = "0.1.1"
 dependencies = [
  "broadcast-common",
- "dvb-si",
  "dvb-subtitle",
- "mpeg-ts",
  "skyfire-ac3",
  "skyfire-core",
  "skyfire-mpa",
@@ -960,15 +937,15 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.10.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85da251d7fabd1d751b246928d54bc30bea4de8fe37eaf912024c2b0903401b4"
+checksum = "f89a1e7ffd79ee8b58f974894a046b1a16912b8d2cb2a06332e3f7549e75abba"
 dependencies = [
  "aes",
  "broadcast-common",
  "ctr",
  "mp4-emsg",
- "mpeg-pes 0.2.0",
+ "mpeg-pes",
  "mpeg-ps",
  "mpeg-ts",
  "serde",

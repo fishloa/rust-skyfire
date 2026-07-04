@@ -17,14 +17,56 @@ pub use skyfire_ac3 as ac3;
 pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
-use mpeg_ts::resync::TsResync;
+use broadcast_common::traits::Serialize as BcSerialize;
 use skyfire_sync::{AudioClock, VideoFrameQueue};
-use skyfire_ts::{AccessUnit, ChannelMap, EsDemux, h264_config};
+use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, track_meta};
+use transmux::pipeline::CodecConfig;
 
 /// Engine build identifier (crate version).
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/// One H.264 video access unit with PTS and keyframe flag.
+///
+/// `data` contains length-prefixed NAL data (as produced by transmux).
+#[derive(Debug, Clone)]
+pub struct VideoUnit {
+    /// Presentation timestamp in 90 kHz ticks.
+    pub pts: u64,
+    /// Whether this access unit is a sync/keyframe (IDR).
+    pub is_sync: bool,
+    /// Length-prefixed NAL data bytes.
+    pub data: Vec<u8>,
+}
+
+/// `WebCodecs` `VideoDecoder` configuration: RFC-6381 codec string and raw
+/// avcC record bytes (the `AVCDecoderConfigurationRecord`, without the box
+/// header).
+#[derive(Debug, Clone)]
+pub struct VideoConfig {
+    /// RFC-6381 codec string (e.g. `"avc1.640028"`).
+    pub codec: String,
+    /// Raw avcC decoder configuration record bytes.
+    pub description: Vec<u8>,
+}
+
+/// Parsed metadata for a single track from a `TrackAdded` event.
+#[derive(Debug, Clone)]
+pub struct TrackInfo {
+    /// transmux track ID.
+    pub track_id: u32,
+    /// Source PID from the TS PMT.
+    pub pid: Option<u16>,
+    /// Track kind (video / audio / subtitle / other).
+    pub kind: TrackKind,
+    /// ISO 639-2 language, if present.
+    pub language: Option<[u8; 3]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,11 +79,10 @@ pub const fn version() -> &'static str {
 /// # Usage
 ///
 /// ```ignore
-/// // Probe the channel map first, then feed everything.
-/// let channel = Engine::probe(&ts_bytes).expect("no PAT/PMT found");
-/// let mut engine = Engine::with_channel(channel);
+/// let mut engine = Engine::new();
 /// engine.feed(&ts_bytes);
-/// engine.flush();
+/// engine.finish();
+/// engine.finalize();
 ///
 /// let pcm = engine.audio_pcm();
 /// let sample_rate = engine.audio_sample_rate();
@@ -50,18 +91,21 @@ pub const fn version() -> &'static str {
 /// let video_units = engine.video_units();
 /// let video_config = engine.video_config();
 ///
-/// // The caller (skyfire-wasm) advances the audio-clock as PCM is
-/// // played out, and pushes decoded video frames into the present queue.
 /// let clock = engine.clock();
 /// let queue = engine.queue_mut();
 /// ```
 pub struct Engine {
     // ── demux ──────────────────────────────────────────────────────
-    resync: TsResync,
-    demux: EsDemux,
+    demux: TsDemux,
 
-    // ── channel map ────────────────────────────────────────────────
-    channel: ChannelMap,
+    // ── track list ─────────────────────────────────────────────────
+    tracks: Vec<TrackInfo>,
+    /// transmux track_id for the first video track.
+    video_track_id: Option<u32>,
+    /// transmux track_id for the first audio track.
+    audio_track_id: Option<u32>,
+    /// `CodecConfig` for the video track (held to build `video_config()`).
+    video_codec_config: Option<CodecConfig>,
 
     // ── audio ──────────────────────────────────────────────────────
     /// Accumulated raw E-AC-3 ES bytes (before batch decode).
@@ -73,7 +117,7 @@ pub struct Engine {
     audio_decoded: bool,
 
     // ── video ──────────────────────────────────────────────────────
-    video_units: Vec<AccessUnit>,
+    video_units: Vec<VideoUnit>,
 
     // ── sync ───────────────────────────────────────────────────────
     clock: AudioClock,
@@ -82,15 +126,15 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Create a new engine with a pre-probed channel map.
-    ///
-    /// Use [`Engine::probe`] to obtain the channel map from raw TS bytes.
+    /// Create a new engine.
     #[must_use]
-    pub fn with_channel(channel: ChannelMap) -> Self {
+    pub fn new() -> Self {
         Self {
-            resync: TsResync::new(),
-            demux: EsDemux::new(),
-            channel,
+            demux: TsDemux::new(),
+            tracks: Vec::new(),
+            video_track_id: None,
+            audio_track_id: None,
+            video_codec_config: None,
             audio_es_buf: Vec::new(),
             pcm_output: Vec::new(),
             audio_sample_rate: 0,
@@ -103,37 +147,28 @@ impl Engine {
         }
     }
 
-    /// Probe raw MPEG-TS bytes for the channel map (PAT+PMT).
-    ///
-    /// Convenience wrapper around [`skyfire_ts::probe`].
-    #[must_use]
-    pub fn probe(data: &[u8]) -> Option<ChannelMap> {
-        skyfire_ts::probe(data)
-    }
-
     /// Feed raw MPEG-TS bytes into the engine.
     ///
-    /// Call repeatedly with incoming TS data. Audio ES bytes are accumulated;
-    /// video access units are collected. Call [`flush`](Self::flush) then
-    /// [`finalize`](Self::finalize) to decode audio and build the video config.
+    /// Call repeatedly with incoming TS data. Drains all available
+    /// [`DemuxEvent`]s immediately: audio ES bytes are accumulated;
+    /// video access units are collected. Call [`finish`](Self::finish) then
+    /// [`finalize`](Self::finalize) to flush trailing AUs and decode audio.
     pub fn feed(&mut self, data: &[u8]) {
-        for chunk in data.chunks(4096) {
-            for pkt in self.resync.feed(chunk) {
-                self.demux.feed_packet(&pkt[..]);
-            }
-        }
-        self.drain_units();
+        self.demux.feed(data);
+        self.drain_events();
     }
 
-    /// Flush any partial PES packets still in the demux.
-    pub fn flush(&mut self) {
-        self.demux.flush();
-        self.drain_units();
+    /// Flush any trailing partial access units still in the demux.
+    ///
+    /// Call once at end-of-input, then [`finalize`](Self::finalize).
+    pub fn finish(&mut self) {
+        self.demux.finish();
+        self.drain_events();
     }
 
     /// Finalize: batch-decode accumulated audio ES to PCM, build clock.
     ///
-    /// Call this after all `feed`/`flush` calls. After finalization,
+    /// Call after all `feed`/`finish` calls. After finalization,
     /// `audio_pcm()`, `audio_sample_rate()`, `audio_channels()`, and
     /// `clock` are populated.
     pub fn finalize(&mut self) {
@@ -162,20 +197,46 @@ impl Engine {
 
     /// Collected H.264 video access units with PTS.
     ///
-    /// Each access unit represents one picture (frame or field) with its
-    /// presentation timestamp in 90 kHz ticks.
+    /// Each access unit represents one picture with its presentation timestamp
+    /// in 90 kHz ticks.
     #[must_use]
-    pub fn video_units(&self) -> &[AccessUnit] {
+    pub fn video_units(&self) -> &[VideoUnit] {
         &self.video_units
     }
 
     /// Build the `WebCodecs` `VideoDecoder` config (codec string + avcC) from
-    /// the accumulated video access units.
+    /// the codec configuration recovered by the demuxer.
     ///
-    /// Returns `None` if no SPS/PPS have been extracted yet.
+    /// Returns `None` if no video track has been seen yet.
     #[must_use]
-    pub fn video_config(&self) -> Option<h264_config::VideoConfig> {
-        h264_config::h264_decoder_config(&self.video_units)
+    pub fn video_config(&self) -> Option<VideoConfig> {
+        let config = self.video_codec_config.as_ref()?;
+        if let CodecConfig::Avc {
+            config: avcc_box, ..
+        } = config
+        {
+            let record = &avcc_box.config;
+            let codec = transmux::rfc6381_avc1(
+                record.profile_indication,
+                record.profile_compatibility,
+                record.level_indication,
+            );
+            let len = record.serialized_len();
+            let mut buf = vec![0u8; len];
+            record.serialize_into(&mut buf).ok()?;
+            Some(VideoConfig {
+                codec,
+                description: buf,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Track list built from `TrackAdded` events.
+    #[must_use]
+    pub fn tracks(&self) -> &[TrackInfo] {
+        &self.tracks
     }
 
     /// The audio-master media clock.
@@ -217,34 +278,71 @@ impl Engine {
         !self.video_units.is_empty()
     }
 
-    /// The current channel map.
-    #[must_use]
-    pub const fn channel(&self) -> &ChannelMap {
-        &self.channel
-    }
-
     // ── internal helpers ───────────────────────────────────────────
 
-    fn drain_units(&mut self) {
-        let units = self.demux.drain();
-        if units.is_empty() {
-            return;
-        }
-
-        let audio_pid = self.channel.audio_streams.first().map(|s| s.pid);
-        let video_pid = self.channel.video_pid;
-
-        for au in units {
-            if Some(au.pid) == audio_pid {
-                // Capture the first audio PTS for clock anchoring.
-                if self.first_audio_pts.is_none()
-                    && let Some(pts) = au.pts_ticks
-                {
-                    self.first_audio_pts = Some(pts);
+    fn drain_events(&mut self) {
+        while let Some(event) = self.demux.poll_event() {
+            match event {
+                DemuxEvent::TrackAdded(track) => {
+                    let meta: TrackMeta = track_meta(&track.spec);
+                    let info = TrackInfo {
+                        track_id: track.spec.track_id,
+                        pid: meta.pid,
+                        kind: meta.kind,
+                        language: meta.language,
+                    };
+                    // Record the first video and first audio track_ids.
+                    match meta.kind {
+                        TrackKind::Video(_) if self.video_track_id.is_none() => {
+                            self.video_track_id = Some(track.spec.track_id);
+                            self.video_codec_config = Some(track.spec.config.clone());
+                        }
+                        TrackKind::Audio(_) if self.audio_track_id.is_none() => {
+                            self.audio_track_id = Some(track.spec.track_id);
+                        }
+                        _ => {}
+                    }
+                    self.tracks.push(info);
                 }
-                self.audio_es_buf.extend_from_slice(&au.es_bytes);
-            } else if au.pid == video_pid {
-                self.video_units.push(au);
+                DemuxEvent::TrackUpdated(track) => {
+                    // Update video codec config if it has changed (e.g. SPS update).
+                    if Some(track.spec.track_id) == self.video_track_id {
+                        self.video_codec_config = Some(track.spec.config.clone());
+                    }
+                    // Update entry in track list.
+                    if let Some(entry) = self
+                        .tracks
+                        .iter_mut()
+                        .find(|t| t.track_id == track.spec.track_id)
+                    {
+                        let meta = track_meta(&track.spec);
+                        entry.pid = meta.pid;
+                        entry.kind = meta.kind;
+                        entry.language = meta.language;
+                    }
+                }
+                DemuxEvent::Sample { track_id, sample } => {
+                    if Some(track_id) == self.video_track_id {
+                        let pts = sample.source_timing.map(|t| t.pts).unwrap_or(0);
+                        self.video_units.push(VideoUnit {
+                            pts,
+                            is_sync: sample.is_sync,
+                            data: sample.data,
+                        });
+                    } else if Some(track_id) == self.audio_track_id {
+                        // Capture the first audio PTS for clock anchoring.
+                        if self.first_audio_pts.is_none()
+                            && let Some(t) = sample.source_timing
+                        {
+                            self.first_audio_pts = Some(t.pts);
+                        }
+                        self.audio_es_buf.extend_from_slice(&sample.data);
+                    }
+                }
+                DemuxEvent::Pcr(_) | DemuxEvent::Discontinuity { .. } => {
+                    // Not used by the core engine; consumed by skyfire-wasm.
+                }
+                _ => {}
             }
         }
     }
@@ -269,13 +367,22 @@ impl Engine {
                 let sample_frames = self.pcm_output.len() / (decoded.channels as usize * 2);
                 let _ = self.clock.advance(sample_frames as u64);
             }
-        } else {
-            // Decode failed — leave PCM empty.
         }
+        // On decode failure leave PCM empty.
 
         self.audio_decoded = true;
     }
 }
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -290,10 +397,9 @@ mod tests {
 
     fn engine_for_fixture(name: &str) -> Engine {
         let data = load_fixture(name);
-        let channel = Engine::probe(&data).expect("must probe fixture");
-        let mut engine = Engine::with_channel(channel);
+        let mut engine = Engine::new();
         engine.feed(&data);
-        engine.flush();
+        engine.finish();
         engine.finalize();
         engine
     }
@@ -309,10 +415,9 @@ mod tests {
     #[test]
     fn engine_truncated_input_no_panic() {
         let data = load_fixture("gulli-15s.ts");
-        let channel = Engine::probe(&data).expect("must probe gulli-15s");
-        let mut engine = Engine::with_channel(channel);
+        let mut engine = Engine::new();
         engine.feed(&data[..1024]);
-        engine.flush();
+        engine.finish();
         engine.finalize();
         // Must not panic.
     }
@@ -358,23 +463,37 @@ mod tests {
         // Verify consistency: byte-level match against independently-demuxed
         // audio ES bytes decoded the same way.
         let data = load_fixture("gulli-15s.ts");
-        let channel = Engine::probe(&data).unwrap();
-        let audio_pid = channel.audio_streams.first().map(|s| s.pid).unwrap();
+        let mut demux2 = TsDemux::new();
+        let mut audio_track_id2: Option<u32> = None;
+        let mut expected_audio_es: Vec<u8> = Vec::new();
 
-        let mut demux2 = EsDemux::new();
-        let mut resync2 = TsResync::new();
         for chunk in data.chunks(4096) {
-            for pkt in resync2.feed(chunk) {
-                demux2.feed_packet(&pkt[..]);
+            demux2.feed(chunk);
+            while let Some(ev) = demux2.poll_event() {
+                match ev {
+                    DemuxEvent::TrackAdded(track) => {
+                        let meta = track_meta(&track.spec);
+                        if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id2.is_none() {
+                            audio_track_id2 = Some(track.spec.track_id);
+                        }
+                    }
+                    DemuxEvent::Sample { track_id, sample } => {
+                        if Some(track_id) == audio_track_id2 {
+                            expected_audio_es.extend_from_slice(&sample.data);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
-        demux2.flush();
-        let expected_audio_es: Vec<u8> = demux2
-            .drain()
-            .into_iter()
-            .filter(|au| au.pid == audio_pid)
-            .flat_map(|au| au.es_bytes)
-            .collect();
+        demux2.finish();
+        while let Some(ev) = demux2.poll_event() {
+            if let DemuxEvent::Sample { track_id, sample } = ev
+                && Some(track_id) == audio_track_id2
+            {
+                expected_audio_es.extend_from_slice(&sample.data);
+            }
+        }
 
         let decoded_expected =
             skyfire_ac3::decode_all_eac3(&expected_audio_es).expect("decode extracted audio");
@@ -396,10 +515,7 @@ mod tests {
         assert!(!video_units.is_empty());
 
         // Every video AU must have a finite PTS under the 33-bit cap.
-        let pts_vals: Vec<u64> = video_units
-            .iter()
-            .map(|au| au.pts_ticks.expect("video AU must have PTS"))
-            .collect();
+        let pts_vals: Vec<u64> = video_units.iter().map(|au| au.pts).collect();
 
         let max_pts = pts_vals.iter().max().copied().unwrap();
         let min_pts = pts_vals.iter().min().copied().unwrap();
@@ -420,12 +536,13 @@ mod tests {
 
         assert_eq!(config.codec, "avc1.640028");
 
-        // Golden avcC bytes from skyfire-ts h264_config golden test (High profile
+        // Golden avcC bytes — AVCDecoderConfigurationRecord (record only, no
+        // box header) as recovered by transmux from gulli-15s.ts (High profile,
         // includes ISO 14496-15 §5.3.3.1.2 ext fields).
         let expected_avcc: &[u8] = &[
-            0x01, // version
+            0x01, // configurationVersion
             0x64, // profile_idc = 100 (High)
-            0x00, // constraint_flags
+            0x00, // profile_compatibility
             0x28, // level_idc = 40 (4.0)
             0xff, // reserved(6)+lengthSizeMinusOne(3) = 0xfc|0x03 = 0xff
             0xe1, // reserved(3)+numSPS(1) = 0xe0|0x01 = 0xe1
@@ -443,6 +560,41 @@ mod tests {
         assert_eq!(
             config.description, expected_avcc,
             "avcC golden bytes mismatch"
+        );
+    }
+
+    #[test]
+    fn engine_h264_25fps_video_config_golden() {
+        // Locks transmux 4:4:4 avcC recovery for h264-25fps.ts (issue #563).
+        // High 4:4:4 Predictive profile: profile_idc=244 (0xF4), level_idc=12 (0x0C).
+        let engine = engine_for_fixture("h264-25fps.ts");
+        let config = engine.video_config().expect("must build H.264 config");
+
+        // RFC-6381 codec string: avc1.<profile_idc><profile_compatibility><level_idc> hex.
+        assert_eq!(config.codec, "avc1.F4000C");
+
+        // Golden avcC bytes — AVCDecoderConfigurationRecord (record only, no box header)
+        // as recovered by transmux from h264-25fps.ts (High 4:4:4 Predictive profile).
+        let expected_avcc: &[u8] = &[
+            0x01, // configurationVersion
+            0xf4, // profile_idc = 244 (High 4:4:4 Predictive)
+            0x00, // profile_compatibility
+            0x0c, // level_idc = 12
+            0xff, // reserved(6)+lengthSizeMinusOne = 0xfc|0x03 = 0xff
+            0xe1, // reserved(3)+numSPS(1) = 0xe0|0x01 = 0xe1
+            0x00, 0x19, // SPS length = 25
+            // SPS NAL unit:
+            0x67, 0xf4, 0x00, 0x0c, 0x91, 0x9b, 0x28, 0x20, 0x27, 0x60, 0x22, 0x00, 0x00, 0x03,
+            0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x64, 0x1e, 0x28, 0x53, 0x2c,
+            0x01, // numPPS = 1
+            0x00, 0x06, // PPS length = 6
+            // PPS NAL unit:
+            0x68, 0xeb, 0xe3, 0xc4, 0x48, 0x44, // High-profile ext fields:
+            0xff, 0xf8, 0xf8, 0x00,
+        ];
+        assert_eq!(
+            config.description, expected_avcc,
+            "avcC golden bytes mismatch for h264-25fps.ts (High 4:4:4 Predictive)"
         );
     }
 

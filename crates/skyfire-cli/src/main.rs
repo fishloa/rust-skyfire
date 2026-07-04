@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::Serialize;
+use skyfire_ts::{AudioCodec, DemuxEvent, TrackKind, TsDemux, VideoCodec, track_meta};
 
 #[derive(Parser)]
 #[command(
@@ -52,14 +53,53 @@ struct AudioStreamJson {
     codec: String,
 }
 
+struct ProbeResult {
+    video_pid: u16,
+    video_codec: VideoCodec,
+    audio_streams: Vec<(u16, AudioCodec)>,
+}
+
 fn build_histogram(data: &[u8]) -> BTreeMap<u16, u64> {
     let mut hist: BTreeMap<u16, u64> = BTreeMap::new();
     for chunk in data.chunks_exact(skyfire_ts::TS_PACKET_LEN) {
-        if let Some(pid) = skyfire_ts::packet_pid(chunk) {
+        if chunk[0] == 0x47 {
+            let pid = u16::from_be_bytes([chunk[1] & 0x1f, chunk[2]]);
             *hist.entry(pid).or_default() += 1;
         }
     }
     hist
+}
+
+fn probe(data: &[u8]) -> Option<ProbeResult> {
+    let mut demux = TsDemux::new();
+    demux.feed(data);
+    demux.finish();
+
+    let mut video: Option<(u16, VideoCodec)> = None;
+    let mut audio: Vec<(u16, AudioCodec)> = Vec::new();
+
+    while let Some(ev) = demux.poll_event() {
+        if let DemuxEvent::TrackAdded(track) = ev {
+            let meta = track_meta(&track.spec);
+            let pid = meta.pid.unwrap_or(0);
+            match meta.kind {
+                TrackKind::Video(vc) if video.is_none() => {
+                    video = Some((pid, vc));
+                }
+                TrackKind::Audio(ac) => {
+                    audio.push((pid, ac));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let (video_pid, video_codec) = video?;
+    Some(ProbeResult {
+        video_pid,
+        video_codec,
+        audio_streams: audio,
+    })
 }
 
 fn print_text(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
@@ -74,17 +114,17 @@ fn print_text(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
     }
 
     println!();
-    if let Some(map) = skyfire_ts::probe(data) {
+    if let Some(map) = probe(data) {
         println!(
             "Channel map: video PID {vp:#06x} ({vc:?})",
             vp = map.video_pid,
             vc = map.video_codec,
         );
-        for a in &map.audio_streams {
+        for (pid, codec) in &map.audio_streams {
             println!(
                 "  audio PID {pid:#06x} ({codec:?})",
-                pid = a.pid,
-                codec = a.codec,
+                pid = pid,
+                codec = codec,
             );
         }
     } else {
@@ -103,15 +143,15 @@ fn print_json(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
         })
         .collect();
 
-    let channel_map = skyfire_ts::probe(data).map(|map| ChannelMapJson {
+    let channel_map = probe(data).map(|map| ChannelMapJson {
         video_pid: map.video_pid,
         video_codec: format!("{:?}", map.video_codec),
         audio_streams: map
             .audio_streams
             .iter()
-            .map(|a| AudioStreamJson {
-                pid: a.pid,
-                codec: format!("{:?}", a.codec),
+            .map(|(pid, codec)| AudioStreamJson {
+                pid: *pid,
+                codec: format!("{codec:?}"),
             })
             .collect(),
     });
@@ -129,12 +169,12 @@ fn print_json(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
 
 fn main() {
     let args = Args::parse();
+    let path = args.file.display().to_string();
 
-    let path = args.file.to_string_lossy().to_string();
-    let data = match std::fs::read(&path) {
+    let data = match std::fs::read(&args.file) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("read {path}: {e}");
+            eprintln!("error: cannot read {path}: {e}");
             std::process::exit(1);
         }
     };
