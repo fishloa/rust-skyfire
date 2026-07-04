@@ -83,7 +83,10 @@ impl IncrementalMpaDecoder {
             self.decoder = Some(decoder);
         }
 
-        let decoder = self.decoder.as_mut().unwrap();
+        let decoder = match self.decoder.as_mut() {
+            Some(d) => d,
+            None => return Err("mpa decoder not initialised".to_string()),
+        };
 
         // Wrap the AU bytes in an MpaReader to demux frames.
         let owned_data = data.to_vec();
@@ -200,5 +203,32 @@ mod tests {
         let frame2 = make_mp2_frame();
         let result = dec.decode_au(&frame2).expect("decode after reset");
         assert!(result.is_some(), "must decode after reset");
+    }
+
+    #[test]
+    fn empty_input_no_panic() {
+        // Empty input must return Ok(None), never panic.
+        let mut dec = IncrementalMpaDecoder::new();
+        let result = dec.decode_au(&[]);
+        assert!(result.is_ok(), "empty input must not panic: {result:?}");
+        assert!(result.unwrap().is_none(), "empty input must return None");
+    }
+
+    #[test]
+    fn truncated_frame_no_panic() {
+        // A header-only (too short) frame must not panic.
+        let mut dec = IncrementalMpaDecoder::new();
+        let header_only = vec![0xFF, 0xFD, 0xA4, 0xC4]; // valid header but no body
+        let result = dec.decode_au(&header_only);
+        assert!(result.is_ok(), "truncated frame must not panic: {result:?}");
+    }
+
+    #[test]
+    fn garbage_input_no_panic() {
+        // Completely random/garbage bytes must not panic.
+        let mut dec = IncrementalMpaDecoder::new();
+        let garbage = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let result = dec.decode_au(&garbage);
+        assert!(result.is_ok(), "garbage must not panic: {result:?}");
     }
 }

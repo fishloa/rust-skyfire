@@ -28,6 +28,19 @@ pub enum VideoCodec {
     H265,
 }
 
+/// Canonical video-codec string for public APIs.
+///
+/// This is the single source of truth — every API emits the same string.
+/// The match is exhaustive (no `_ =>` catch-all) so adding a variant is a
+/// compile error, never a silent misclassification.
+#[must_use]
+pub fn video_codec_str(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "H264",
+        VideoCodec::H265 => "H265",
+    }
+}
+
 /// Identifies an audio codec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCodec {
@@ -35,6 +48,21 @@ pub enum AudioCodec {
     EAc3,
     /// MPEG-1/2 Layer II audio (`stream_type` 0x03/0x04, DVB-SD).
     Mp2,
+}
+
+/// Canonical audio-codec string for public APIs.
+///
+/// UPPERCASE forms (`"AC3"`, `"EAC3"`, `"MP2"`) — the bridge/player contract.
+/// This is the single source of truth: every API emits the same string.
+/// The match is exhaustive (no `_ =>` catch-all) so adding a variant is a
+/// compile error, never a silent misclassification.
+#[must_use]
+pub fn audio_codec_str(codec: AudioCodec) -> &'static str {
+    match codec {
+        AudioCodec::Ac3 => "AC3",
+        AudioCodec::EAc3 => "EAC3",
+        AudioCodec::Mp2 => "MP2",
+    }
 }
 
 /// Identifies a subtitle/text stream kind.
@@ -216,58 +244,6 @@ impl Default for TsDemux {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ---------------------------------------------------------------------------
-// SubtitleCue — kept for the subtitle compositor
-// ---------------------------------------------------------------------------
-
-use broadcast_common::traits::Parse;
-use dvb_subtitle::{AnySegment, PesDataField};
-
-/// One parsed DVB subtitle cue, ready to surface to the browser overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubtitleCue {
-    /// PES PTS in 90 kHz ticks.
-    pub start_pts: u64,
-    /// Estimated end PTS = `start_pts` + `page_time_out` × `90_000`.
-    pub end_pts: u64,
-    /// PID this cue came from.
-    pub pid: u16,
-    /// Raw PES data field bytes (ETSI EN 300 743).
-    pub bytes: Vec<u8>,
-}
-
-/// Try to parse a DVB subtitle PES payload into a [`SubtitleCue`].
-#[must_use]
-pub fn parse_subtitle_pes(
-    pid: u16,
-    start_pts: Option<u64>,
-    es_bytes: &[u8],
-) -> Option<SubtitleCue> {
-    if es_bytes.first() != Some(&dvb_subtitle::DataIdentifier) {
-        return None;
-    }
-
-    let field = PesDataField::parse(es_bytes).ok()?;
-
-    let page_time_out_secs: Option<u8> = field.segments.iter().find_map(|seg| {
-        if let AnySegment::PageComposition(pcs) = seg {
-            Some(pcs.page_time_out)
-        } else {
-            None
-        }
-    });
-
-    let pts = start_pts.unwrap_or(0);
-    let end_pts = page_time_out_secs.map_or(pts, |t| pts.saturating_add(u64::from(t) * 90_000));
-
-    Some(SubtitleCue {
-        start_pts: pts,
-        end_pts,
-        pid,
-        bytes: es_bytes.to_vec(),
-    })
 }
 
 // ---------------------------------------------------------------------------

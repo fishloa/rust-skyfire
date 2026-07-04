@@ -354,7 +354,9 @@ impl Engine {
 
         // Use IncrementalDecoder (handles both AC-3 bsid≤10 and E-AC-3
         // bsid 11-16) instead of the E-AC-3-only decode_all_eac3.
-        let mut dec = skyfire_ac3::IncrementalDecoder::new();
+        let Ok(mut dec) = skyfire_ac3::IncrementalDecoder::new() else {
+            return;
+        };
         if let Ok(Some(decoded)) = dec.decode_au(&self.audio_es_buf) {
             if decoded.sample_rate == 0 || decoded.channels == 0 {
                 return;
@@ -707,7 +709,7 @@ mod tests {
         // Byte-level oracle: independently extract the audio ES from the TS
         // and decode with IncrementalDecoder.
         let es = extract_audio_es_ts("orf2-ac3-51.ts");
-        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new();
+        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new().expect("build oracle decoder");
         let oracle = oracle_dec
             .decode_au(&es)
             .expect("oracle IncrementalDecoder must succeed")
@@ -756,7 +758,7 @@ mod tests {
 
         // Byte-level oracle.
         let es = extract_audio_es_ts("ac3-51.ts");
-        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new();
+        let mut oracle_dec = skyfire_ac3::IncrementalDecoder::new().expect("build oracle decoder");
         let oracle = oracle_dec
             .decode_au(&es)
             .expect("oracle IncrementalDecoder must succeed")

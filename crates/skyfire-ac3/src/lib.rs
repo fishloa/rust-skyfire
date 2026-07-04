@@ -32,28 +32,6 @@ pub struct DecodedAudio {
     pub channels: u16,
 }
 
-/// Decode a single E-AC-3 syncframe (packet) into interleaved PCM.
-///
-/// `data` must contain one or more concatenated E-AC-3 syncframes
-/// starting with the `0x0B77` syncword.  The `state` persists
-/// IMDCT overlap-add history across calls.
-///
-/// # Errors
-///
-/// Returns an error if the packet is malformed or the decoder hits an
-/// unsupported feature.
-pub fn decode_eac3_packet(
-    state: &mut eac3::Eac3DecoderState,
-    data: &[u8],
-) -> Result<DecodedAudio, String> {
-    let frame = eac3::decode_eac3_packet(state, data).map_err(|e| e.to_string())?;
-    Ok(DecodedAudio {
-        pcm_s16le: frame.pcm_s16le,
-        sample_rate: frame.sample_rate,
-        channels: frame.channels,
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Incremental decoder
 // ---------------------------------------------------------------------------
@@ -62,34 +40,34 @@ pub fn decode_eac3_packet(
 ///
 /// Wraps `oxideav_ac3::decoder::make_decoder` — the unified decoder that
 /// dispatches base AC-3 (bsid ≤ 8) and E-AC-3 (Annex E, bsid 11–16) per
-/// syncframe, so both codecs decode (issue #43; the older E-AC-3-only
-/// `decode_eac3_packet` left base AC-3 silent). Holds decode state across
+/// syncframe, so both codecs decode. Holds decode state across
 /// calls; use one per audio PID and [`reset`](Self::reset) when switching PIDs.
 pub struct IncrementalDecoder {
     dec: Box<dyn Decoder>,
 }
 
-impl Default for IncrementalDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl IncrementalDecoder {
     /// Create a new decoder with fresh state.
-    #[must_use]
-    pub fn new() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the oxideav decoder cannot be constructed (e.g.
+    /// unsupported codec parameters).
+    pub fn new() -> Result<Self, String> {
         // Codec "ac3": the unified `Ac3Decoder` inspects each packet's bsid and
         // routes base AC-3 vs E-AC-3 itself, so this one decoder handles both.
         let params = CodecParameters::audio(CodecId::new("ac3"));
-        Self {
-            dec: decoder::make_decoder(&params).expect("build ac3/eac3 decoder"),
-        }
+        let dec =
+            decoder::make_decoder(&params).map_err(|e| format!("build ac3/eac3 decoder: {e}"))?;
+        Ok(Self { dec })
     }
 
     /// Reset decode state (call when switching to a new stream / PID).
     pub fn reset(&mut self) {
-        *self = Self::new();
+        // Best-effort rebuild: if the new decoder fails, leave the old one in place.
+        if let Ok(dec) = Self::new() {
+            *self = dec;
+        }
     }
 
     /// Decode all AC-3 / E-AC-3 syncframes in one access unit's ES bytes.
@@ -306,8 +284,40 @@ mod tests {
         // a complete frame — the decoder must not panic.
         let truncated = [0x0B, 0x77, 0x00, 0xFF, 0x3F, 0xC1, 0x02];
         let result = decode_all_eac3(&truncated);
-        // Should either succeed (if the truncated data happens to look
-        // like a valid frame) or return an error — but never panic.
-        let _ = result;
+        // Must return some Result (Ok or Err) but never panic.
+        assert!(
+            result.is_ok() || result.is_err(),
+            "truncated frame must not panic"
+        );
+    }
+
+    #[test]
+    fn incremental_decoder_no_panic_on_garbage_ac3() {
+        let mut dec = IncrementalDecoder::new().expect("build decoder");
+        // Garbage that looks like a base AC-3 frame (bsid ≤ 10).
+        let garbage: Vec<u8> = vec![0x0B, 0x77, 0x00, 0x00, 0x00, 0x00];
+        let result = dec.decode_au(&garbage);
+        assert!(result.is_ok(), "garbage AC-3 must not panic: {result:?}");
+    }
+
+    #[test]
+    fn incremental_decoder_no_panic_on_truncated_eac3() {
+        let mut dec = IncrementalDecoder::new().expect("build decoder");
+        // Valid syncword + E-AC-3 bsid (≥11): byte5 top 5 bits = bsid 16 = 0x80
+        // but frame length would be bogus.
+        let truncated: Vec<u8> = vec![0x0B, 0x77, 0x00, 0x10, 0x00, 0x80];
+        let result = dec.decode_au(&truncated);
+        assert!(
+            result.is_ok(),
+            "truncated E-AC-3 must not panic: {result:?}"
+        );
+    }
+
+    #[test]
+    fn incremental_decoder_no_panic_empty_input() {
+        let mut dec = IncrementalDecoder::new().expect("build decoder");
+        let result = dec.decode_au(&[]);
+        assert!(result.is_ok(), "empty input must not panic: {result:?}");
+        assert!(result.unwrap().is_none(), "empty input must return None");
     }
 }

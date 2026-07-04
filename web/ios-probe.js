@@ -113,15 +113,9 @@ async function runProbe() {
     return;
   }
 
-  const interlaced = engine.video_is_interlaced();
   const codec = engine.video_config_codec();
   const unitCount = engine.video_unit_count();
 
-  log(
-    "video_is_interlaced: " + interlaced
-    + (interlaced ? "  ✓ (1080i confirmed)" : "  ✗ (progressive — wrong fixture?)"),
-    interlaced ? "ok" : "warn",
-  );
   log("video_config_codec: " + (codec ?? "(null)"), codec ? "ok" : "warn");
   log("video_unit_count: " + unitCount);
 
