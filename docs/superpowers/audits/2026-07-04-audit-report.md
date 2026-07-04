@@ -101,18 +101,22 @@ one real API defect (codec casing), and one latent legacy-path bug (Engine AC-3)
   discretely; downmix fallback). Nothing to build; live 5.1 verification is
   hardware-gated. Not a defect.
 
-**Dimension re-score after P0:** §F GREEN (was YELLOW); §C/§H improved to near-GREEN
-(remaining items are P2 maintainability, below).
+**P1 — DONE** (PR #73): no-panic tests for mpa/ac3/subtitle; bridge decode/segmenter
+errors now logged + counted (audio_decode_error_count/segmenter_error_count);
+ac3 truncated_frame_no_panic asserts; dead code removed.
 
-**Remaining (P1/P2/P3), not yet executed:**
-- P2 maintainability: avcC config-build dedup (×3), module splits (skyfire-sync,
-  skyfire-wasm), JS de-dup (ticksToMicros/PTS_HZ, s16le helper, load_fixture),
-  high-value pedantic lints.
-- P1 tests: remaining no-panic coverage already largely added in WP2; a base-AC-3
-  Engine oracle now exists (PR #72). 7 dead fixtures (g0–g6, m6-clean) still
-  unreferenced — remove or add smoke tests.
-- P3 docs: SUPERSEDED banners on the old plan/parked specs, COSTS timestamp, npm
-  README PcmChunk type, OBJECTIVES PR cites.
+**P2 — DONE** (PR #74): build_avcc_config shared (core+wasm, was ×3); JS
+ticksToMicros/PTS_HZ single-export from @skyfire/core; s16le_slice_to_f32 shared.
+DEFERRED (pure churn, offered separately): the two module splits (skyfire-sync,
+skyfire-wasm) and a shared load_fixture test-helper crate.
+
+**P3 — DONE** (PR #74): SUPERSEDED banners on the 3 historical plan/specs; COSTS
+date; npm README PcmChunk.samples → Float32Array; 8 dead fixtures removed. ADRs
+0004/0008 left intact (immutable dated decisions).
+
+**Dimension re-score after P0-P3:** §F GREEN; §B/§C/§E/§H GREEN (residual = the
+two deferred module splits only). §A/§D/§G were already GREEN. **Whole audit
+GREEN except two optional maintainability splits.**
 
 ## Feed back into the gate (§A)
 
