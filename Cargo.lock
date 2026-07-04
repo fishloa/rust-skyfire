@@ -755,7 +755,6 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
- "skyfire-ac3",
  "skyfire-ts",
 ]
 

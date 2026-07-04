@@ -264,13 +264,6 @@ impl WasmEngine {
             .map(|c| c.description)
             .unwrap_or_default()
     }
-
-    /// Always returns `false` — zenith deinterlaces to progressive before the browser sees it
-    /// (ADR 0008). Kept for API compatibility.
-    #[wasm_bindgen]
-    pub fn video_is_interlaced(&self) -> bool {
-        false
-    }
 }
 
 // ── SkyfireBridge — streaming WASM bridge (issue #29) ─────────────────────
@@ -1656,15 +1649,30 @@ mod tests {
         }
     }
 
-    /// Non-subtitle PES payload (no data_identifier 0x20) must return None.
+    /// Non-subtitle PES payload (no data_identifier 0x20) fed to the bridge with
+    /// an audio-PID "selected" as subtitle must not produce cue output.
     #[test]
-    fn parse_subtitle_cue_non_subtitle_pes_returns_none() {
-        use skyfire_ts::parse_subtitle_pes;
-        // A minimal PES payload that starts with 0x00 (not 0x20) — e.g. a
-        // padding_stream PES multiplexed on the same PID as a subtitle PID.
-        let non_subtitle_payload: &[u8] = &[0x00, 0xBE, 0x01, 0x02, 0x03];
-        let result = parse_subtitle_pes(0x0042, Some(100_000), non_subtitle_payload);
-        assert!(result.is_none(), "non-subtitle PES must return None");
+    fn non_subtitle_pes_yields_no_cues() {
+        // Use an audio fixture (gulli-15s.ts has no subtitle PID). Tell the bridge
+        // to "select" the audio PID as subtitle — its PES data does not start with
+        // 0x20, so the compositor must not emit cues.
+        let data = load_fixture("gulli-15s.ts");
+        let mut bridge = SkyfireBridge::new();
+
+        // Select audio PID 0x0101 as the "subtitle" PID.
+        bridge.select_subtitle(Some(0x0101));
+
+        for chunk in data.chunks(4096) {
+            bridge.feed(chunk);
+        }
+        bridge.flush();
+
+        let cues = bridge.take_subtitle_cues();
+        assert!(
+            cues.is_empty(),
+            "audio-PID data fed as subtitle must produce no cues, got {}",
+            cues.len()
+        );
     }
 
     /// Bridge: gulli-15s.ts has no subtitle PID — feed data, assert:

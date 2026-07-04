@@ -32,28 +32,6 @@ pub struct DecodedAudio {
     pub channels: u16,
 }
 
-/// Decode a single E-AC-3 syncframe (packet) into interleaved PCM.
-///
-/// `data` must contain one or more concatenated E-AC-3 syncframes
-/// starting with the `0x0B77` syncword.  The `state` persists
-/// IMDCT overlap-add history across calls.
-///
-/// # Errors
-///
-/// Returns an error if the packet is malformed or the decoder hits an
-/// unsupported feature.
-pub fn decode_eac3_packet(
-    state: &mut eac3::Eac3DecoderState,
-    data: &[u8],
-) -> Result<DecodedAudio, String> {
-    let frame = eac3::decode_eac3_packet(state, data).map_err(|e| e.to_string())?;
-    Ok(DecodedAudio {
-        pcm_s16le: frame.pcm_s16le,
-        sample_rate: frame.sample_rate,
-        channels: frame.channels,
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Incremental decoder
 // ---------------------------------------------------------------------------
@@ -62,8 +40,7 @@ pub fn decode_eac3_packet(
 ///
 /// Wraps `oxideav_ac3::decoder::make_decoder` — the unified decoder that
 /// dispatches base AC-3 (bsid ≤ 8) and E-AC-3 (Annex E, bsid 11–16) per
-/// syncframe, so both codecs decode (issue #43; the older E-AC-3-only
-/// `decode_eac3_packet` left base AC-3 silent). Holds decode state across
+/// syncframe, so both codecs decode. Holds decode state across
 /// calls; use one per audio PID and [`reset`](Self::reset) when switching PIDs.
 pub struct IncrementalDecoder {
     dec: Box<dyn Decoder>,

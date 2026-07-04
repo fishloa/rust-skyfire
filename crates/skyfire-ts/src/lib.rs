@@ -247,58 +247,6 @@ impl Default for TsDemux {
 }
 
 // ---------------------------------------------------------------------------
-// SubtitleCue — kept for the subtitle compositor
-// ---------------------------------------------------------------------------
-
-use broadcast_common::traits::Parse;
-use dvb_subtitle::{AnySegment, PesDataField};
-
-/// One parsed DVB subtitle cue, ready to surface to the browser overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubtitleCue {
-    /// PES PTS in 90 kHz ticks.
-    pub start_pts: u64,
-    /// Estimated end PTS = `start_pts` + `page_time_out` × `90_000`.
-    pub end_pts: u64,
-    /// PID this cue came from.
-    pub pid: u16,
-    /// Raw PES data field bytes (ETSI EN 300 743).
-    pub bytes: Vec<u8>,
-}
-
-/// Try to parse a DVB subtitle PES payload into a [`SubtitleCue`].
-#[must_use]
-pub fn parse_subtitle_pes(
-    pid: u16,
-    start_pts: Option<u64>,
-    es_bytes: &[u8],
-) -> Option<SubtitleCue> {
-    if es_bytes.first() != Some(&dvb_subtitle::DataIdentifier) {
-        return None;
-    }
-
-    let field = PesDataField::parse(es_bytes).ok()?;
-
-    let page_time_out_secs: Option<u8> = field.segments.iter().find_map(|seg| {
-        if let AnySegment::PageComposition(pcs) = seg {
-            Some(pcs.page_time_out)
-        } else {
-            None
-        }
-    });
-
-    let pts = start_pts.unwrap_or(0);
-    let end_pts = page_time_out_secs.map_or(pts, |t| pts.saturating_add(u64::from(t) * 90_000));
-
-    Some(SubtitleCue {
-        start_pts: pts,
-        end_pts,
-        pid,
-        bytes: es_bytes.to_vec(),
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
