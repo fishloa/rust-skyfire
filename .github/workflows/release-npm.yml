@@ -14,7 +14,10 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "20", registry-url: "https://registry.npmjs.org" }
       - name: Build core wasm (bundler)
-        run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+        # --out-dir MUST be absolute: wasm-pack resolves a relative --out-dir
+        # against the CRATE dir (→ crates/skyfire-wasm/packages/core/pkg), leaving
+        # the real packages/core/pkg empty and the tarball WASM-less (#76).
+        run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir "$GITHUB_WORKSPACE/packages/core/pkg"
       - name: Strip pkg/.gitignore (else npm excludes the wasm)
         run: rm -f packages/core/pkg/.gitignore
       - name: Publish @skyfire/core

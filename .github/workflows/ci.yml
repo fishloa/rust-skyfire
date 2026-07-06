@@ -66,7 +66,10 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
-      - run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir packages/core/pkg
+      # --out-dir MUST be absolute: wasm-pack resolves a relative --out-dir against
+      # the crate dir, not the repo root — a relative path silently builds into
+      # crates/skyfire-wasm/packages/core/pkg and leaves the tarball WASM-less (#76).
+      - run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir "$GITHUB_WORKSPACE/packages/core/pkg"
       - run: rm -f packages/core/pkg/.gitignore
       - run: cd packages/core && npm pack --dry-run
       - run: cd packages/player && npm pack --dry-run

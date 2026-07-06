@@ -38,3 +38,5 @@ packages/*/*.tgz
 # SDD scratch (subagent ledger/reports)
 .superpowers/
 .claude/
+crates/skyfire-wasm/packages/
+crates/skyfire-wasm/web/
