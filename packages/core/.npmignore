@@ -1,0 +1,8 @@
+# Belt-and-suspenders. The real fix for shipping the WASM is enumerating the
+# pkg/ files EXPLICITLY in package.json "files" — npm's packlist otherwise
+# excludes the whole pkg/ directory because it contains its own package.json
+# (wasm-pack --target bundler output), which npm (esp. node20/npm10 in CI)
+# treats as a nested-package boundary and skips. Listing each pkg file by path
+# bypasses that. This file's presence also stops npm consulting the repo
+# .gitignore (which ignores packages/*/pkg/). See rust-skyfire#76. Excludes
+# nothing itself — "files" governs the tarball.

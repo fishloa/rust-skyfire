@@ -1,12 +1,16 @@
 {
   "name": "@firemedia/skyfire-core",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "In-browser DVB player bridge: MPEG-TS demux + WASM AC-3/E-AC-3 decode + audio-master A/V sync + DVB-subtitle compositing. Host wires WebCodecs/WebAudio.",
   "type": "module",
   "main": "skyfire-core.js",
   "module": "skyfire-core.js",
   "types": "index.d.ts",
-  "files": ["skyfire-core.js", "index.d.ts", "pkg/", "README.md"],
+  "files": [
+    "skyfire-core.js", "index.d.ts", "README.md",
+    "pkg/skyfire_wasm.js", "pkg/skyfire_wasm_bg.js", "pkg/skyfire_wasm_bg.wasm",
+    "pkg/skyfire_wasm.d.ts", "pkg/skyfire_wasm_bg.wasm.d.ts", "pkg/package.json"
+  ],
   "sideEffects": ["./pkg/skyfire_wasm.js"],
   "license": "MIT OR Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/fishloa/rust-skyfire" },
