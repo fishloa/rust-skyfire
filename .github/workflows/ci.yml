@@ -87,6 +87,23 @@ jobs:
             }
             process.exit(bad);
           '
+      # Clean-install smoke test: pack the REAL tarballs, install them into a bare
+      # vite app (as a downstream consumer would), and build. Catches missing
+      # files (rust-skyfire#76) AND facade/wasm-import mistakes that only surface
+      # in a bundler — neither `npm pack --dry-run` nor tsc can see these.
+      - name: Consumer build smoke test (pack → vite build)
+        run: |
+          set -e
+          CORE=$(cd packages/core && npm pack --silent)
+          PLAYER=$(cd packages/player && npm pack --silent)
+          WS="$PWD"
+          rm -rf /tmp/smoke && mkdir -p /tmp/smoke/src && cd /tmp/smoke
+          echo '{ "name":"smoke","private":true,"type":"module","version":"0.0.0" }' > package.json
+          printf 'import wasm from "vite-plugin-wasm";\nimport tla from "vite-plugin-top-level-await";\nexport default { plugins:[wasm(),tla()], logLevel:"warn" };\n' > vite.config.js
+          printf 'import { SkyfirePlayer } from "@firemedia/skyfire-player";\nimport { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";\nif(!SkyfirePlayer||!initSkyfire||!SkyfireBridge) throw new Error("missing exports");\n' > src/main.js
+          printf '<!doctype html><script type="module" src="/src/main.js"></script>\n' > index.html
+          npm i --no-audit --no-fund vite@5 vite-plugin-wasm vite-plugin-top-level-await "$WS/packages/core/$CORE" "$WS/packages/player/$PLAYER"
+          npx vite build
       - uses: oven-sh/setup-bun@v2
       - run: bun test packages/player/hls-source.test.js
       - run: npx -y -p typescript@5 tsc --noEmit packages/core/index.d.ts
