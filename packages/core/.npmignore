@@ -1,10 +1,8 @@
-# The PRESENCE of this file is the point: with an .npmignore, npm does NOT
-# consult the repo .gitignore when packing. The root .gitignore ignores
-# `packages/*/pkg/` (the wasm-pack build output), and some npm versions
-# (node20 / npm 10 in CI) exclude gitignored paths from the tarball EVEN when
-# listed in package.json "files" — which shipped an empty pkg/ and broke every
-# consumer on `./pkg/skyfire_wasm.js` (rust-skyfire#76 follow-up).
-#
-# With this file present, the "files" allowlist alone governs the tarball, so
-# the built pkg/ (WASM) ships. Do not delete. Add real exclusions below only if
-# ever needed — "files" already restricts the tarball, so none are required.
+# Belt-and-suspenders. The real fix for shipping the WASM is enumerating the
+# pkg/ files EXPLICITLY in package.json "files" — npm's packlist otherwise
+# excludes the whole pkg/ directory because it contains its own package.json
+# (wasm-pack --target bundler output), which npm (esp. node20/npm10 in CI)
+# treats as a nested-package boundary and skips. Listing each pkg file by path
+# bypasses that. This file's presence also stops npm consulting the repo
+# .gitignore (which ignores packages/*/pkg/). See rust-skyfire#76. Excludes
+# nothing itself — "files" governs the tarball.
