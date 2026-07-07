@@ -8,7 +8,11 @@
 // the main thread — the audio-master clock (#32) is derived from that: media
 // time = framesPlayed / sampleRate.
 
-const RING_CAPACITY_FRAMES = 48000 * 4; // ~4 s of headroom at 48 kHz
+// Fixed (never grows). 8 s = the player's ~3 s feed lead + one ~4 s segment
+// burst, with margin — so a paced feed never overflows (overflow drops audio and
+// freezes the audio-master clock). The player's backpressure keeps actual
+// occupancy ~3-4 s; this is headroom, not a target.
+const RING_CAPACITY_FRAMES = 48000 * 8;
 
 class SkyfirePcmProcessor extends AudioWorkletProcessor {
   constructor() {

@@ -17,8 +17,15 @@ async function sampleSeries(page, src, { durMs = 12_000 } = {}) {
     const out = []; const t0 = Date.now();
     const tick = () => {
       const s = window.__sfStats;
+      // Enable the first subtitle track as soon as it resolves (subs default off,
+      // like any player) so DVB-sub cue decoding can be verified.
+      if (s && s.tracks?.subtitle?.length && !window.__sfSubSel) {
+        window.__sfSubSel = true;
+        try { window.__sfPlayer?.selectSubtitle(s.tracks.subtitle[0].pid); } catch (_) {}
+      }
       if (s) out.push({ t: Date.now() - t0, decoded: s.decoded, drawn: s.drawn,
-                        audioSamples: s.audioSamples, avSkewMs: s.avSkewMs,
+                        audioSamples: s.audioSamples, audioFrames: s.audioFrames,
+                        avSkewMs: s.avSkewMs,
                         w: s.w, h: s.h, subCues: s.subCues,
                         selectedAudio: s.selectedAudio, decodedAudioPid: s.decodedAudioPid,
                         tracks: s.tracks, done: !!s.done });
@@ -33,13 +40,16 @@ async function sampleSeries(page, src, { durMs = 12_000 } = {}) {
   return { series, real };
 }
 
-// The longest run of consecutive samples where a counter did not advance.
+// Longest run (ms) where a counter did not advance, measured only AFTER it first
+// moves — startup latency (decode + first-buffer) is not a stutter. Captures the
+// tail gap (frozen until the end) so a mid-stream freeze is caught.
 function maxStallMs(series, key) {
-  let worst = 0, lastAdvanceT = series[0]?.t ?? 0, prev = series[0]?.[key] ?? 0;
+  let worst = 0, lastAdvanceT = null, prev = null;
   for (const s of series) {
+    if (prev === null) { if (s[key] > 0) { prev = s[key]; lastAdvanceT = s.t; } continue; }
     if (s[key] > prev) { worst = Math.max(worst, s.t - lastAdvanceT); lastAdvanceT = s.t; prev = s[key]; }
   }
-  // Also account for the tail (no advance until the end).
+  if (lastAdvanceT === null) return Infinity; // never advanced at all → total stall
   const endT = series[series.length - 1]?.t ?? 0;
   return Math.max(worst, endT - lastAdvanceT);
 }
@@ -51,19 +61,25 @@ for (const stream of registry) {
     expect(series.length, "must collect stats samples").toBeGreaterThan(3);
     const last = series[series.length - 1];
 
-    // ── Video: dimensions + continuous decode, no long stall. ──
+    // ── Video: dims + decoding completeness + smooth PRESENTATION. ──
+    // decoded/audioSamples are FED counters — intentionally bursty under the
+    // player's feed backpressure, so continuity is asserted on what the user
+    // actually sees/hears: drawn (frames presented) and audioFrames (frames
+    // played by the worklet clock).
     if (stream.video) {
       expect(last.w, "video width").toBe(stream.video.width);
       expect(last.h, "video height").toBe(stream.video.height);
     }
-    expect(last.decoded, "final decoded frames")
+    expect(last.decoded, "frames decoded")
       .toBeGreaterThan(stream.min_video_frames);
-    expect(maxStallMs(series, "decoded"), "no video stall > 800ms")
+    expect(maxStallMs(series, "drawn"), "no video PRESENTATION stall > 800ms")
       .toBeLessThan(800);
+    expect(last.drawn, "frames actually presented (realtime progress)")
+      .toBeGreaterThan(stream.min_video_frames * 0.4);
 
-    // ── Audio: continuous PCM, no long silence. ──
-    expect(last.audioSamples, "audio PCM samples").toBeGreaterThan(10_000);
-    expect(maxStallMs(series, "audioSamples"), "no audio dropout > 800ms")
+    // ── Audio: PCM decoded + continuous PLAYBACK (worklet clock advances). ──
+    expect(last.audioSamples, "audio PCM decoded").toBeGreaterThan(10_000);
+    expect(maxStallMs(series, "audioFrames"), "no audio PLAYBACK dropout > 800ms")
       .toBeLessThan(800);
 
     // ── A/V skew bounded whenever it is reported. ──
