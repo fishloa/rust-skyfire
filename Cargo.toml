@@ -9,6 +9,7 @@ members = [
     "crates/skyfire-wasm",
     "crates/skyfire-cli",
     "crates/skyfire-hls",
+    "crates/skyfire-server",
 ]
 
 [workspace.package]
