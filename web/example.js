@@ -41,6 +41,7 @@ const player = new SkyfirePlayer(canvas, {
 });
 
 // Re-expose the stats object that the e2e harness reads via window.__sfStats.
+window.__sfPlayer = player;
 player.on("stats", (s) => {
   window.__sfStats = s;
   if (s.status) status(s.status);

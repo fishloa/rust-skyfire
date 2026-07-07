@@ -50,6 +50,8 @@ export class SkyfirePlayer {
       decoded: 0, drawn: 0, dropped: 0, w: 0, h: 0, aus: 0, path: "wc",
       audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0, avSkewMs: 0,
       videoPath: "", mseSegments: 0, videoCurrentTime: 0,
+      tracks: { audio: [], subtitle: [] },
+      selectedAudio: null, decodedAudioPid: null, subCues: 0,
     };
 
     // ── video decoder ─────────────────────────────────────────────────────────
@@ -150,6 +152,7 @@ export class SkyfirePlayer {
   selectAudio(pid) {
     if (this._destroyed) return;
     this._callBridge("select_audio", pid);
+    this._stats.selectedAudio = pid;
     this._status(`audio → pid ${pid}`);
   }
 
@@ -600,6 +603,9 @@ export class SkyfirePlayer {
       const samples = c.samples;
       this._stats.audioChunks++;
       this._stats.audioSamples += samples.length;
+      if (this.bridge && typeof this.bridge.selected_audio_pid !== "undefined") {
+        this._stats.decodedAudioPid = this.bridge.selected_audio_pid ?? null;
+      }
       this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
       c.free?.();
     }
@@ -880,6 +886,7 @@ export class SkyfirePlayer {
               this._status(`audio → pid ${this.opts.audioPid}`);
             }
             // Emit tracks event so the host can populate its pickers.
+            this._stats.tracks = { audio: tl.audio ?? [], subtitle: tl.subtitles ?? [] };
             this._emit("tracks", tl);
           }
         }
