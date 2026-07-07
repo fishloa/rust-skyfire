@@ -544,7 +544,12 @@ export class SkyfirePlayer {
     this._outputChannels = passthrough ? nativeChannels : 2;
     this._downmixActive = !passthrough && nativeChannels > 2;
 
-    await this._audioCtx.audioWorklet.addModule("./audio-worklet.js");
+    // Resolve the worklet relative to THIS module (the package), not the page —
+    // addModule() otherwise resolves against the document base, which 404s in any
+    // consumer app that isn't serving its own ./audio-worklet.js. `new URL(...,
+    // import.meta.url)` points at the shipped packages/player/audio-worklet.js and
+    // is the pattern bundlers (vite/webpack) emit as an asset.
+    await this._audioCtx.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
     this._audioNode = new AudioWorkletNode(this._audioCtx, "skyfire-pcm", {
       numberOfOutputs: 1,
       outputChannelCount: [this._outputChannels],
