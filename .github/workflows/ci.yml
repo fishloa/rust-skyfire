@@ -73,10 +73,12 @@ jobs:
       - run: rm -f packages/core/pkg/.gitignore
       - run: cd packages/core && npm pack --dry-run
       - run: cd packages/player && npm pack --dry-run
-      # Guard: every locally-imported sibling (`from "./x.js"`) of each package's
-      # entry MUST be in the published tarball, else consumer builds fail
-      # (rust-skyfire#76 — hls-source.js was omitted from the 0.2.0 files field).
-      - name: Verify tarballs ship every imported sibling
+      # Guard: every locally-referenced sibling of each package's entry MUST be in
+      # the published tarball, else consumer builds/runtime break. Covers both
+      #   import ... from "./x.js"                 (rust-skyfire#76 — hls-source.js)
+      #   new URL("./x.js", import.meta.url)       (the AudioWorklet — a RUNTIME
+      #     addModule() that a build-only check can't see; was omitted pre-0.2.3).
+      - name: Verify tarballs ship every referenced sibling
         run: |
           node -e '
             const {execSync}=require("child_process"), fs=require("fs");
@@ -84,8 +86,9 @@ jobs:
             for (const [dir,entry] of [["packages/core","skyfire-core.js"],["packages/player","skyfire-player.js"]]) {
               const packed=new Set(JSON.parse(execSync("npm pack --dry-run --json",{cwd:dir})) [0].files.map(f=>f.path));
               const src=fs.readFileSync(dir+"/"+entry,"utf8");
-              for (const m of src.matchAll(/from\s+"\.\/([A-Za-z0-9_-]+\.js)"/g)) {
-                if (!packed.has(m[1])) { console.error(`MISSING from ${dir} tarball: ${m[1]} (imported by ${entry})`); bad=1; }
+              const refs=[...src.matchAll(/from\s+"\.\/([A-Za-z0-9_-]+\.js)"/g), ...src.matchAll(/new URL\(\s*"\.\/([A-Za-z0-9_-]+\.js)"/g)];
+              for (const m of refs) {
+                if (!packed.has(m[1])) { console.error(`MISSING from ${dir} tarball: ${m[1]} (referenced by ${entry})`); bad=1; }
               }
             }
             process.exit(bad);
