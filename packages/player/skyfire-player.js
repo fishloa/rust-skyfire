@@ -123,7 +123,9 @@ export class SkyfirePlayer {
     // Feed backpressure: keep the pipeline at most this many seconds of audio
     // ahead of the play clock, so the worklet's fixed ring never overflows
     // (overflow drops audio and freezes the audio-master clock → video stalls).
-    this._AUDIO_LEAD_S = 3;
+    // 10 s absorbs network/segment jitter; must stay below the worklet ring
+    // (16 s) minus one segment burst. Lower it for low-latency live via opts.
+    this._AUDIO_LEAD_S = opts.audioLeadSeconds ?? 10;
 
     // Bind user-gesture audio resume so we can remove it on destroy.
     this._startAudioBound = () => this._startAudio();
