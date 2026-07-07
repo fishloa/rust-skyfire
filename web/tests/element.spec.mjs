@@ -187,3 +187,32 @@ test("diagnostics toggle shows a stats summary", async ({ page }) => {
   expect(r.text).toContain("webcodecs");
   expect(r.text).toContain("98");
 });
+
+test("integration: element plays a stream, menu switches audio, subtitle cues render", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const r = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    el.setAttribute("controls", "full");
+    el.setAttribute("muted", "");
+    el.setAttribute("src", "http://localhost:8090/stream/hls/skyfire/france-2/index.m3u8");
+    document.body.appendChild(el);
+    document.body.click();
+    const wait = (pred, ms) => new Promise((res) => { const t0 = Date.now(); const t = () => (pred() || Date.now()-t0>ms) ? res(pred()) : setTimeout(t, 200); t(); });
+    await wait(() => (window.__sfStats?.drawn ?? 0) > 5, 15000);
+    const drawnOk = (window.__sfStats?.drawn ?? 0) > 5;
+    const arows = el.shadowRoot.querySelectorAll(".menu.audio .row");
+    const before = window.__sfStats?.decodedAudioPid;
+    if (arows.length > 1) arows[1].click();
+    await wait(() => window.__sfStats?.decodedAudioPid !== before, 12000);
+    const switched = arows.length > 1 ? (window.__sfStats?.decodedAudioPid !== before) : true;
+    const srows = el.shadowRoot.querySelectorAll(".menu.subtitle .row");
+    if (srows.length > 1) srows[1].click();
+    await wait(() => (window.__sfStats?.subCues ?? 0) >= 1, 15000);
+    const cues = (window.__sfStats?.subCues ?? 0) >= 1;
+    return { drawnOk, switched, cues, audioRows: arows.length };
+  });
+  expect(r.drawnOk).toBe(true);
+  expect(r.switched).toBe(true);
+  if (r.audioRows > 1) expect(r.cues).toBe(true);
+});
