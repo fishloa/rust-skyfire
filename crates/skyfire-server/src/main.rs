@@ -19,7 +19,24 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let mgr = std::sync::Arc::new(manager::Manager::new(args.fixtures, args.live));
+    let live = args.live.clone();
+    let mgr = std::sync::Arc::new(manager::Manager::new(args.fixtures, live.clone()));
+
+    for slug in &live {
+        let mgr = mgr.clone();
+        let slug = slug.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(200));
+            loop {
+                ticker.tick().await;
+                mgr.feed_live_step(&slug, 256 * 1024);
+                if mgr.at_eof(&slug) {
+                    break;
+                }
+            }
+        });
+    }
+
     let app = routes::router(mgr);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");

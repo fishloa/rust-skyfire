@@ -9,6 +9,7 @@ pub struct Manager {
     dir: PathBuf,
     live: Vec<String>,
     sessions: Mutex<HashMap<String, HlsSession>>,
+    live_files: Mutex<HashMap<String, (Vec<u8>, usize)>>,
 }
 
 impl Manager {
@@ -18,6 +19,7 @@ impl Manager {
             dir: dir.into(),
             live,
             sessions: Mutex::new(HashMap::new()),
+            live_files: Mutex::new(HashMap::new()),
         }
     }
 
@@ -40,6 +42,10 @@ impl Manager {
     }
 
     fn ensure(&self, slug: &str) -> bool {
+        // Live slugs are fed incrementally via feed_live_step — do NOT feed fully.
+        if self.live.iter().any(|s| s == slug) {
+            return self.sessions.lock().unwrap().contains_key(slug);
+        }
         let mut map = self.sessions.lock().unwrap();
         if map.contains_key(slug) {
             return true;
@@ -48,13 +54,7 @@ impl Manager {
         let Ok(data) = std::fs::read(&path) else {
             return false;
         };
-        let mut session = if self.live.iter().any(|s| s == slug) {
-            HlsSession::new(HlsConfig::rolling(6))
-        } else {
-            HlsSession::new(HlsConfig::vod())
-        };
-        // VOD: feed the whole file up front (deterministic). Live mode feeds
-        // incrementally on a timer — added in Task 6; for now feed fully.
+        let mut session = HlsSession::new(HlsConfig::vod());
         session.feed(&data);
         session.finish();
         map.insert(slug.to_string(), session);
@@ -86,6 +86,57 @@ impl Manager {
         }
         let map = self.sessions.lock().unwrap();
         map.get(slug).and_then(|s| s.segment(name))
+    }
+
+    /// Feed the next `step` bytes of a live slug's file into its session.
+    /// No-op once EOF is reached. Creates the rolling session on first call.
+    pub fn feed_live_step(&self, slug: &str, step: usize) {
+        if !self.live.iter().any(|s| s == slug) {
+            // Non-live slugs are served whole via ensure().
+            let _ = self.ensure(slug);
+            return;
+        }
+        {
+            // Lazily load the file + create the session.
+            let mut files = self.live_files.lock().unwrap();
+            if !files.contains_key(slug) {
+                let path = self.dir.join(format!("{slug}.ts"));
+                let Ok(data) = std::fs::read(&path) else {
+                    return;
+                };
+                files.insert(slug.to_string(), (data, 0));
+                self.sessions
+                    .lock()
+                    .unwrap()
+                    .entry(slug.to_string())
+                    .or_insert_with(|| HlsSession::new(HlsConfig::rolling(6)));
+            }
+        }
+        let mut files = self.live_files.lock().unwrap();
+        let Some((data, cursor)) = files.get_mut(slug) else {
+            return;
+        };
+        if *cursor >= data.len() {
+            return;
+        }
+        let end = (*cursor + step).min(data.len());
+        let chunk = data[*cursor..end].to_vec();
+        *cursor = end;
+        let eof = *cursor >= data.len();
+        drop(files);
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(s) = sessions.get_mut(slug) {
+            s.feed(&chunk);
+            if eof {
+                s.finish();
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn at_eof(&self, slug: &str) -> bool {
+        let files = self.live_files.lock().unwrap();
+        files.get(slug).is_some_and(|(d, c)| *c >= d.len())
     }
 
     #[must_use]
