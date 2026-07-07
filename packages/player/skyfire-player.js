@@ -73,6 +73,8 @@ export class SkyfirePlayer {
     this._firstAudioPtsUs = null;
     this._audioFramesPlayed = 0;
     this._audioSamplesFed = 0;   // interleaved PCM samples posted to the worklet
+    this._videoWallAnchorMs = null;  // wall-clock anchor for video pacing sans audio
+    this._videoWallAnchorUs = 0;
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
 
@@ -485,15 +487,35 @@ export class SkyfirePlayer {
     requestAnimationFrame(() => this._present());
   }
 
+  /**
+   * Wall-clock media time, anchored to the first queued frame. Used to pace video
+   * at 1× real time when there is no audio-master clock yet (audio not started, or
+   * a video-only stream). Without this the present loop drew one frame per
+   * animation-frame (~60 Hz) → video ran ~2× fast until audio took over.
+   */
+  _videoClockUs() {
+    if (!this._presentQueue.length) return null;
+    const now = performance.now();
+    if (this._videoWallAnchorMs === null) {
+      this._videoWallAnchorMs = now;
+      this._videoWallAnchorUs = this._presentQueue[0].ts;
+    }
+    return this._videoWallAnchorUs + (now - this._videoWallAnchorMs) * 1000;
+  }
+
   _present() {
     if (this._destroyed) return;
     this._presentScheduled = false;
-    const clock = this._audioClockUs();
+    let clock = this._audioClockUs();
+    if (clock !== null) {
+      // Audio is master; drop the wall anchor so a later audio dropout re-anchors.
+      this._videoWallAnchorMs = null;
+    } else {
+      clock = this._videoClockUs();
+    }
 
     if (clock === null) {
-      const e = this._presentQueue.shift();
-      if (e) this._drawFrame(e.frame);
-      this._renderSubs(this._lastVideoTs || null);
+      // No clock at all yet (first frame not queued) — nothing to pace.
       if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
       return;
     }
@@ -600,7 +622,9 @@ export class SkyfirePlayer {
     this._audioNode.port.onmessage = (e) => {
       if (e.data.type === "clock") {
         this._audioFramesPlayed = e.data.framesPlayed;
+        this._audioUnderruns = e.data.underruns ?? 0;
         this._stats.audioFrames = this._audioFramesPlayed;
+        this._stats.audioUnderruns = this._audioUnderruns;
         this._stats.audioSec = this._audioFramesPlayed / this._audioSampleRate;
         this._schedulePresent();
       }

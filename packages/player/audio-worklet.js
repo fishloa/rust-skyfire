@@ -29,6 +29,7 @@ class SkyfirePcmProcessor extends AudioWorkletProcessor {
 
     this.framesPlayed = 0;
     this.reportCounter = 0;
+    this.underruns = 0;   // quanta that ran short of PCM (padded silence → audible gap)
 
     this.port.onmessage = (e) => {
       const msg = e.data;
@@ -106,11 +107,13 @@ class SkyfirePcmProcessor extends AudioWorkletProcessor {
       this.available -= framesToPlay * this.channels;
       this.framesPlayed += framesToPlay;
     }
+    // A quantum that ran short of PCM padded silence → an audible gap.
+    if (framesToPlay < frameLen) this.underruns++;
 
     // Report the clock ~every 10 quanta (~27 ms at 128-frame quanta).
     if (++this.reportCounter >= 10) {
       this.reportCounter = 0;
-      this.port.postMessage({ type: "clock", framesPlayed: this.framesPlayed });
+      this.port.postMessage({ type: "clock", framesPlayed: this.framesPlayed, underruns: this.underruns });
     }
 
     return true;

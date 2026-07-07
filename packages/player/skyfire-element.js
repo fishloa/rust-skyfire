@@ -200,10 +200,16 @@ export class SkyfirePlayerElement extends HTMLElement {
       if (this._state === "buffering") this._setState("playing");
     }
     if (!this._diagEl.hidden) {
+      const e = this._engine || {};
+      const ctxRate = e._audioCtx?.sampleRate;
+      const pcmRate = e._audioSampleRate;
+      const rateWarn = (ctxRate && pcmRate && ctxRate !== pcmRate) ? "  ⚠ MISMATCH" : "";
       this._diagEl.textContent =
         `path: ${s.videoPath || "?"}\n` +
         `video: ${s.decoded ?? 0} dec / ${s.drawn ?? 0} drawn\n` +
-        `audio: ${s.audioFrames ?? 0} frames\n` +
+        `audio: ${s.audioFrames ?? 0} frames (${s.audioSec ? s.audioSec.toFixed(1) : 0}s)\n` +
+        `ctx rate: ${ctxRate ?? "?"} / pcm: ${pcmRate ?? "?"}${rateWarn}\n` +
+        `ahead: ${e._audioAheadSeconds ? e._audioAheadSeconds().toFixed(1) : "?"}s\n` +
         `skew: ${s.avSkewMs ?? 0} ms`;
     }
     this._lastProgress = { t: now, drawn: s.drawn || 0, audioFrames: s.audioFrames || 0 };
