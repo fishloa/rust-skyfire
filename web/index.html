@@ -4,80 +4,29 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skyfire — DVB Player</title>
-<!--
-  Import map — resolves bare @firemedia/* specifiers for the raw-browser example
-  (no bundler).  The example uses the --target web WASM build in web/pkg/ via
-  web/skyfire-core-web.js.  npm consumers use packages/core (--target bundler)
-  and resolve @firemedia/skyfire-core through their bundler instead.
--->
 <script type="importmap">
-{
-  "imports": {
-    "@firemedia/skyfire-player": "../packages/player/skyfire-player.js",
-    "@firemedia/skyfire-core":   "./skyfire-core-web.js"
-  }
-}
+{ "imports": {
+  "@firemedia/skyfire-player": "../packages/player/skyfire-player.js",
+  "@firemedia/skyfire-core":   "./skyfire-core-web.js"
+} }
 </script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #000; color: #ccc; font: 14px/1.5 system-ui, sans-serif; overflow: hidden; }
-
-  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-  #canvas { display: block; max-width: 100vw; max-height: 100vh; object-fit: contain; }
-
-  /* Subtitle overlay — above the video, below the controls. */
-  #subs {
-    position: fixed; left: 0; right: 0; bottom: 12%; z-index: 15;
-    display: flex; justify-content: center; pointer-events: none;
-  }
-  #subs canvas { max-width: 90vw; image-rendering: auto; }
-
-  #overlay {
-    position: fixed; top: 0; left: 0; z-index: 10;
-    padding: 8px 12px; background: rgba(0,0,0,0.7);
-    font-variant-numeric: tabular-nums; pointer-events: none;
-  }
-
-  /* Control bar. */
-  #controls {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
-    display: flex; gap: 12px; align-items: center;
-    padding: 10px 14px; background: rgba(0,0,0,0.8);
-    opacity: 0; transition: opacity 0.2s;
-  }
-  body:hover #controls, #controls:focus-within { opacity: 1; }
-  #controls label { color: #999; font-size: 12px; }
-  #controls select, #controls button {
-    background: #1a1a1a; color: #eee; border: 1px solid #444;
-    border-radius: 4px; padding: 4px 8px; font: inherit; cursor: pointer;
-  }
-  #controls .spacer { flex: 1; }
-
-  #error {
-    display: none; position: fixed; bottom: 56px; left: 0; right: 0; z-index: 25;
-    padding: 12px; background: rgba(200,0,0,0.85); color: #fff;
-    white-space: pre-wrap; font-size: 12px;
-  }
+  html, body { margin: 0; height: 100%; background: #000; }
+  skyfire-player { position: fixed; inset: 0; }
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="canvas"></canvas></div>
-<div id="subs"></div>
-<div id="overlay"></div>
-<div id="error"></div>
-
-<div id="controls">
-  <button id="playpause" type="button">⏸ Pause</button>
-  <label for="audio-select">Audio</label>
-  <select id="audio-select" aria-label="Audio track"></select>
-  <label for="sub-select">Subtitles</label>
-  <select id="sub-select" aria-label="Subtitle track">
-    <option value="">Off</option>
-  </select>
-  <span class="spacer"></span>
-  <button id="mute" type="button">🔊 Mute</button>
-</div>
-
-<script type="module" src="./example.js"></script>
+<skyfire-player controls="full"></skyfire-player>
+<script type="module">
+  import "../packages/player/skyfire-element.js";
+  const el = document.querySelector("skyfire-player");
+  const p = new URLSearchParams(location.search);
+  if (p.get("video") === "mse") el.setAttribute("video", "mse");
+  el.setAttribute("src", p.get("src") || "/fixtures/h264-25fps.ts");
+  // Harness contract: expose the element as __sfPlayer (selectAudio/selectSubtitle
+  // delegate to the engine); __sfStats is mirrored by the element on every stats tick.
+  window.__sfPlayer = el;
+  el.addEventListener("sf-error", (e) => console.error("[skyfire]", e.detail?.message || e.detail));
+</script>
 </body>
 </html>
