@@ -35,5 +35,21 @@ print(json.dumps({
 PY
 )")
 done
-printf '[\n  %s\n]\n' "$(IFS=$',\n  '; echo "${entries[*]}")" > "$ROOT/fixtures/streams.json"
+if ((${#entries[@]})); then
+  # Build joined body explicitly — avoids bash-3.2 empty-array set -u abort and
+  # multi-char-IFS-first-char-only join bugs.
+  {
+    printf '[\n'
+    for i in "${!entries[@]}"; do
+      if (( i == ${#entries[@]} - 1 )); then
+        printf '  %s\n' "${entries[$i]}"
+      else
+        printf '  %s,\n' "${entries[$i]}"
+      fi
+    done
+    printf ']\n'
+  } > "$ROOT/fixtures/streams.json"
+else
+  printf '[]\n' > "$ROOT/fixtures/streams.json"
+fi
 echo "wrote fixtures/streams.json with ${#entries[@]} streams"

@@ -67,6 +67,12 @@ pub struct HlsSession {
     segments: VecDeque<StoredSegment>,
     next_seq: u64,
     media_sequence: u64, // first retained segment's sequence (rolling eviction)
+    // Monotonic non-decreasing max of `ceil(duration)` across ALL segments
+    // ever produced — never shrinks when a long segment rolls off the window.
+    target_duration: u64,
+    // Number of discontinuous segments that have rolled OFF the front of
+    // a rolling playlist (RFC 8216 §4.3.3.3).
+    discontinuity_sequence: u64,
     finished: bool,
 }
 
@@ -77,6 +83,7 @@ const MAX_PREBUFFER_SAMPLES: usize = 4096;
 impl HlsSession {
     #[must_use]
     pub fn new(cfg: HlsConfig) -> Self {
+        let default_td = cfg.target_secs as u64;
         Self {
             cfg,
             demux: TsDemux::new(),
@@ -90,6 +97,8 @@ impl HlsSession {
             segments: VecDeque::new(),
             next_seq: 0,
             media_sequence: 0,
+            target_duration: default_td,
+            discontinuity_sequence: 0,
             finished: false,
         }
     }
@@ -123,6 +132,8 @@ impl HlsSession {
                 &mut self.segments,
                 &mut self.next_seq,
                 &mut self.media_sequence,
+                &mut self.target_duration,
+                &mut self.discontinuity_sequence,
                 &self.cfg,
                 ts,
             );
@@ -131,17 +142,17 @@ impl HlsSession {
 
     #[must_use]
     pub fn playlist(&self) -> String {
-        let target = self
-            .segments
-            .iter()
-            .map(|s| s.duration.ceil() as u64)
-            .max()
-            .unwrap_or(u64::from(self.cfg.target_secs))
-            .max(1);
+        let target = self.target_duration.max(1);
         let mut out = String::new();
         out.push_str("#EXTM3U\n#EXT-X-VERSION:3\n");
         out.push_str(&format!("#EXT-X-TARGETDURATION:{target}\n"));
         out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", self.media_sequence));
+        if self.cfg.window.is_some() && self.discontinuity_sequence > 0 {
+            out.push_str(&format!(
+                "#EXT-X-DISCONTINUITY-SEQUENCE:{}\n",
+                self.discontinuity_sequence
+            ));
+        }
         if self.cfg.window.is_none() {
             out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
         }
@@ -181,9 +192,21 @@ impl HlsSession {
                 DemuxEvent::Sample { track_id, sample } => {
                     if self.seg.is_some() {
                         self.push_sample(track_id, sample);
-                    } else if !self.buffer_capped {
-                        self.buffer.push((track_id, sample));
-                        if self.buffer.len() >= MAX_PREBUFFER_SAMPLES {
+                    } else {
+                        let is_video = self.video_track_id.is_some_and(|v| v == track_id);
+                        if !self.buffer_capped || is_video {
+                            // Once capped (MAX_PREBUFFER_SAMPLES hit before
+                            // TracksResolved + first RAP), keep only video
+                            // samples so that a late sync-frame can still build
+                            // the segmenter.  Non-video samples are dropped.
+                            self.buffer.push((track_id, sample));
+                            if self.buffer.len() >= MAX_PREBUFFER_SAMPLES * 2 {
+                                // Hard guard: if even a capped video-only buffer
+                                // grows beyond reason, drain from front.
+                                self.buffer.remove(0);
+                            }
+                        }
+                        if !self.buffer_capped && self.buffer.len() >= MAX_PREBUFFER_SAMPLES {
                             self.buffer_capped = true;
                         }
                         self.try_build();
@@ -247,6 +270,8 @@ impl HlsSession {
                 &mut self.segments,
                 &mut self.next_seq,
                 &mut self.media_sequence,
+                &mut self.target_duration,
+                &mut self.discontinuity_sequence,
                 &self.cfg,
                 ts,
             );
@@ -257,11 +282,15 @@ impl HlsSession {
         segments: &mut VecDeque<StoredSegment>,
         next_seq: &mut u64,
         media_sequence: &mut u64,
+        target_duration: &mut u64,
+        discontinuity_sequence: &mut u64,
         cfg: &HlsConfig,
         ts: transmux::ts_hls::TsSegment,
     ) {
         let name = format!("{}{}.ts", cfg.uri_prefix, *next_seq);
         *next_seq += 1;
+        let dur_ceil = ts.duration.ceil() as u64;
+        *target_duration = (*target_duration).max(dur_ceil);
         segments.push_back(StoredSegment {
             name,
             bytes: Arc::new(ts.bytes),
@@ -270,8 +299,11 @@ impl HlsSession {
         });
         if let Some(window) = cfg.window {
             while segments.len() > window {
-                segments.pop_front();
+                let evicted = segments.pop_front().unwrap();
                 *media_sequence += 1;
+                if evicted.discontinuous {
+                    *discontinuity_sequence += 1;
+                }
             }
         }
     }
@@ -293,5 +325,34 @@ mod tests {
             "playlist must start with #EXTM3U"
         );
         assert!(!pl.contains(".ts"), "no segment URIs before any segment");
+    }
+
+    /// Prove a session still builds when the first video RAP arrives after the
+    /// pre-buffer cap has been hit (many non-RAP samples arrive first).
+    /// Feed the fixture 1 byte at a time: PAT/PMT/SDT arrive first, then video
+    /// PES — the segmenter must eventually build even if the cap was hit.
+    #[test]
+    fn build_after_buffer_capped_with_late_rap() {
+        let mut s = HlsSession::new(HlsConfig {
+            target_secs: 1,
+            window: None,
+            uri_prefix: "seg".into(),
+        });
+        let data = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/france2-8s.ts"),
+        )
+        .unwrap();
+        for b in data {
+            s.feed(&[b]);
+        }
+        s.finish();
+        assert!(
+            s.is_ready(),
+            "session must produce segments even when first RAP arrives late"
+        );
+        assert!(
+            s.playlist().lines().filter(|l| l.ends_with(".ts")).count() >= 1,
+            "playlist must list at least one segment"
+        );
     }
 }

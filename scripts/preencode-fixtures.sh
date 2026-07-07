@@ -36,11 +36,15 @@ encode_full() {
   # -copy_unknown + -map 0: preserve EVERY PID (video re-encoded; audio, DVB-sub,
   # teletext and other private/data PIDs copied verbatim, incl. types ffmpeg has
   # no decoder for). Without it, an unknown ES PID aborts the mux (#0:x unsupported).
+  # NOTE: -copyts is intentionally NOT used here — the progressive output is
+  # zero-based so that --sub-activity PTS ticks double as bare -ss seek offsets
+  # in the clip step below.  Video re-encode and audio/sub copy stay mutually
+  # in-sync when both are re-based together.
   ffmpeg -y -hide_banner -loglevel error -copy_unknown -i "$src" -map 0 \
     -c:v libx264 -profile:v high -pix_fmt yuv420p -preset veryfast \
     -g 50 -keyint_min 50 -sc_threshold 0 $vf \
     -b:v 2500k -maxrate 3000k -bufsize 5000k \
-    -c:a copy -c:s copy -copyts \
+    -c:a copy -c:s copy \
     -f mpegts "$out"
 }
 
