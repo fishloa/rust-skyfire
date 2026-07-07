@@ -7,7 +7,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::Serialize;
-use skyfire_ts::{AudioCodec, DemuxEvent, TrackKind, TsDemux, VideoCodec, track_meta};
+use skyfire_ts::{
+    AudioCodec, DemuxEvent, TrackKind, TsDemux, VideoCodec, audio_codec_str, track_meta,
+    video_codec_str,
+};
+use transmux::pipeline::CodecConfig;
 
 #[derive(Parser)]
 #[command(
@@ -22,6 +26,10 @@ struct Args {
     /// Output histogram and channel map as JSON
     #[arg(short = 'j', long)]
     json: bool,
+
+    /// Output compact probe JSON (video, audio, subtitle tracks, langs, dims)
+    #[arg(long)]
+    probe: bool,
 }
 
 /// Serializable representation of the probe output for --json.
@@ -167,6 +175,84 @@ fn print_json(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
+fn lang_str(m: &skyfire_ts::TrackMeta) -> Option<String> {
+    m.language.map(|b| String::from_utf8_lossy(&b).to_string())
+}
+
+#[derive(Serialize)]
+struct ProbeJson {
+    video: Option<VideoJson>,
+    audio: Vec<TrackJson>,
+    subtitle: Vec<TrackJson>,
+    default_audio_pid: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct VideoJson {
+    codec: String,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Serialize)]
+struct TrackJson {
+    pid: u16,
+    codec: String,
+    lang: Option<String>,
+}
+
+fn probe_full(data: &[u8]) -> ProbeJson {
+    let mut demux = TsDemux::new();
+    demux.feed(data);
+    demux.finish();
+    let mut video = None;
+    let mut audio = Vec::new();
+    let mut subtitle = Vec::new();
+    let mut default_audio_pid = None;
+    while let Some(ev) = demux.poll_event() {
+        if let DemuxEvent::TrackAdded(track) = ev {
+            let meta = track_meta(&track.spec);
+            let pid = meta.pid.unwrap_or(0);
+            match meta.kind {
+                TrackKind::Video(vc) if video.is_none() => {
+                    let (width, height) = match &track.spec.config {
+                        CodecConfig::Avc { width, height, .. }
+                        | CodecConfig::Hevc { width, height, .. } => (*width, *height),
+                        _ => (0, 0),
+                    };
+                    video = Some(VideoJson {
+                        codec: video_codec_str(vc).into(),
+                        width,
+                        height,
+                    });
+                }
+                TrackKind::Audio(ac) => {
+                    default_audio_pid.get_or_insert(pid);
+                    audio.push(TrackJson {
+                        pid,
+                        codec: audio_codec_str(ac).into(),
+                        lang: lang_str(&meta),
+                    });
+                }
+                TrackKind::Subtitle(_) => {
+                    subtitle.push(TrackJson {
+                        pid,
+                        codec: "DVBSUB".into(),
+                        lang: lang_str(&meta),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    ProbeJson {
+        video,
+        audio,
+        subtitle,
+        default_audio_pid,
+    }
+}
+
 fn main() {
     let args = Args::parse();
     let path = args.file.display().to_string();
@@ -178,6 +264,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if args.probe {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&probe_full(&data)).unwrap()
+        );
+        return;
+    }
 
     let hist = build_histogram(&data);
 
