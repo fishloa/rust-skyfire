@@ -43,3 +43,4 @@ packages/*/*.tgz
 .claude/
 crates/skyfire-wasm/packages/
 crates/skyfire-wasm/web/
+/.ts-captures/progressive/
