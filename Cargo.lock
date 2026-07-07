@@ -770,6 +770,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyfire-hls"
+version = "0.2.3"
+dependencies = [
+ "skyfire-ts",
+ "transmux",
+]
+
+[[package]]
 name = "skyfire-mpa"
 version = "0.2.3"
 dependencies = [
