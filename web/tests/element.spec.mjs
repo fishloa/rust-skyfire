@@ -10,7 +10,7 @@ test("registers <skyfire-player> and builds a shadow root with a video canvas", 
     el.setAttribute("controls", "none");
     document.body.appendChild(el);
     const sr = el.shadowRoot;
-    return !!sr && !!sr.querySelector("canvas.video") && !!sr.querySelector("canvas.subs");
+    return !!sr && !!sr.querySelector("canvas.video") && !!sr.querySelector(".subs canvas");
   });
   expect(ok).toBe(true);
 });
