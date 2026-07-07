@@ -7,7 +7,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::Serialize;
-use skyfire_ts::{AudioCodec, DemuxEvent, TrackKind, TsDemux, VideoCodec, track_meta};
+use skyfire_ts::{
+    AudioCodec, DemuxEvent, TrackKind, TsDemux, VideoCodec, audio_codec_str, track_meta,
+    video_codec_str,
+};
+use transmux::pipeline::CodecConfig;
 
 #[derive(Parser)]
 #[command(
@@ -22,6 +26,14 @@ struct Args {
     /// Output histogram and channel map as JSON
     #[arg(short = 'j', long)]
     json: bool,
+
+    /// Output compact probe JSON (video, audio, subtitle tracks, langs, dims)
+    #[arg(long)]
+    probe: bool,
+
+    /// Output DVB-subtitle page-composition timestamps (JSON array)
+    #[arg(long = "sub-activity")]
+    sub_activity: bool,
 }
 
 /// Serializable representation of the probe output for --json.
@@ -167,6 +179,148 @@ fn print_json(path: &str, data: &[u8], hist: &BTreeMap<u16, u64>) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
+fn lang_str(m: &skyfire_ts::TrackMeta) -> Option<String> {
+    m.language.map(|b| String::from_utf8_lossy(&b).to_string())
+}
+
+#[derive(Serialize)]
+struct ProbeJson {
+    video: Option<VideoJson>,
+    audio: Vec<TrackJson>,
+    subtitle: Vec<TrackJson>,
+    default_audio_pid: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct VideoJson {
+    codec: String,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Serialize)]
+struct TrackJson {
+    pid: u16,
+    codec: String,
+    lang: Option<String>,
+}
+
+fn probe_full(data: &[u8]) -> ProbeJson {
+    let mut demux = TsDemux::new();
+    demux.feed(data);
+    demux.finish();
+    let mut video = None;
+    let mut audio = Vec::new();
+    let mut subtitle = Vec::new();
+    let mut default_audio_pid = None;
+    while let Some(ev) = demux.poll_event() {
+        if let DemuxEvent::TrackAdded(track) = ev {
+            let meta = track_meta(&track.spec);
+            let pid = meta.pid.unwrap_or(0);
+            match meta.kind {
+                TrackKind::Video(vc) if video.is_none() => {
+                    let (width, height) = match &track.spec.config {
+                        CodecConfig::Avc { width, height, .. }
+                        | CodecConfig::Hevc { width, height, .. } => (*width, *height),
+                        _ => (0, 0),
+                    };
+                    video = Some(VideoJson {
+                        codec: video_codec_str(vc).into(),
+                        width,
+                        height,
+                    });
+                }
+                TrackKind::Audio(ac) => {
+                    default_audio_pid.get_or_insert(pid);
+                    audio.push(TrackJson {
+                        pid,
+                        codec: audio_codec_str(ac).into(),
+                        lang: lang_str(&meta),
+                    });
+                }
+                TrackKind::Subtitle(_) => {
+                    subtitle.push(TrackJson {
+                        pid,
+                        codec: "DVBSUB".into(),
+                        lang: lang_str(&meta),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    ProbeJson {
+        video,
+        audio,
+        subtitle,
+        default_audio_pid,
+    }
+}
+
+#[derive(Serialize)]
+struct SubActivityJson {
+    activity: Vec<SubActivity>,
+}
+
+#[derive(Serialize)]
+struct SubActivity {
+    pid: u16,
+    pts_ticks: u64,
+}
+
+fn sub_activity(data: &[u8]) -> SubActivityJson {
+    use skyfire_ts::TrackKind;
+    let mut demux = TsDemux::new();
+    demux.feed(data);
+    demux.finish();
+    // Map subtitle track_id → pid.
+    let mut sub_ids: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
+    let mut activity = Vec::new();
+    while let Some(ev) = demux.poll_event() {
+        match ev {
+            DemuxEvent::TrackAdded(track) => {
+                let meta = track_meta(&track.spec);
+                if matches!(meta.kind, TrackKind::Subtitle(_)) {
+                    sub_ids.insert(track.spec.track_id, meta.pid.unwrap_or(0));
+                }
+            }
+            DemuxEvent::Sample { track_id, sample } => {
+                if let Some(&pid) = sub_ids.get(&track_id)
+                    && payload_has_page_composition(&sample.data)
+                    && let Some(t) = sample.source_timing.as_ref()
+                {
+                    activity.push(SubActivity {
+                        pid,
+                        pts_ticks: t.pts,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    SubActivityJson { activity }
+}
+
+/// True if a DVB-subtitle PES payload contains a page-composition segment
+/// (0x10) with a non-empty region list (ETSI EN 300 743 §7.2.2).
+fn payload_has_page_composition(data: &[u8]) -> bool {
+    // Expect data_identifier 0x20, subtitle_stream_id 0x00, then 0x0f-framed segments.
+    if data.len() < 2 || data[0] != 0x20 || data[1] != 0x00 {
+        return false;
+    }
+    let mut i = 2;
+    while i + 6 <= data.len() && data[i] == 0x0f {
+        let segment_type = data[i + 1];
+        let segment_len = u16::from_be_bytes([data[i + 4], data[i + 5]]) as usize;
+        // page composition (0x10) with a payload that includes at least one region.
+        if segment_type == 0x10 && segment_len > 2 {
+            return true;
+        }
+        i += 6 + segment_len;
+    }
+    false
+}
+
 fn main() {
     let args = Args::parse();
     let path = args.file.display().to_string();
@@ -178,6 +332,22 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if args.sub_activity {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&sub_activity(&data)).unwrap()
+        );
+        return;
+    }
+
+    if args.probe {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&probe_full(&data)).unwrap()
+        );
+        return;
+    }
 
     let hist = build_histogram(&data);
 

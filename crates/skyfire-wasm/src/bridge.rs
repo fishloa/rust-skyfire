@@ -133,6 +133,13 @@ impl SkyfireBridge {
         self.drain_events();
     }
 
+    /// The audio PID currently routed for decode (the source of emitted PCM),
+    /// or `None` before any audio track is selected.
+    #[wasm_bindgen(getter)]
+    pub fn selected_audio_pid(&self) -> Option<u16> {
+        self.selected_audio_pid
+    }
+
     /// Select which audio PID to route and decode.
     #[wasm_bindgen]
     pub fn select_audio(&mut self, pid: u16) {

@@ -8,6 +8,8 @@ members = [
     "crates/skyfire-core",
     "crates/skyfire-wasm",
     "crates/skyfire-cli",
+    "crates/skyfire-hls",
+    "crates/skyfire-server",
 ]
 
 [workspace.package]
@@ -27,3 +29,5 @@ skyfire-ac3 = { path = "crates/skyfire-ac3" }
 skyfire-mpa = { path = "crates/skyfire-mpa" }
 skyfire-sync = { path = "crates/skyfire-sync" }
 skyfire-core = { path = "crates/skyfire-core" }
+skyfire-hls = { path = "crates/skyfire-hls" }
+transmux = "0.15"

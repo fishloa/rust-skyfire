@@ -1,0 +1,21 @@
+[package]
+name = "skyfire-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+skyfire-hls = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+clap = { version = "4", features = ["derive"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+[[bin]]
+name = "skyfire-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

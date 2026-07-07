@@ -1089,3 +1089,22 @@ fn audio_decode_error_counter_increments() {
     let err_count = bridge.audio_decode_error_count();
     eprintln!("audio_decode_error_count after garbage TS: {err_count}");
 }
+
+#[test]
+fn selected_audio_pid_reflects_selection() {
+    let mut b = SkyfireBridge::new();
+    // Feed a multi-audio fixture so audio tracks exist.
+    let data = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/france2-8s.ts"
+    ))
+    .unwrap();
+    b.feed(&data);
+    // A default audio pid is auto-selected once an audio track is added.
+    let def = b.selected_audio_pid();
+    assert!(def.is_some(), "a default audio pid must be auto-selected");
+    // Switch to a different pid and confirm the getter reflects it.
+    let other = def.map(|p| p ^ 1).unwrap(); // any different value; use a real alt in practice
+    b.select_audio(other);
+    assert_eq!(b.selected_audio_pid(), Some(other));
+}

@@ -32,6 +32,9 @@ web/playwright-report/
 
 .DS_Store
 
+# Captured live TS streams (large, moved from zenith .ts-captures — never committed)
+/.ts-captures/
+
 packages/*/pkg/
 packages/*/*.tgz
 
@@ -40,3 +43,6 @@ packages/*/*.tgz
 .claude/
 crates/skyfire-wasm/packages/
 crates/skyfire-wasm/web/
+/.ts-captures/progressive/
+packages/*/node_modules/
+packages/*/bun.lock

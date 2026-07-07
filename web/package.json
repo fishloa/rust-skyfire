@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test:streams": "playwright test tests/streams.spec.mjs --config playwright.config.mjs"
+  },
   "dependencies": {},
   "devDependencies": {
     "@playwright/test": "^1.61.0"

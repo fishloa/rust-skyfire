@@ -114,3 +114,26 @@ jobs:
       - run: bun test packages/player/hls-source.test.js
       - run: npx -y -p typescript@5 tsc --noEmit packages/core/index.d.ts
 
+
+  stream-e2e:
+    name: browser stream gate (per-stream continuity)
+    runs-on: ubuntu-latest
+    # RED until Phase 2 fixes the player. Flip to required (remove
+    # continue-on-error) once every committed stream is green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with: { targets: wasm32-unknown-unknown }
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - uses: oven-sh/setup-bun@v2
+      - name: Build wasm (web target)
+        run: wasm-pack build crates/skyfire-wasm --target web --release --out-dir "$GITHUB_WORKSPACE/web/pkg"
+      - name: Build server + cli
+        run: cargo build -p skyfire-server -p skyfire-cli
+      - name: Install player deps + Playwright
+        run: cd web && bun install && bunx playwright install --with-deps chromium
+      - name: Run per-stream continuity gate
+        run: cd web && bun run test:streams
+

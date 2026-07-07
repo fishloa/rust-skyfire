@@ -50,6 +50,8 @@ export class SkyfirePlayer {
       decoded: 0, drawn: 0, dropped: 0, w: 0, h: 0, aus: 0, path: "wc",
       audioChunks: 0, audioSamples: 0, audioFrames: 0, audioSec: 0, avSkewMs: 0,
       videoPath: "", mseSegments: 0, videoCurrentTime: 0,
+      tracks: { audio: [], subtitle: [] },
+      selectedAudio: null, decodedAudioPid: null, subCues: 0,
     };
 
     // ── video decoder ─────────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ export class SkyfirePlayer {
     this._presentQueue = [];
     this._firstAudioPtsUs = null;
     this._audioFramesPlayed = 0;
+    this._audioSamplesFed = 0;   // interleaved PCM samples posted to the worklet
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
 
@@ -107,6 +110,7 @@ export class SkyfirePlayer {
 
     // ── track list ────────────────────────────────────────────────────────────
     this._trackList = null;
+    this._trackSig = null;   // "<nAudio>/<nSub>" — re-emit tracks when it changes
 
     // ── MSE drift constants ───────────────────────────────────────────────────
     this._MSE_DRIFT_SEEK_THRESH = 0.25;
@@ -115,6 +119,13 @@ export class SkyfirePlayer {
     // ── late-drop / lead constants ────────────────────────────────────────────
     this._LATE_DROP_US = 80_000;
     this._LEAD_US = 12_000;
+
+    // Feed backpressure: keep the pipeline at most this many seconds of audio
+    // ahead of the play clock, so the worklet's fixed ring never overflows
+    // (overflow drops audio and freezes the audio-master clock → video stalls).
+    // 10 s absorbs network/segment jitter; must stay below the worklet ring
+    // (16 s) minus one segment burst. Lower it for low-latency live via opts.
+    this._AUDIO_LEAD_S = opts.audioLeadSeconds ?? 10;
 
     // Bind user-gesture audio resume so we can remove it on destroy.
     this._startAudioBound = () => this._startAudio();
@@ -150,6 +161,7 @@ export class SkyfirePlayer {
   selectAudio(pid) {
     if (this._destroyed) return;
     this._callBridge("select_audio", pid);
+    this._stats.selectedAudio = pid;
     this._status(`audio → pid ${pid}`);
   }
 
@@ -442,6 +454,13 @@ export class SkyfirePlayer {
     return this._firstAudioPtsUs + (this._audioFramesPlayed / this._audioSampleRate) * 1_000_000;
   }
 
+  /** Seconds of decoded audio fed to the worklet but not yet played (buffer-ahead). */
+  _audioAheadSeconds() {
+    const ch = this._outputChannels || this._streamChannels || 2;
+    const fedFrames = this._audioSamplesFed / ch;
+    return (fedFrames - this._audioFramesPlayed) / this._audioSampleRate;
+  }
+
   _schedulePresent() {
     if (this._presentScheduled) return;
     this._presentScheduled = true;
@@ -600,6 +619,10 @@ export class SkyfirePlayer {
       const samples = c.samples;
       this._stats.audioChunks++;
       this._stats.audioSamples += samples.length;
+      if (this.bridge && typeof this.bridge.selected_audio_pid !== "undefined") {
+        this._stats.decodedAudioPid = this.bridge.selected_audio_pid ?? null;
+      }
+      this._audioSamplesFed += samples.length;
       this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
       c.free?.();
     }
@@ -842,6 +865,22 @@ export class SkyfirePlayer {
     let pathDecided = false;
 
     for (;;) {
+      // Backpressure BEFORE reading the next chunk: never fetch/decode more than
+      // _AUDIO_LEAD_S of audio ahead of the play clock, so the worklet's fixed
+      // ring never overflows (overflow drops audio + freezes the audio-master
+      // clock → video stalls). Audio-bearing streams pace on the audio clock;
+      // before playback starts (framesPlayed == 0) this prebuffers _AUDIO_LEAD_S
+      // then waits for play. Video-only streams (no PCM fed) use the presentQueue cap.
+      while (
+        !this._destroyed &&
+        ((this._audioSamplesFed > 0 && this._audioAheadSeconds() > this._AUDIO_LEAD_S) ||
+          ((this._videoPath === "webcodecs" || this._videoPath === null) &&
+            this._presentQueue.length > 300))
+      ) {
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(40);
+      }
+
       let done, value;
       try {
         ({ done, value } = await source.read());
@@ -866,21 +905,29 @@ export class SkyfirePlayer {
       this._callBridge(() => {
         this.bridge.feed(value);
 
-        if (!trackLogged) {
-          const tl = this.bridge.track_list();
-          if (tl) {
-            trackLogged = true;
+        // Refresh the track list whenever it grows. DVB-subtitle (and late audio)
+        // tracks resolve on their first sample — AFTER the initial PAT/PMT/video
+        // snapshot — so a one-shot read misses them. Re-emit when the audio/sub
+        // counts change so hosts (and __sfStats) see every track as discovered.
+        const tl = this.bridge.track_list();
+        if (tl) {
+          const sig = `${tl.audio.length}/${tl.subtitles.length}`;
+          if (sig !== this._trackSig) {
+            this._trackSig = sig;
             this._trackList = tl;
-            this._status(
-              `track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`
-            );
-            // Apply pre-selected audio PID if provided.
-            if (this.opts.audioPid != null) {
-              this.bridge.select_audio(this.opts.audioPid);
-              this._status(`audio → pid ${this.opts.audioPid}`);
-            }
-            // Emit tracks event so the host can populate its pickers.
+            this._stats.tracks = { audio: tl.audio ?? [], subtitle: tl.subtitles ?? [] };
             this._emit("tracks", tl);
+            if (!trackLogged) {
+              trackLogged = true;
+              this._status(
+                `track: video pid 0x${tl.video_pid.toString(16)} ${tl.video_codec}, ${tl.audio.length} audio, ${tl.subtitles.length} sub`
+              );
+              // Apply pre-selected audio PID if provided.
+              if (this.opts.audioPid != null) {
+                this.bridge.select_audio(this.opts.audioPid);
+                this._status(`audio → pid ${this.opts.audioPid}`);
+              }
+            }
           }
         }
 
@@ -898,12 +945,6 @@ export class SkyfirePlayer {
         await this._decideVideoPath(this.bridge.video_codec());
       }
 
-      if (this._videoPath === "webcodecs" || this._videoPath === null) {
-        while (this._presentQueue.length > 60) {
-          // eslint-disable-next-line no-await-in-loop
-          await sleep(40);
-        }
-      }
     }
   }
 }
