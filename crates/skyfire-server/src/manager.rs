@@ -11,7 +11,6 @@ pub struct Manager {
     sessions: Mutex<HashMap<String, HlsSession>>,
 }
 
-#[expect(dead_code)]
 impl Manager {
     #[must_use]
     pub fn new(dir: impl Into<PathBuf>, live: Vec<String>) -> Self {

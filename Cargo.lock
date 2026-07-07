@@ -1012,6 +1012,7 @@ dependencies = [
  "clap",
  "skyfire-hls",
  "tokio",
+ "tower",
  "tower-http",
 ]
 
