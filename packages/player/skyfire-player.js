@@ -88,6 +88,7 @@ export class SkyfirePlayer {
 
     // ── transport ─────────────────────────────────────────────────────────────
     this._playing = true;
+    this._volume = 1;
     this._muted = opts.muted || false;
     this._destroyed = false;
     this._fetchAbortController = null;
@@ -177,6 +178,23 @@ export class SkyfirePlayer {
       this._subCtx.clearRect(0, 0, this._subCtx.canvas.width, this._subCtx.canvas.height);
       this._shownSubKey = null;
     }
+  }
+
+  /** Set output volume, 0..1 (clamped). Applies to the gain node if audio is up. */
+  setVolume(v) {
+    this._volume = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this._audioGain) this._audioGain.gain.value = this._muted ? 0 : this._volume;
+  }
+
+  /** @returns {number} current volume 0..1. */
+  getVolume() {
+    return this._volume;
+  }
+
+  /** Mute/unmute without losing the volume level. */
+  setMuted(muted) {
+    this._muted = !!muted;
+    if (this._audioGain) this._audioGain.gain.value = this._muted ? 0 : this._volume;
   }
 
   /** @returns {object|null} The current track list, or null if not yet available. */
@@ -588,7 +606,7 @@ export class SkyfirePlayer {
       }
     };
     this._audioGain = this._audioCtx.createGain();
-    this._audioGain.gain.value = this._muted ? 0 : 1;
+    this._audioGain.gain.value = this._muted ? 0 : this._volume;
     this._audioNode.connect(this._audioGain).connect(this._audioCtx.destination);
     this._audioNode.port.postMessage({ type: "config", sampleRate, outputChannels: this._outputChannels });
     this._audioNode.port.postMessage({ type: "play" });
