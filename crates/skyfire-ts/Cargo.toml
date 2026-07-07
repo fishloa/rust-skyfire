@@ -12,7 +12,7 @@ dvb-si = "8"
 dvb-subtitle = "0.2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
-transmux = "0.14"
+transmux = "0.15"
 
 [dev-dependencies]
 skyfire-ac3 = { path = "../../crates/skyfire-ac3" }
