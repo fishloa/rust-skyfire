@@ -75,6 +75,7 @@ export class SkyfirePlayer {
     this._audioSamplesFed = 0;   // interleaved PCM samples posted to the worklet
     this._videoWallAnchorMs = null;  // wall-clock anchor for video pacing sans audio
     this._videoWallAnchorUs = 0;
+    this._postered = false;          // drew the held first frame while awaiting audio
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
 
@@ -510,7 +511,20 @@ export class SkyfirePlayer {
     if (clock !== null) {
       // Audio is master; drop the wall anchor so a later audio dropout re-anchors.
       this._videoWallAnchorMs = null;
+    } else if (this._audioSamplesFed > 0) {
+      // Audio is decoding but NOT playing yet (AudioContext awaiting a user gesture).
+      // Hold video on the first frame so A/V begin together, in sync, the moment
+      // audio starts — instead of running video ahead on wall-clock and then having
+      // it freeze while late-starting audio (from clip start) catches up. Draw the
+      // first frame once as a poster; do not advance. The audio clock tick (on
+      // resume) or a new decoded frame re-triggers _present.
+      if (!this._postered && this._presentQueue.length) {
+        this._postered = true;
+        this._drawFrame(this._presentQueue[0].frame);
+      }
+      return;
     } else {
+      // No audio track at all (video-only) — pace video by wall clock at 1×.
       clock = this._videoClockUs();
     }
 
