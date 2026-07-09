@@ -613,9 +613,13 @@ export class SkyfirePlayer {
     const maxCh = this._audioCtx.destination.maxChannelCount;
 
     const passthrough = nativeChannels > 2 && nativeChannels <= maxCh;
-    this.bridge.set_audio_downmix(!passthrough);
-    this._outputChannels = passthrough ? nativeChannels : 2;
-    this._downmixActive = !passthrough && nativeChannels > 2;
+    // Downmix ONLY genuinely multichannel audio (>2ch) that we cannot pass through.
+    // Feeding already-stereo (or mono) audio through the 5.1→stereo matrix corrupts
+    // a channel (left-channel full-scale clicks on france-2). ≤2ch must pass as-is.
+    const downmix = nativeChannels > 2 && !passthrough;
+    this.bridge.set_audio_downmix(downmix);
+    this._outputChannels = passthrough ? nativeChannels : Math.min(nativeChannels, 2);
+    this._downmixActive = downmix;
 
     // Resolve the worklet relative to THIS module (the package), not the page —
     // addModule() otherwise resolves against the document base, which 404s in any
@@ -666,6 +670,8 @@ export class SkyfirePlayer {
         await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
       }
       if (c.channels !== this._outputChannels) {
+        this._stats.audioDropped = (this._stats.audioDropped || 0) + 1;
+        this._lastDropChannels = c.channels;
         c.free?.();
         continue;
       }
