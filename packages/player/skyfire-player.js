@@ -73,6 +73,9 @@ export class SkyfirePlayer {
     this._firstAudioPtsUs = null;
     this._audioFramesPlayed = 0;
     this._audioSamplesFed = 0;   // interleaved PCM samples posted to the worklet
+    this._videoWallAnchorMs = null;  // wall-clock anchor for video pacing sans audio
+    this._videoWallAnchorUs = 0;
+    this._postered = false;          // drew the held first frame while awaiting audio
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
 
@@ -88,6 +91,7 @@ export class SkyfirePlayer {
 
     // ── transport ─────────────────────────────────────────────────────────────
     this._playing = true;
+    this._volume = 1;
     this._muted = opts.muted || false;
     this._destroyed = false;
     this._fetchAbortController = null;
@@ -177,6 +181,23 @@ export class SkyfirePlayer {
       this._subCtx.clearRect(0, 0, this._subCtx.canvas.width, this._subCtx.canvas.height);
       this._shownSubKey = null;
     }
+  }
+
+  /** Set output volume, 0..1 (clamped). Applies to the gain node if audio is up. */
+  setVolume(v) {
+    this._volume = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this._audioGain) this._audioGain.gain.value = this._muted ? 0 : this._volume;
+  }
+
+  /** @returns {number} current volume 0..1. */
+  getVolume() {
+    return this._volume;
+  }
+
+  /** Mute/unmute without losing the volume level. */
+  setMuted(muted) {
+    this._muted = !!muted;
+    if (this._audioGain) this._audioGain.gain.value = this._muted ? 0 : this._volume;
   }
 
   /** @returns {object|null} The current track list, or null if not yet available. */
@@ -467,15 +488,48 @@ export class SkyfirePlayer {
     requestAnimationFrame(() => this._present());
   }
 
+  /**
+   * Wall-clock media time, anchored to the first queued frame. Used to pace video
+   * at 1× real time when there is no audio-master clock yet (audio not started, or
+   * a video-only stream). Without this the present loop drew one frame per
+   * animation-frame (~60 Hz) → video ran ~2× fast until audio took over.
+   */
+  _videoClockUs() {
+    if (!this._presentQueue.length) return null;
+    const now = performance.now();
+    if (this._videoWallAnchorMs === null) {
+      this._videoWallAnchorMs = now;
+      this._videoWallAnchorUs = this._presentQueue[0].ts;
+    }
+    return this._videoWallAnchorUs + (now - this._videoWallAnchorMs) * 1000;
+  }
+
   _present() {
     if (this._destroyed) return;
     this._presentScheduled = false;
-    const clock = this._audioClockUs();
+    let clock = this._audioClockUs();
+    if (clock !== null) {
+      // Audio is master; drop the wall anchor so a later audio dropout re-anchors.
+      this._videoWallAnchorMs = null;
+    } else if (this._audioSamplesFed > 0) {
+      // Audio is decoding but NOT playing yet (AudioContext awaiting a user gesture).
+      // Hold video on the first frame so A/V begin together, in sync, the moment
+      // audio starts — instead of running video ahead on wall-clock and then having
+      // it freeze while late-starting audio (from clip start) catches up. Draw the
+      // first frame once as a poster; do not advance. The audio clock tick (on
+      // resume) or a new decoded frame re-triggers _present.
+      if (!this._postered && this._presentQueue.length) {
+        this._postered = true;
+        this._drawFrame(this._presentQueue[0].frame);
+      }
+      return;
+    } else {
+      // No audio track at all (video-only) — pace video by wall clock at 1×.
+      clock = this._videoClockUs();
+    }
 
     if (clock === null) {
-      const e = this._presentQueue.shift();
-      if (e) this._drawFrame(e.frame);
-      this._renderSubs(this._lastVideoTs || null);
+      // No clock at all yet (first frame not queued) — nothing to pace.
       if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
       return;
     }
@@ -559,9 +613,13 @@ export class SkyfirePlayer {
     const maxCh = this._audioCtx.destination.maxChannelCount;
 
     const passthrough = nativeChannels > 2 && nativeChannels <= maxCh;
-    this.bridge.set_audio_downmix(!passthrough);
-    this._outputChannels = passthrough ? nativeChannels : 2;
-    this._downmixActive = !passthrough && nativeChannels > 2;
+    // Downmix ONLY genuinely multichannel audio (>2ch) that we cannot pass through.
+    // Feeding already-stereo (or mono) audio through the 5.1→stereo matrix corrupts
+    // a channel (left-channel full-scale clicks on france-2). ≤2ch must pass as-is.
+    const downmix = nativeChannels > 2 && !passthrough;
+    this.bridge.set_audio_downmix(downmix);
+    this._outputChannels = passthrough ? nativeChannels : Math.min(nativeChannels, 2);
+    this._downmixActive = downmix;
 
     // Resolve the worklet relative to THIS module (the package), not the page —
     // addModule() otherwise resolves against the document base, which 404s in any
@@ -582,13 +640,15 @@ export class SkyfirePlayer {
     this._audioNode.port.onmessage = (e) => {
       if (e.data.type === "clock") {
         this._audioFramesPlayed = e.data.framesPlayed;
+        this._audioUnderruns = e.data.underruns ?? 0;
         this._stats.audioFrames = this._audioFramesPlayed;
+        this._stats.audioUnderruns = this._audioUnderruns;
         this._stats.audioSec = this._audioFramesPlayed / this._audioSampleRate;
         this._schedulePresent();
       }
     };
     this._audioGain = this._audioCtx.createGain();
-    this._audioGain.gain.value = this._muted ? 0 : 1;
+    this._audioGain.gain.value = this._muted ? 0 : this._volume;
     this._audioNode.connect(this._audioGain).connect(this._audioCtx.destination);
     this._audioNode.port.postMessage({ type: "config", sampleRate, outputChannels: this._outputChannels });
     this._audioNode.port.postMessage({ type: "play" });
@@ -610,6 +670,8 @@ export class SkyfirePlayer {
         await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
       }
       if (c.channels !== this._outputChannels) {
+        this._stats.audioDropped = (this._stats.audioDropped || 0) + 1;
+        this._lastDropChannels = c.channels;
         c.free?.();
         continue;
       }

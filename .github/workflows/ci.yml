@@ -106,7 +106,7 @@ jobs:
           rm -rf /tmp/smoke && mkdir -p /tmp/smoke/src && cd /tmp/smoke
           echo '{ "name":"smoke","private":true,"type":"module","version":"0.0.0" }' > package.json
           printf 'import wasm from "vite-plugin-wasm";\nimport tla from "vite-plugin-top-level-await";\nexport default { plugins:[wasm(),tla()], logLevel:"warn" };\n' > vite.config.js
-          printf 'import { SkyfirePlayer } from "@firemedia/skyfire-player";\nimport { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";\nif(!SkyfirePlayer||!initSkyfire||!SkyfireBridge) throw new Error("missing exports");\n' > src/main.js
+          printf 'import { SkyfirePlayer } from "@firemedia/skyfire-player";\nimport "@firemedia/skyfire-player/skyfire-element.js";\nimport { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";\nif(!SkyfirePlayer||!initSkyfire||!SkyfireBridge) throw new Error("missing exports");\nif(!customElements.get("skyfire-player")) throw new Error("skyfire-player element not registered");\n' > src/main.js
           printf '<!doctype html><script type="module" src="/src/main.js"></script>\n' > index.html
           npm i --no-audit --no-fund vite@5 vite-plugin-wasm vite-plugin-top-level-await "$WS/packages/core/$CORE" "$WS/packages/player/$PLAYER"
           npx vite build

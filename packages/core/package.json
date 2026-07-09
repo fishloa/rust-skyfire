@@ -1,6 +1,6 @@
 {
   "name": "@firemedia/skyfire-core",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "In-browser DVB player bridge: MPEG-TS demux + WASM AC-3/E-AC-3 decode + audio-master A/V sync + DVB-subtitle compositing. Host wires WebCodecs/WebAudio.",
   "type": "module",
   "main": "skyfire-core.js",

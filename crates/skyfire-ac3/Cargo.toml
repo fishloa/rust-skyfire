@@ -7,11 +7,12 @@ repository.workspace = true
 description = "AC-3 / E-AC-3 audio decoder for Skyfire (→ PCM for WebAudio). The codec browsers refuse; cheap in WASM."
 
 [dependencies]
-# The published 0.0.9 predates the E-AC-3 correctness fixes (enhanced
-# coupling / BSI; issue #13). Pin the fixed source by git rev (CI has no
-# sibling checkout, so a path dep breaks the build) until a new
-# oxideav-ac3 is published to crates.io.
-oxideav-ac3 = { git = "https://github.com/OxideAV/oxideav-ac3", rev = "2d56c09f3b337926208130ac8773744219024d9b" }
+# v0.0.9 (rev 2d56c09) mis-decodes real broadcast E-AC-3 — rails to full scale,
+# uncorrelated waveform + dropouts vs ffmpeg (OxideAV#13; proven by
+# tests/oxideav_eac3_fault.rs). v0.0.10 (rev 8ea8f60) fixes it: france-2 now
+# decodes at 59 dB PSNR vs ffmpeg, 0 dropouts. Pin by git rev until v0.0.10 is on
+# crates.io (CI has no sibling checkout, so a path dep breaks the build).
+oxideav-ac3 = { git = "https://github.com/OxideAV/oxideav-ac3", rev = "8ea8f60221bbdb405e1f028a0ecb2d3c4e5e620c" }
 # The unified `decoder::make_decoder` (handles base AC-3 + E-AC-3, dispatched by
 # bsid) is built on oxideav-core's `Decoder` trait — needed so base AC-3 (bsid≤8)
 # decodes, not just E-AC-3 (issue #43).

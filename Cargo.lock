@@ -780,8 +780,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oxideav-ac3"
-version = "0.0.9"
-source = "git+https://github.com/OxideAV/oxideav-ac3?rev=2d56c09f3b337926208130ac8773744219024d9b#2d56c09f3b337926208130ac8773744219024d9b"
+version = "0.0.10"
+source = "git+https://github.com/OxideAV/oxideav-ac3?rev=8ea8f60221bbdb405e1f028a0ecb2d3c4e5e620c#8ea8f60221bbdb405e1f028a0ecb2d3c4e5e620c"
 dependencies = [
  "oxideav-core",
 ]
@@ -961,7 +961,7 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "skyfire-ac3"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "oxideav-ac3",
  "oxideav-core",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-cli"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-core"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "broadcast-common",
  "skyfire-ac3",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-hls"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "skyfire-ts",
  "transmux",
@@ -1000,14 +1000,14 @@ dependencies = [
 
 [[package]]
 name = "skyfire-mpa"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "symphonia",
 ]
 
 [[package]]
 name = "skyfire-server"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -1019,11 +1019,11 @@ dependencies = [
 
 [[package]]
 name = "skyfire-sync"
-version = "0.2.3"
+version = "0.3.0"
 
 [[package]]
 name = "skyfire-ts"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "broadcast-common",
  "dvb-si",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-wasm"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "broadcast-common",
  "dvb-subtitle",

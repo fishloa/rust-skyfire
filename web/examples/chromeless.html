@@ -1,0 +1,23 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Skyfire — chromeless</title>
+<script type="importmap">{ "imports": {
+  "@firemedia/skyfire-player": "../../packages/player/skyfire-player.js",
+  "@firemedia/skyfire-core": "../skyfire-core-web.js" } }</script>
+<style>html,body{margin:0;height:100%;background:#000}
+  skyfire-player{position:fixed;inset:0 0 44px 0}
+  #bar{position:fixed;bottom:0;left:0;right:0;height:44px;display:flex;gap:8px;align-items:center;padding:0 12px;background:#181818;color:#ccc;font:13px system-ui}
+  button{background:#222;color:#eee;border:1px solid #444;border-radius:4px;padding:4px 8px}</style>
+</head><body>
+<skyfire-player controls="none"></skyfire-player>
+<div id="bar">
+  <button id="pp">Play/Pause</button>
+  <span>chromeless — host drives via the element API</span>
+</div>
+<script type="module">
+  import "../../packages/player/skyfire-element.js";
+  const el = document.querySelector("skyfire-player");
+  const p = new URLSearchParams(location.search);
+  el.setAttribute("src", p.get("src") || "http://localhost:8090/stream/hls/skyfire/rai-1/index.m3u8");
+  let playing = true;
+  document.getElementById("pp").addEventListener("click", () => { playing = !playing; playing ? el.play() : el.pause(); });
+</script></body></html>

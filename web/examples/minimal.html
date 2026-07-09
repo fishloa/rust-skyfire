@@ -1,0 +1,14 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Skyfire — minimal</title>
+<script type="importmap">{ "imports": {
+  "@firemedia/skyfire-player": "../../packages/player/skyfire-player.js",
+  "@firemedia/skyfire-core": "../skyfire-core-web.js" } }</script>
+<style>html,body{margin:0;height:100%;background:#000}skyfire-player{position:fixed;inset:0}</style>
+</head><body>
+<skyfire-player controls="minimal"></skyfire-player>
+<script type="module">
+  import "../../packages/player/skyfire-element.js";
+  const el = document.querySelector("skyfire-player");
+  const p = new URLSearchParams(location.search);
+  el.setAttribute("src", p.get("src") || "http://localhost:8090/stream/hls/skyfire/rai-1/index.m3u8");
+</script></body></html>
