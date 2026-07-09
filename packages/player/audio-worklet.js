@@ -35,7 +35,11 @@ class SkyfirePcmProcessor extends AudioWorkletProcessor {
       const msg = e.data;
       switch (msg.type) {
         case "config":
-          this.configure(msg.sampleRate, msg.channels);
+          // The engine sends `outputChannels`; historically this read `msg.channels`
+          // (undefined) and fell back to a 2ch default — silently breaking MONO
+          // audio (rai-2/orf-3/orf-sport MP2 are 1ch: PCM misread as stereo). Read
+          // the real field; never default the channel count.
+          this.configure(msg.sampleRate, msg.outputChannels ?? msg.channels);
           break;
         case "pcm":
           this.enqueue(msg.samples);

@@ -436,23 +436,36 @@ impl SkyfireBridge {
     fn decode_audio(&mut self, codec: AudioCodec, pts_ticks: Option<u64>, data: &[u8]) {
         match codec {
             AudioCodec::Mp2 => match self.mpa_decoder.decode_au(data) {
-                Ok(Some(decoded)) => {
-                    let samples_f32: Vec<f32> = decoded
-                        .pcm_s16le
-                        .chunks_exact(2)
-                        .map(|b| {
-                            let s = i16::from_le_bytes([b[0], b[1]]);
-                            f32::from(s) / 32_768.0_f32
-                        })
-                        .collect();
+                Ok(Some(decoded)) if decoded.sample_rate > 0 && decoded.channels > 0 => {
+                    // Mirror the AC-3 path: record the true source channel count and
+                    // emit a CONSISTENT channel layout. Previously this passed the
+                    // raw per-frame channel count and never set last_audio_channels,
+                    // so the player locked its output to the first frame's count and
+                    // dropped every frame that differed (stereo MP2 heard as mono /
+                    // silent). Normalise ≤2ch to stereo (mono upmixed, stereo kept).
+                    self.last_audio_channels = decoded.channels;
+                    let (channels, samples_f32) = if self.downmix_audio || decoded.channels <= 2 {
+                        (
+                            2u16,
+                            skyfire_ac3::downmix::downmix_s16le_to_stereo_f32(
+                                &decoded.pcm_s16le,
+                                decoded.channels,
+                            ),
+                        )
+                    } else {
+                        (
+                            decoded.channels,
+                            skyfire_ac3::downmix::s16le_slice_to_f32(&decoded.pcm_s16le),
+                        )
+                    };
                     self.audio_pcm_pending.push(WasmPcmChunk {
                         pts_ticks,
                         sample_rate: decoded.sample_rate,
-                        channels: decoded.channels,
+                        channels,
                         samples: samples_f32,
                     });
                 }
-                Ok(None) => {}
+                Ok(Some(_)) | Ok(None) => {}
                 Err(e) => {
                     self.audio_decode_error_count += 1;
                     std::eprintln!("[skyfire-wasm] mp2 decode error: {e}");
