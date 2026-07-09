@@ -1,8 +1,11 @@
 # @firemedia/skyfire-player
 
 Turnkey in-browser DVB TV player. Wraps WebCodecs hardware video decode, WASM
-AC-3/E-AC-3 audio decode, audio-master A/V sync, and DVB-subtitle overlay behind
-a single `SkyfirePlayer` class. Built on [`@firemedia/skyfire-core`](../core/README.md).
+AC-3/E-AC-3 audio decode, audio-master A/V sync, and DVB-subtitle overlay. Ships
+two layers: a polished **`<skyfire-player>` Web Component** (controls, track/subtitle
+menus, fullscreen, picture-in-picture, diagnostics) and the lower-level
+**`SkyfirePlayer`** engine class it wraps. Built on
+[`@firemedia/skyfire-core`](../core/README.md).
 
 ## Install
 
@@ -13,7 +16,42 @@ npm install @firemedia/skyfire-player
 `@firemedia/skyfire-core` is a peer dependency — it will be installed automatically as a
 declared dependency.
 
-## Quick start
+## Web Component (recommended)
+
+Import once to register the element, then drop the tag anywhere — framework-agnostic
+(plain HTML, React, Svelte). All UI lives in a Shadow DOM (encapsulated styles).
+
+```js
+import "@firemedia/skyfire-player/skyfire-element.js";
+```
+
+```html
+<skyfire-player src="/live/channel1.ts" controls="full" muted></skyfire-player>
+```
+
+**Attributes:** `src` (stream URL; changing it hot-swaps the channel), `controls`
+(`full` | `minimal` | `none`), `muted`, `autoplay`, `audio-lead` (seconds of buffer
+ahead of the play clock, default 10).
+
+**Controls (`full`):** play/pause, volume + mute, audio-track menu (language + codec),
+subtitle menu (Off + per-language), picture-in-picture, fullscreen, diagnostics overlay.
+Auto-hides on idle.
+
+**Properties/methods:** `play()`, `pause()`, `selectAudio(pid)`, `selectSubtitle(pid|null)`,
+`tracks`. **DOM events:** `sf-tracks`, `sf-stats`, `sf-error`, `sf-ended` (detail carries
+the engine payload). Also mirrors stats to `window.__sfStats`.
+
+```js
+const el = document.querySelector("skyfire-player");
+el.addEventListener("sf-tracks", (e) => console.log("tracks", e.detail));
+el.addEventListener("sf-error", (e) => console.error(e.detail));
+el.setAttribute("src", "/live/channel2.ts"); // switch channel (clean teardown + reload)
+```
+
+Prefer the element for embedding. Use the `SkyfirePlayer` class below when you need to
+drive decode/sync yourself and build your own UI.
+
+## Quick start (low-level `SkyfirePlayer` class)
 
 ```html
 <!-- The player draws into this canvas; the subtitle overlay is inserted after it.
