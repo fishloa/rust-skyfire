@@ -1,10 +1,17 @@
-//! Proof that `oxideav-ac3` (at the rev this workspace pins) mis-decodes real
-//! E-AC-3: it emits full-scale "railed" sample bursts that the source does NOT
-//! contain. We decode the SAME committed elementary stream two ways —
-//!   (a) oxideav-ac3 DIRECTLY (not through skyfire-ac3's wrapper), and
+//! E-AC-3 decode correctness gate (regression guard for OxideAV#13).
+//!
+//! Decodes the SAME committed real-broadcast E-AC-3 elementary stream two ways —
+//!   (a) oxideav-ac3 DIRECTLY via `eac3::decode_eac3_packet` (no skyfire-ac3
+//!       sample processing), and
 //!   (b) ffmpeg's reference decode of the same bytes (committed golden PCM) —
-//! and show the reference is clean while oxideav-ac3 rails. This isolates fault
-//! to oxideav-ac3 itself.
+//! and asserts they MATCH: sane peak (not railed), high waveform correlation
+//! (PSNR ≥ 50 dB), and no silence dropouts.
+//!
+//! History: oxideav-ac3 v0.0.9 (rev 2d56c09) FAILED this — it railed to full
+//! scale (peak 1.0 vs 0.33), was uncorrelated (PSNR ≈27 dB), and dropped ~84
+//! windows (the france-2 "glitchy audio" bug). v0.0.10 (rev 8ea8f60) passes it
+//! (peak 0.33, PSNR ≈59 dB, 0 dropouts). If this test regresses, real-broadcast
+//! E-AC-3 decode has broken again.
 //!
 //! Fixtures (committed):
 //!   fixtures/france2-3s.eac3                  — 3s of a real france-2 E-AC-3 ES
@@ -111,12 +118,12 @@ fn dropout_windows(a: &[f32], b: &[f32], sr: usize) -> usize {
     drops
 }
 
-/// Proves the fault is in oxideav-ac3 (not skyfire-ac3, not the source): decode the
-/// SAME committed E-AC-3 bytes via `oxideav_ac3::eac3::decode_eac3_packet` and via
-/// ffmpeg (committed golden). The reference is clean and correlated; oxideav-ac3
-/// rails to full scale AND is uncorrelated with the reference (issue OxideAV#13).
+/// Asserts oxideav-ac3 decodes real-broadcast E-AC-3 correctly — matching ffmpeg's
+/// reference decode of the same committed bytes: sane peak (not railed), high
+/// waveform correlation (PSNR ≥ 50 dB), and no silence dropouts. Regression guard
+/// for the france-2 "glitchy audio" bug (OxideAV#13), fixed by v0.0.10.
 #[test]
-fn oxideav_ac3_misdecodes_eac3_that_ffmpeg_decodes_correctly() {
+fn oxideav_ac3_decodes_real_eac3_matching_ffmpeg() {
     let es = fixture("france2-3s.eac3");
     let golden = fixture("france2-3s.eac3.ffmpeg-s16le"); // stereo s16le, ffmpeg reference
 
@@ -134,30 +141,28 @@ fn oxideav_ac3_misdecodes_eac3_that_ffmpeg_decodes_correctly() {
             "ch{c}: ffmpeg peak={ref_peak:.3}  oxideav peak={our_peak:.3}  PSNR(ours vs ffmpeg)={psnr:.1} dB  oxideav-only-dropouts(10ms)={drops}"
         );
 
-        // Reference proves the SOURCE is cleanly decodable: sane level, not railed.
+        // Reference sanity: the source decodes to a sane, non-railed level.
         assert!(
             ref_peak > 0.05 && ref_peak < 0.9,
             "ch{c}: reference peak should be sane, got {ref_peak}"
         );
 
-        // FAULT #1 — oxideav-ac3 rails to full scale on the same bytes (ffmpeg does not).
+        // CORRECTNESS #1 — no full-scale railing: our peak tracks the reference.
         assert!(
-            our_peak >= 0.99 && our_peak > ref_peak + 0.3,
-            "ch{c}: oxideav should rail to full scale vs the clean reference (ffmpeg={ref_peak:.3}, oxideav={our_peak:.3})"
+            our_peak < 0.9 && (our_peak - ref_peak).abs() < 0.1,
+            "ch{c}: oxideav must not rail — peak {our_peak:.3} should track ffmpeg {ref_peak:.3}"
         );
 
-        // FAULT #2 — oxideav-ac3 output is UNCORRELATED with the reference waveform.
-        // A correct decode is near-sample-exact (issue #13 target ≥50 dB); this is
-        // far below, i.e. the wrong waveform — not merely louder.
+        // CORRECTNESS #2 — near-sample-exact waveform (OxideAV#13 target ≥50 dB).
         assert!(
-            psnr < 40.0,
-            "ch{c}: oxideav should be far from the reference (PSNR {psnr:.1} dB « the ≥50 dB a correct decode gives)"
+            psnr >= 50.0,
+            "ch{c}: oxideav must match the reference waveform (PSNR {psnr:.1} dB, need ≥50)"
         );
 
-        // FAULT #3 — oxideav-ac3 has silence dropouts where the reference has audio.
-        assert!(
-            drops > 0,
-            "ch{c}: oxideav should show dropout windows the reference does not"
+        // CORRECTNESS #3 — no silence dropouts the reference lacks.
+        assert_eq!(
+            drops, 0,
+            "ch{c}: oxideav must not drop audio the reference has"
         );
     }
 }
