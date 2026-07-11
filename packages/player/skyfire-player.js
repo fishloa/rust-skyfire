@@ -76,6 +76,12 @@ export class SkyfirePlayer {
     this._videoWallAnchorMs = null;  // wall-clock anchor for video pacing sans audio
     this._videoWallAnchorUs = 0;
     this._postered = false;          // drew the held first frame while awaiting audio
+    this._lastFp = 0;                // last observed framesPlayed (stall detection)
+    this._lastFpAdvanceMs = 0;       // wall ms when framesPlayed last advanced
+    this._lastMediaUs = null;        // last media time the audio clock reached
+    this._firstFrameMs = null;       // wall ms the first video frame was queued
+    this._AUDIO_STALL_MS = 600;      // audio clock considered stalled after this idle
+    this._HOLD_MAX_MS = 1500;        // max initial hold waiting for audio to start
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
 
@@ -475,6 +481,22 @@ export class SkyfirePlayer {
     return this._firstAudioPtsUs + (this._audioFramesPlayed / this._audioSampleRate) * 1_000_000;
   }
 
+  /** True once audio playback has begun (framesPlayed advanced past 0). */
+  _audioStarted() {
+    return this._firstAudioPtsUs !== null && this._audioFramesPlayed > 0;
+  }
+
+  /**
+   * True when the audio-master clock is actually ADVANCING (framesPlayed moved
+   * within the last `_AUDIO_STALL_MS`). A started-but-frozen clock (audio underrun,
+   * device hiccup, suspended context) is NOT live — the pipeline must then fall
+   * back to wall-clock so video keeps playing and the feed keeps flowing, instead
+   * of freezing on a dead clock (the "stops ~15s in" live halt, zenith #84).
+   */
+  _audioClockLive() {
+    return this._audioStarted() && performance.now() - this._lastFpAdvanceMs < this._AUDIO_STALL_MS;
+  }
+
   /** Seconds of decoded audio fed to the worklet but not yet played (buffer-ahead). */
   _audioAheadSeconds() {
     const ch = this._outputChannels || this._streamChannels || 2;
@@ -499,7 +521,11 @@ export class SkyfirePlayer {
     const now = performance.now();
     if (this._videoWallAnchorMs === null) {
       this._videoWallAnchorMs = now;
-      this._videoWallAnchorUs = this._presentQueue[0].ts;
+      // Anchor at the last media time the audio clock reached (so a mid-stream
+      // audio stall continues video from where it was, not from the queue head),
+      // else at the first queued frame.
+      this._videoWallAnchorUs =
+        this._lastMediaUs != null ? this._lastMediaUs : this._presentQueue[0].ts;
     }
     return this._videoWallAnchorUs + (now - this._videoWallAnchorMs) * 1000;
   }
@@ -507,24 +533,28 @@ export class SkyfirePlayer {
   _present() {
     if (this._destroyed) return;
     this._presentScheduled = false;
-    let clock = this._audioClockUs();
-    if (clock !== null) {
-      // Audio is master; drop the wall anchor so a later audio dropout re-anchors.
+    let clock;
+    if (this._audioClockLive()) {
+      // Audio master (clock actively advancing). Drop the wall anchor so a later
+      // stall re-anchors from the current media time.
+      clock = this._audioClockUs();
       this._videoWallAnchorMs = null;
-    } else if (this._audioSamplesFed > 0) {
-      // Audio is decoding but NOT playing yet (AudioContext awaiting a user gesture).
-      // Hold video on the first frame so A/V begin together, in sync, the moment
-      // audio starts — instead of running video ahead on wall-clock and then having
-      // it freeze while late-starting audio (from clip start) catches up. Draw the
-      // first frame once as a poster; do not advance. The audio clock tick (on
-      // resume) or a new decoded frame re-triggers _present.
+      this._lastMediaUs = clock;
+    } else if (this._audioSamplesFed > 0 && !this._audioStarted()
+               && (this._firstFrameMs == null || performance.now() - this._firstFrameMs < this._HOLD_MAX_MS)) {
+      // Audio is decoding but hasn't STARTED yet — hold briefly (up to _HOLD_MAX_MS)
+      // so A/V begin together when audio kicks in. Bounded: if audio never starts
+      // (autoplay blocked, no gesture), we fall through to wall-clock below rather
+      // than freeze video forever.
       if (!this._postered && this._presentQueue.length) {
         this._postered = true;
         this._drawFrame(this._presentQueue[0].frame);
       }
+      if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
       return;
     } else {
-      // No audio track at all (video-only) — pace video by wall clock at 1×.
+      // No audio, audio never started within the grace window, or audio started
+      // then STALLED — pace video by wall clock so it never freezes (zenith #84).
       clock = this._videoClockUs();
     }
 
@@ -558,6 +588,7 @@ export class SkyfirePlayer {
     this._videoDecoder = new VideoDecoder({
       output: (frame) => {
         this._stats.decoded++;
+        if (this._firstFrameMs == null) this._firstFrameMs = performance.now();
         this._presentQueue.push({ frame, ts: frame.timestamp });
         this._schedulePresent();
       },
@@ -639,6 +670,10 @@ export class SkyfirePlayer {
     this._audioSampleRate = this._audioCtx.sampleRate || sampleRate;
     this._audioNode.port.onmessage = (e) => {
       if (e.data.type === "clock") {
+        if (e.data.framesPlayed > this._lastFp) {
+          this._lastFp = e.data.framesPlayed;
+          this._lastFpAdvanceMs = performance.now();   // clock is live
+        }
         this._audioFramesPlayed = e.data.framesPlayed;
         this._audioUnderruns = e.data.underruns ?? 0;
         this._stats.audioFrames = this._audioFramesPlayed;
@@ -927,17 +962,17 @@ export class SkyfirePlayer {
     let pathDecided = false;
 
     for (;;) {
-      // Backpressure BEFORE reading the next chunk: never fetch/decode more than
-      // _AUDIO_LEAD_S of audio ahead of the play clock, so the worklet's fixed
-      // ring never overflows (overflow drops audio + freezes the audio-master
-      // clock → video stalls). Audio-bearing streams pace on the audio clock;
-      // before playback starts (framesPlayed == 0) this prebuffers _AUDIO_LEAD_S
-      // then waits for play. Video-only streams (no PCM fed) use the presentQueue cap.
+      // Backpressure BEFORE reading the next chunk: don't fetch/decode more than
+      // _AUDIO_LEAD_S of audio ahead of the play clock (keeps the worklet's fixed
+      // ring from overflowing). CRITICAL: only gate on the audio buffer while the
+      // audio clock is LIVE — a stalled/frozen clock must NOT block the feed, or a
+      // brief audio hiccup freezes the whole stream (the "stops ~15s in" live halt,
+      // zenith #84). Video-only / stalled-audio streams fall back to the
+      // presentQueue cap to bound memory.
       while (
         !this._destroyed &&
-        ((this._audioSamplesFed > 0 && this._audioAheadSeconds() > this._AUDIO_LEAD_S) ||
-          ((this._videoPath === "webcodecs" || this._videoPath === null) &&
-            this._presentQueue.length > 300))
+        ((this._audioClockLive() && this._audioAheadSeconds() > this._AUDIO_LEAD_S) ||
+          this._presentQueue.length > 300)
       ) {
         // eslint-disable-next-line no-await-in-loop
         await sleep(40);
