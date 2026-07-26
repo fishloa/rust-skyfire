@@ -48,6 +48,11 @@ canvas.video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .diag { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.75); padding: 8px 10px;
         border-radius: 6px; font-variant-numeric: tabular-nums; white-space: pre; font-size: 12px; }
 .diag[hidden] { display: none; }
+:host(:fullscreen) { width: 100vw; height: 100vh; background: #000; }
+:host(.sf-pseudo-fullscreen) {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  z-index: 2147483647; background: #000;
+}
 `;
 
 export class SkyfirePlayerElement extends HTMLElement {
@@ -106,8 +111,13 @@ export class SkyfirePlayerElement extends HTMLElement {
   connectedCallback() {
     this._buildControls();
     if (this.hasAttribute("autoplay") || this.getAttribute("src")) this._start();
+    this._onFsChange = () => this._emitFullscreen(this.isFullscreen, "native");
+    this.ownerDocument.addEventListener("fullscreenchange", this._onFsChange);
   }
-  disconnectedCallback() { this._teardown(); }
+  disconnectedCallback() {
+    this._teardown();
+    this.ownerDocument.removeEventListener("fullscreenchange", this._onFsChange);
+  }
   attributeChangedCallback(name, oldV, newV) {
     if (!this.isConnected || oldV === newV) return;
     switch (name) {
@@ -254,11 +264,11 @@ export class SkyfirePlayerElement extends HTMLElement {
       btn("subs-btn", "Subtitles ▾", () => this._toggleMenu("subtitle"));
       this._pipBtn = btn("pip-btn", "⧉", () => this._togglePip());
       if (this._pipBtn && !this._pipSupported()) this._pipBtn.hidden = true;
-      btn("fs-btn", "⛶", () => this._toggleFullscreen());
+      btn("fs-btn", "⛶", () => this.toggleFullscreen());
       btn("diag-btn", "ⓘ", () => this._toggleDiag());
     } else if (preset === "minimal") {
       const spacer = document.createElement("span"); spacer.className = "spacer"; bar.appendChild(spacer);
-      btn("fs-btn", "⛶", () => this._toggleFullscreen());
+      btn("fs-btn", "⛶", () => this.toggleFullscreen());
     }
   }
 
@@ -331,9 +341,56 @@ export class SkyfirePlayerElement extends HTMLElement {
   }
 
   // ── fullscreen + PiP ──
-  _toggleFullscreen() {
-    if (this.ownerDocument.fullscreenElement === this) this.ownerDocument.exitFullscreen?.();
-    else this.requestFullscreen?.().catch(() => {});
+  get isFullscreen() {
+    return this.ownerDocument.fullscreenElement === this ||
+      this.classList.contains("sf-pseudo-fullscreen");
+  }
+
+  /**
+   * Enter fullscreen. Resolves once the transition is requested; rejects with
+   * the underlying reason if the browser refuses — the caller is told, rather
+   * than the failure being discarded.
+   *
+   * Where Element.requestFullscreen does not exist (iPhone Safari, which only
+   * promotes <video> elements, and skyfire paints to a <canvas>) this falls
+   * back to a fixed-position overlay and reports mode "pseudo".
+   */
+  async enterFullscreen() {
+    if (this.isFullscreen) return;
+    if (typeof this.requestFullscreen === "function") {
+      await this.requestFullscreen();
+      return; // fullscreenchange fires the event
+    }
+    this.classList.add("sf-pseudo-fullscreen");
+    this._pseudoFs = true;
+    this._prevOverflow = this.ownerDocument.body.style.overflow;
+    this.ownerDocument.body.style.overflow = "hidden";
+    this._emitFullscreen(true, "pseudo");
+  }
+
+  async exitFullscreen() {
+    if (this._pseudoFs) {
+      this.classList.remove("sf-pseudo-fullscreen");
+      this._pseudoFs = false;
+      this.ownerDocument.body.style.overflow = this._prevOverflow ?? "";
+      this._emitFullscreen(false, "pseudo");
+      return;
+    }
+    if (this.ownerDocument.fullscreenElement === this) {
+      await this.ownerDocument.exitFullscreen();
+    }
+  }
+
+  toggleFullscreen() {
+    return this.isFullscreen ? this.exitFullscreen() : this.enterFullscreen();
+  }
+
+  _emitFullscreen(fullscreen, mode) {
+    const fsBtn = this._controlsEl?.querySelector(".fs-btn");
+    if (fsBtn) fsBtn.setAttribute("aria-pressed", fullscreen ? "true" : "false");
+    this.dispatchEvent(new CustomEvent("sf-fullscreenchange", {
+      detail: { fullscreen, mode }, bubbles: true, composed: true,
+    }));
   }
 
   _pipSupported() {

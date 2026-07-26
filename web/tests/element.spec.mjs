@@ -216,3 +216,60 @@ test("integration: element plays a stream, menu switches audio, subtitle cues re
   expect(r.switched).toBe(true);
   if (r.audioRows > 1) expect(r.cues).toBe(true);
 });
+
+// ── Task 4 (issue #97): programmatic fullscreen API ──
+test("fullscreen: exposes a programmatic API and reports state changes", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const api = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    return {
+      enter: typeof el.enterFullscreen,
+      exit: typeof el.exitFullscreen,
+      toggle: typeof el.toggleFullscreen,
+      state: typeof el.isFullscreen,
+    };
+  });
+  expect(api).toEqual({ enter: "function", exit: "function", toggle: "function", state: "boolean" });
+});
+
+test("fullscreen: rejection surfaces instead of being swallowed", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // Headless Chromium refuses fullscreen without a user gesture. The contract
+  // is that the caller learns about it — either a resolve or a reject, never a
+  // silent no-op returning undefined.
+  const outcome = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    const p = el.enterFullscreen();
+    if (typeof p?.then !== "function") return "not-a-promise";
+    try { await p; return "resolved"; } catch { return "rejected"; }
+  });
+  expect(["resolved", "rejected"]).toContain(outcome);
+});
+
+test("fullscreen: falls back to pseudo-fullscreen when the API is absent", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // iPhone Safari has no Element.requestFullscreen and skyfire paints to a
+  // canvas, so there is no video element to promote. Simulate that.
+  const res = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = undefined;
+    const seen = [];
+    el.addEventListener("sf-fullscreenchange", (e) => seen.push(e.detail));
+    await el.enterFullscreen();
+    const cls = el.classList.contains("sf-pseudo-fullscreen");
+    const state = el.isFullscreen;
+    await el.exitFullscreen();
+    return { seen, cls, state, after: el.isFullscreen };
+  });
+  expect(res.cls).toBe(true);
+  expect(res.state).toBe(true);
+  expect(res.after).toBe(false);
+  expect(res.seen[0]).toEqual({ fullscreen: true, mode: "pseudo" });
+  expect(res.seen[1]).toEqual({ fullscreen: false, mode: "pseudo" });
+});

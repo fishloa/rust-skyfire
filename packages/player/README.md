@@ -48,6 +48,17 @@ el.addEventListener("sf-error", (e) => console.error(e.detail));
 el.setAttribute("src", "/live/channel2.ts"); // switch channel (clean teardown + reload)
 ```
 
+### Fullscreen
+
+`enterFullscreen()` / `exitFullscreen()` / `toggleFullscreen()` return promises
+and reject if the browser refuses (most browsers require a user gesture). The
+`sf-fullscreenchange` event carries `{ fullscreen, mode }`.
+
+On iPhone Safari there is no `Element.requestFullscreen` — WebKit only promotes
+`<video>` elements, and skyfire renders to a `<canvas>` — so the player falls
+back to a fixed-position overlay and reports `mode: "pseudo"`. It fills the
+viewport but does not hide Safari's own chrome.
+
 Prefer the element for embedding. Use the `SkyfirePlayer` class below when you need to
 drive decode/sync yourself and build your own UI.
 

@@ -29,3 +29,25 @@ export function languageName(
 ): string | null;
 
 export function resolveLocale(el: Element | null): string;
+
+export interface SkyfireFullscreenChangeDetail {
+  fullscreen: boolean;
+  mode: "native" | "pseudo";
+}
+
+/** The `<skyfire-player>` custom element. */
+export interface SkyfirePlayerElement extends HTMLElement {
+  readonly isFullscreen: boolean;
+  enterFullscreen(): Promise<void>;
+  exitFullscreen(): Promise<void>;
+  toggleFullscreen(): Promise<void>;
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "skyfire-player": SkyfirePlayerElement;
+  }
+  interface HTMLElementEventMap {
+    "sf-fullscreenchange": CustomEvent<SkyfireFullscreenChangeDetail>;
+  }
+}
