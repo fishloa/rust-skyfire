@@ -21,3 +21,11 @@ export class SkyfirePlayer {
   on(event: SkyfireEvent, cb: (data: unknown) => void): void;
   destroy(): void;
 }
+
+export function languageName(
+  code: string | null | undefined,
+  locale?: string,
+  overrides?: Record<string, string>,
+): string | null;
+
+export function resolveLocale(el: Element | null): string;

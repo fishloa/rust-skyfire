@@ -2,6 +2,7 @@
 // All UI lives in a Shadow DOM (scoped styles); the engine draws into the shadow
 // canvas and the element owns controls, menus, state overlays, PiP + fullscreen.
 import { SkyfirePlayer } from "./skyfire-player.js";
+import { languageName, resolveLocale } from "./lang.js";
 
 const TEMPLATE = `
 <div class="stage">
@@ -286,17 +287,37 @@ export class SkyfirePlayerElement extends HTMLElement {
       r.addEventListener("click", on); m.appendChild(r); return r;
     };
 
+    const locale = resolveLocale(this);
+
+    // Broadcasters routinely ship two tracks in the same language (arte pid
+    // 257 and 258 are both fra). Where a name repeats, number the repeats so
+    // the rows stay distinguishable; unique names stay bare.
+    const nameFor = (t, i, fallback) => languageName(t.language, locale) || `${fallback} ${i + 1}`;
+    const audioNames = (tl.audio || []).map((a, i) => nameFor(a, i, "Track"));
+    const seen = new Map();
+    const audioLabels = audioNames.map((n, i) => {
+      const a = tl.audio[i];
+      const dup = audioNames.filter((x) => x === n).length > 1;
+      const chan = a.channels === 6 ? " 5.1" : a.channels === 1 ? " mono" : "";
+      let label = `${n} · ${a.codec}${chan}`;
+      if (dup) {
+        const nth = (seen.get(label) ?? 0) + 1;
+        seen.set(label, nth);
+        if (nth > 1) label = `${label} (${nth})`;
+      }
+      return label;
+    });
+
     const am = menu("audio");
     (tl.audio || []).forEach((a, i) => {
-      const label = `${a.language || `Track ${i + 1}`} · ${a.codec}`;
-      row(am, label, this._selAudio === a.pid || (this._selAudio == null && i === 0),
+      row(am, audioLabels[i], this._selAudio === a.pid || (this._selAudio == null && i === 0),
         () => { this._selAudio = a.pid; this.selectAudio(a.pid); this._buildMenus(); am.classList.add("open"); });
     });
 
     const sm = menu("subtitle");
     row(sm, "Off", this._selSub == null, () => { this._selSub = null; this.selectSubtitle(null); this._buildMenus(); sm.classList.add("open"); });
     (tl.subtitles || []).forEach((s, i) => {
-      const label = s.language || `Subtitle ${i + 1}`;
+      const label = nameFor(s, i, "Subtitle");
       row(sm, label, this._selSub === s.pid, () => { this._selSub = s.pid; this.selectSubtitle(s.pid); this._buildMenus(); sm.classList.add("open"); });
     });
   }

@@ -6,7 +6,7 @@
   "main": "skyfire-player.js",
   "module": "skyfire-player.js",
   "types": "index.d.ts",
-  "files": ["skyfire-player.js", "skyfire-element.js", "hls-source.js", "audio-worklet.js", "index.d.ts", "README.md"],
+  "files": ["skyfire-player.js", "skyfire-element.js", "hls-source.js", "lang.js", "audio-worklet.js", "index.d.ts", "README.md"],
   "dependencies": { "@firemedia/skyfire-core": "0.3.2" },
   "license": "MIT OR Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/fishloa/rust-skyfire" },
