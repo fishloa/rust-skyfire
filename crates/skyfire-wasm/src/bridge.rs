@@ -32,6 +32,8 @@ pub struct SkyfireBridge {
     cached_video_config: Option<CachedVideoConfig>,
     /// Selected audio PID.
     selected_audio_pid: Option<u16>,
+    /// Channel count per audio PID, from a header probe of the first frame.
+    audio_channels: std::collections::BTreeMap<u16, u8>,
     /// Selected subtitle PID.
     selected_subtitle_pid: Option<u16>,
     /// Play/pause state.
@@ -80,6 +82,7 @@ impl SkyfireBridge {
             video_track_id: None,
             cached_video_config: None,
             selected_audio_pid: None,
+            audio_channels: std::collections::BTreeMap::new(),
             selected_subtitle_pid: None,
             playing: false,
             video_aus: Vec::new(),
@@ -180,13 +183,17 @@ impl SkyfireBridge {
             .tracks
             .values()
             .filter(|m| matches!(m.kind, TrackKind::Audio(_)))
-            .map(|m| WasmAudioTrack {
-                pid: m.pid.unwrap_or(0),
-                codec: match m.kind {
-                    TrackKind::Audio(c) => audio_codec_str(c).to_string(),
-                    _ => "EAC3".to_string(),
-                },
-                language: m.language.map(|l| lang_bytes_to_string(&l)),
+            .map(|m| {
+                let pid = m.pid.unwrap_or(0);
+                WasmAudioTrack {
+                    pid,
+                    codec: match m.kind {
+                        TrackKind::Audio(c) => audio_codec_str(c).to_string(),
+                        _ => "EAC3".to_string(),
+                    },
+                    language: m.language.map(|l| lang_bytes_to_string(&l)),
+                    channels: self.audio_channels.get(&pid).copied(),
+                }
             })
             .collect();
         audio.sort_by_key(|a| a.pid);
@@ -417,8 +424,15 @@ impl SkyfireBridge {
                 }
             }
             TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
+                self.probe_channels(meta.pid, codec, &sample.data);
                 let pts_ticks = sample.source_timing.as_ref().map(|t| t.pts);
                 self.decode_audio(codec, pts_ticks, &sample.data);
+            }
+            // Unselected audio PIDs are never decoded, but their frame headers
+            // still tell us the channel layout — which the picker needs in
+            // order to label them.
+            TrackKind::Audio(codec) => {
+                self.probe_channels(meta.pid, codec, &sample.data);
             }
             TrackKind::Subtitle(_) if meta.pid == self.selected_subtitle_pid => {
                 let pid = meta.pid.unwrap_or(0);
@@ -430,6 +444,21 @@ impl SkyfireBridge {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Records the channel count for `pid` from a frame header, once.
+    fn probe_channels(&mut self, pid: Option<u16>, codec: AudioCodec, data: &[u8]) {
+        let Some(pid) = pid else { return };
+        if self.audio_channels.contains_key(&pid) {
+            return;
+        }
+        let ch = match codec {
+            AudioCodec::Mp2 => skyfire_ts::mp2_header::channels_from_header(data),
+            _ => skyfire_ac3::header::channels_from_syncframe(data),
+        };
+        if let Some(ch) = ch {
+            self.audio_channels.insert(pid, ch);
         }
     }
 

@@ -10,6 +10,8 @@ export interface WasmAudioTrack {
   pid: number;
   codec: "AC3" | "EAC3" | "MP2";
   language?: string;
+  /** Channel count from a frame-header probe; absent until a frame is seen. */
+  channels?: number;
 }
 
 export interface WasmSubtitleTrack {
