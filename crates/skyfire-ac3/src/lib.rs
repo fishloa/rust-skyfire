@@ -10,6 +10,7 @@ use oxideav_ac3::{decoder, eac3, syncinfo};
 use oxideav_core::{CodecId, CodecParameters, Decoder, Error, Frame, Packet, TimeBase};
 
 pub mod downmix;
+pub mod header;
 
 /// AC-3 / E-AC-3 sync word (`0x0B77`).
 pub const AC3_SYNCWORD: u16 = 0x0B77;
