@@ -33,6 +33,10 @@ pub struct SkyfireBridge {
     /// Selected audio PID.
     selected_audio_pid: Option<u16>,
     /// Channel count per audio PID, from a header probe of the first frame.
+    ///
+    /// First value wins and is never invalidated (see `probe_channels`'s
+    /// `contains_key` guard): a broadcast that switches its channel layout
+    /// mid-stream (e.g. 5.1 -> 2.0) keeps reporting the original count.
     audio_channels: std::collections::BTreeMap<u16, u8>,
     /// Selected subtitle PID.
     selected_subtitle_pid: Option<u16>,
@@ -455,7 +459,12 @@ impl SkyfireBridge {
         }
         let ch = match codec {
             AudioCodec::Mp2 => skyfire_ts::mp2_header::channels_from_header(data),
-            _ => skyfire_ac3::header::channels_from_syncframe(data),
+            // Explicit, not a catch-all: `AudioCodec` has exactly three
+            // variants and adding a fourth must fail to compile here rather
+            // than silently probe it as AC-3 (mirrors `audio_codec_str`).
+            AudioCodec::Ac3 | AudioCodec::EAc3 => {
+                skyfire_ac3::header::channels_from_syncframe(data)
+            }
         };
         if let Some(ch) = ch {
             self.audio_channels.insert(pid, ch);

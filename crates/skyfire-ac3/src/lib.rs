@@ -100,6 +100,10 @@ impl IncrementalDecoder {
             }
             let bsid = data[offset + 5] >> 3;
             // bsid ≤ 10 is base AC-3 (A/52 §E.2.3.1.6); 11–16 is Annex E (E-AC-3).
+            // NOTE: `header::channels_from_syncframe` (the channel-count probe)
+            // deliberately uses a stricter `bsid <= 8` threshold and returns
+            // `None` for bsid 9/10, unlike this decode path. That's not a bug —
+            // see the cross-reference comment on that function.
             let (frame_len, frame_rate) = if bsid <= 10 {
                 if let Ok(si) = syncinfo::parse(&data[offset..]) {
                     (si.frame_length as usize, si.sample_rate)
