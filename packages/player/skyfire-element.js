@@ -117,6 +117,15 @@ export class SkyfirePlayerElement extends HTMLElement {
   disconnectedCallback() {
     this._teardown();
     this.ownerDocument.removeEventListener("fullscreenchange", this._onFsChange);
+    // Reverse an in-progress pseudo-fullscreen so the host page's scroll lock
+    // isn't leaked forever. No sf-fullscreenchange here — the element is being
+    // torn down, and dispatching events from a detached element is worse than
+    // staying silent.
+    if (this._pseudoFs) {
+      this.classList.remove("sf-pseudo-fullscreen");
+      this._pseudoFs = false;
+      this.ownerDocument.body.style.overflow = this._prevOverflow ?? "";
+    }
   }
   attributeChangedCallback(name, oldV, newV) {
     if (!this.isConnected || oldV === newV) return;
@@ -264,11 +273,11 @@ export class SkyfirePlayerElement extends HTMLElement {
       btn("subs-btn", "Subtitles ▾", () => this._toggleMenu("subtitle"));
       this._pipBtn = btn("pip-btn", "⧉", () => this._togglePip());
       if (this._pipBtn && !this._pipSupported()) this._pipBtn.hidden = true;
-      btn("fs-btn", "⛶", () => this.toggleFullscreen());
+      btn("fs-btn", "⛶", () => this.toggleFullscreen()).setAttribute("aria-pressed", "false");
       btn("diag-btn", "ⓘ", () => this._toggleDiag());
     } else if (preset === "minimal") {
       const spacer = document.createElement("span"); spacer.className = "spacer"; bar.appendChild(spacer);
-      btn("fs-btn", "⛶", () => this.toggleFullscreen());
+      btn("fs-btn", "⛶", () => this.toggleFullscreen()).setAttribute("aria-pressed", "false");
     }
   }
 

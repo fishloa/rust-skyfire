@@ -234,20 +234,56 @@ test("fullscreen: exposes a programmatic API and reports state changes", async (
   expect(api).toEqual({ enter: "function", exit: "function", toggle: "function", state: "boolean" });
 });
 
-test("fullscreen: rejection surfaces instead of being swallowed", async ({ page }) => {
+test("fullscreen: enterFullscreen returns a thenable", async ({ page }) => {
   await page.goto(`${WEB}/element-test.html`);
-  // Headless Chromium refuses fullscreen without a user gesture. The contract
-  // is that the caller learns about it — either a resolve or a reject, never a
-  // silent no-op returning undefined.
+  const isThenable = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = () => Promise.resolve();
+    const p = el.enterFullscreen();
+    return typeof p?.then === "function";
+  });
+  expect(isThenable).toBe(true);
+});
+
+test("fullscreen: rejection from requestFullscreen reaches the caller, not swallowed", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // Stub the underlying browser call directly so the outcome is deterministic
+  // rather than at the mercy of headless gesture policy. A regression that
+  // wraps the internal await in a try/catch-and-return would turn this
+  // rejection into a silent resolve — this must fail if that happens.
   const outcome = await page.evaluate(async () => {
     await customElements.whenDefined("skyfire-player");
     const el = document.createElement("skyfire-player");
     document.body.appendChild(el);
-    const p = el.enterFullscreen();
-    if (typeof p?.then !== "function") return "not-a-promise";
-    try { await p; return "resolved"; } catch { return "rejected"; }
+    el.requestFullscreen = () => Promise.reject(new Error("denied"));
+    try {
+      await el.enterFullscreen();
+      return { rejected: false };
+    } catch (e) {
+      return { rejected: true, message: e?.message };
+    }
   });
-  expect(["resolved", "rejected"]).toContain(outcome);
+  expect(outcome.rejected).toBe(true);
+  expect(outcome.message).toBe("denied");
+});
+
+test("fullscreen: resolves when requestFullscreen resolves", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const outcome = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = () => Promise.resolve();
+    try {
+      await el.enterFullscreen();
+      return { resolved: true };
+    } catch (e) {
+      return { resolved: false, message: e?.message };
+    }
+  });
+  expect(outcome.resolved).toBe(true);
 });
 
 test("fullscreen: falls back to pseudo-fullscreen when the API is absent", async ({ page }) => {
@@ -259,17 +295,44 @@ test("fullscreen: falls back to pseudo-fullscreen when the API is absent", async
     const el = document.createElement("skyfire-player");
     document.body.appendChild(el);
     el.requestFullscreen = undefined;
+    document.body.style.overflow = "scroll"; // non-empty prior value the restore must not clobber
     const seen = [];
     el.addEventListener("sf-fullscreenchange", (e) => seen.push(e.detail));
     await el.enterFullscreen();
     const cls = el.classList.contains("sf-pseudo-fullscreen");
     const state = el.isFullscreen;
+    const overflowDuring = document.body.style.overflow;
     await el.exitFullscreen();
-    return { seen, cls, state, after: el.isFullscreen };
+    const clsAfterExit = el.classList.contains("sf-pseudo-fullscreen");
+    const overflowAfter = document.body.style.overflow;
+    return { seen, cls, state, after: el.isFullscreen, overflowDuring, clsAfterExit, overflowAfter };
   });
   expect(res.cls).toBe(true);
   expect(res.state).toBe(true);
   expect(res.after).toBe(false);
+  expect(res.overflowDuring).toBe("hidden");
+  expect(res.clsAfterExit).toBe(false);
+  expect(res.overflowAfter).toBe("scroll");
   expect(res.seen[0]).toEqual({ fullscreen: true, mode: "pseudo" });
   expect(res.seen[1]).toEqual({ fullscreen: false, mode: "pseudo" });
+});
+
+test("fullscreen: disconnecting the element while pseudo-fullscreen is active releases the scroll lock", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // If disconnectedCallback doesn't reverse an in-progress pseudo-fullscreen,
+  // document.body.style.overflow stays "hidden" forever on the host page.
+  const res = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = undefined;
+    document.body.style.overflow = "scroll";
+    await el.enterFullscreen();
+    const overflowDuring = document.body.style.overflow;
+    el.remove(); // disconnected without a prior exitFullscreen()
+    const overflowAfter = document.body.style.overflow;
+    return { overflowDuring, overflowAfter };
+  });
+  expect(res.overflowDuring).toBe("hidden");
+  expect(res.overflowAfter).toBe("scroll");
 });
