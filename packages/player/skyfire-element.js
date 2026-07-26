@@ -165,7 +165,15 @@ export class SkyfirePlayerElement extends HTMLElement {
 
     const engine = new SkyfirePlayer(this._videoCanvas, opts);
     this._engine = engine;
-    engine.on("tracks", (tl) => { if (seq === this._switchSeq) this._applyTracks(tl); });
+    engine.on("tracks", (tl, diff) => {
+      if (seq !== this._switchSeq) return;
+      this._applyTracks(tl);
+      if (diff) {
+        this.dispatchEvent(new CustomEvent("sf-tracks-changed", {
+          detail: diff, bubbles: true, composed: true,
+        }));
+      }
+    });
     engine.on("stats", (s) => {
       if (seq !== this._switchSeq) return;
       window.__sfStats = s;

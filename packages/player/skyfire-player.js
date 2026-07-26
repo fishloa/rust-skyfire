@@ -6,6 +6,7 @@
 
 import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@firemedia/skyfire-core";
 import { makeSource } from "./hls-source.js";
+import { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -120,7 +121,7 @@ export class SkyfirePlayer {
 
     // ── track list ────────────────────────────────────────────────────────────
     this._trackList = null;
-    this._trackSig = null;   // "<nAudio>/<nSub>" — re-emit tracks when it changes
+    this._trackSig = null;   // identity of the current track set — re-emit tracks when it changes
 
     // ── MSE drift constants ───────────────────────────────────────────────────
     this._MSE_DRIFT_SEEK_THRESH = 0.25;
@@ -147,8 +148,8 @@ export class SkyfirePlayer {
     (this._listeners[event] ||= []).push(cb);
   }
 
-  _emit(event, data) {
-    (this._listeners[event] || []).forEach((cb) => cb(data));
+  _emit(event, data, extra) {
+    (this._listeners[event] || []).forEach((cb) => cb(data, extra));
   }
 
   // ── public transport ──────────────────────────────────────────────────────
@@ -1002,18 +1003,37 @@ export class SkyfirePlayer {
       this._callBridge(() => {
         this.bridge.feed(value);
 
-        // Refresh the track list whenever it grows. DVB-subtitle (and late audio)
-        // tracks resolve on their first sample — AFTER the initial PAT/PMT/video
-        // snapshot — so a one-shot read misses them. Re-emit when the audio/sub
-        // counts change so hosts (and __sfStats) see every track as discovered.
+        // Refresh the track list whenever it changes. DVB-subtitle (and late
+        // audio) tracks resolve on their first sample — AFTER the initial
+        // PAT/PMT/video snapshot — so a one-shot read misses them, and a PMT
+        // reshuffle can swap a PID or correct a language without changing the
+        // track count. Re-emit whenever any track's identity changes so hosts
+        // (and __sfStats) see every track as discovered or altered.
         const tl = this.bridge.track_list();
         if (tl) {
-          const sig = `${tl.audio.length}/${tl.subtitles.length}`;
+          const sig = trackSignature(tl);
           if (sig !== this._trackSig) {
+            const prev = this._trackList;
             this._trackSig = sig;
             this._trackList = tl;
             this._stats.tracks = { audio: tl.audio ?? [], subtitle: tl.subtitles ?? [] };
-            this._emit("tracks", tl);
+
+            const diff = diffTracks(prev, tl);
+
+            // A PMT reshuffle must never leave audio permanently silent: if the
+            // selected PID is gone, fall back to the lowest surviving track.
+            const sel = this._stats.selectedAudio;
+            if (sel != null && !(tl.audio ?? []).some((t) => t.pid === sel)) {
+              const next = pickFallbackAudio(tl.audio, sel);
+              if (next != null) {
+                this.bridge.select_audio(next);
+                this._stats.selectedAudio = next;
+                diff.reselected = { from: sel, to: next };
+                this._status(`audio pid ${sel} vanished → pid ${next}`);
+              }
+            }
+
+            this._emit("tracks", tl, diff);
             if (!trackLogged) {
               trackLogged = true;
               this._status(

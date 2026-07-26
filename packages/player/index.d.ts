@@ -1,4 +1,4 @@
-import type { TrackList } from "@firemedia/skyfire-core";
+import type { TrackList, WasmAudioTrack, WasmSubtitleTrack } from "@firemedia/skyfire-core";
 
 export interface SkyfirePlayerOptions {
   streamUrl: string;
@@ -10,6 +10,18 @@ export interface SkyfirePlayerOptions {
 
 export type SkyfireEvent = "tracks" | "stats" | "error" | "ended";
 
+export interface SkyfireTrackDiff {
+  added: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  removed: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  changed: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  /** Present when the selected audio PID vanished and a fallback was chosen. */
+  reselected?: { from: number; to: number };
+}
+
+export function trackSignature(tl: TrackList | null): string;
+export function diffTracks(prev: TrackList | null, next: TrackList | null): SkyfireTrackDiff;
+export function pickFallbackAudio(audio: WasmAudioTrack[], lostPid: number): number | null;
+
 export class SkyfirePlayer {
   constructor(canvas: HTMLCanvasElement, opts: SkyfirePlayerOptions);
   init(): Promise<void>;
@@ -18,7 +30,8 @@ export class SkyfirePlayer {
   selectAudio(pid: number): void;
   selectSubtitle(pid: number | null): void;
   tracks(): TrackList | null;
-  on(event: SkyfireEvent, cb: (data: unknown) => void): void;
+  on(event: "tracks", cb: (tracks: TrackList, diff: SkyfireTrackDiff) => void): void;
+  on(event: Exclude<SkyfireEvent, "tracks">, cb: (data: unknown) => void): void;
   destroy(): void;
 }
 
