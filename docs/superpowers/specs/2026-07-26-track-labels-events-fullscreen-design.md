@@ -181,8 +181,30 @@ menus.
 
 If `selectedAudio` is absent from the new audio set: re-select the first
 surviving audio track, call `select_audio`, update `stats.selectedAudio`, and
-report it as `diff.reselected = {from, to}` plus a status line. Audio never
-goes permanently silent because of a PMT reshuffle.
+report it as `diff.reselected = {from, to}` plus a status line.
+
+**Correction (2026-07-26, after implementation).** This section originally
+claimed "audio never goes permanently silent because of a PMT reshuffle". That
+overstates what this layer can deliver, and the claim is withdrawn.
+
+`transmux`'s `DemuxEvent` is additive-only: it has no `TrackRemoved` variant,
+and `TrackAdded`'s own documentation says a PMT version change *added* a PID.
+The bridge's track map is only ever inserted into, so `tl.audio` is
+monotonically growing and a PID can never disappear from it. The fallback is
+implemented and unit-tested, but `diff.removed` and `diff.reselected` are
+**unreachable in production** until upstream gains a removal event
+(fishloa/rust-broadcast#774).
+
+What *is* live: `diff.added`, and `diff.changed` — the latter fires because
+`channels` arrives lazily from the frame-header probe.
+
+One further note for whoever picks up the upstream fix: `_audioReady` is set
+once and never reset, and the PCM pump drops every chunk whose channel count
+differs from the locked output. So a fallback from a lost 5.1 PID onto a stereo
+PID (exactly `orf1`'s shape) would yield silence plus a climbing `audioDropped`
+counter. When the removal event exists, `pickFallbackAudio` should prefer a
+survivor whose `channels` matches the lost track — the data is available now —
+or `_ensureAudio` needs a reconfigure path.
 
 ### Testing constraint, and the honest workaround
 
