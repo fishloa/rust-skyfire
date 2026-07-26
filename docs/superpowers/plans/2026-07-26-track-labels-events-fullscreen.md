@@ -89,6 +89,21 @@ test("honours an overrides map for the reserved range", () => {
   expect(languageName("qaa", "de", { qaa: "Originalton" })).toBe("Originalton");
 });
 
+// ── `mis` ("uncoded languages") is a real ISO 639-2 code that CLDR does NOT
+// name — `Intl.DisplayNames(…, {fallback:"none"}).of("mis")` is undefined
+// (verified 2026-07-26, bun/ICU). orf1 pid 258 ships it, so without an entry
+// the picker would read "MIS · MP2".
+test("names ISO 639-2 codes that CLDR has no name for", () => {
+  expect(languageName("mis", "en")).toBe("Uncoded language");
+});
+
+// ── These three DO resolve through CLDR, so they must not be table entries.
+test("leaves CLDR-known special codes to Intl", () => {
+  expect(languageName("und", "en")).toBe("Unknown language");
+  expect(languageName("zxx", "en")).toBe("No linguistic content");
+  expect(languageName("mul", "en")).toBe("Multiple languages");
+});
+
 // ── rai-1 pid 258 carries "oth", which is not a valid ISO 639-2 code.
 test("passes unresolvable codes through uppercased", () => {
   expect(languageName("oth", "en")).toBe("OTH");
@@ -151,14 +166,18 @@ Create `packages/player/lang.js`:
 // The heavy lifting is Intl.DisplayNames, which is already localised for every
 // locale the browser supports. Two things it cannot do on its own:
 //
-//   1. Bibliographic (639-2/B) codes. Intl resolves terminological codes
-//      ("fra") reliably but not bibliographic ones ("fre"), and real streams
-//      carry both — france-2 emits "fre" on pid 257 and "fra" on pid 258 for
-//      the same language. Mapping B -> 639-1 first sidesteps the question.
-//   2. The qaa-qtz reserved-for-local-use range, which DVB broadcasters use
-//      for original/undefined audio. CLDR has no name for these, so the string
-//      is ours and therefore NOT localised — pass `overrides` to supply your
-//      own wording.
+//   1. Bibliographic (639-2/B) codes. Some ICU builds alias "fre" to French
+//      already, others do not; real streams carry both forms (france-2 emits
+//      "fre" on pid 257 and "fra" on pid 258 for the same language). Mapping
+//      B -> 639-1 first makes the result deterministic across runtimes rather
+//      than dependent on the host's ICU version.
+//   2. Codes CLDR has no name for. The qaa-qtz reserved-for-local-use range
+//      (which DVB broadcasters use for original/undefined audio) and "mis"
+//      (uncoded languages, shipped by orf1 pid 258) both come back undefined.
+//      Those strings are ours and therefore NOT localised — pass `overrides`
+//      to supply your own wording.
+//
+// "und", "mul" and "zxx" DO resolve through CLDR and must not be tabulated.
 
 /** The 20 ISO 639-2 codes whose bibliographic form differs from 639-1. */
 export const ISO_639_2B_TO_1 = {
@@ -170,6 +189,15 @@ export const ISO_639_2B_TO_1 = {
 
 /** Reserved-for-local-use range: qaa through qtz. */
 const RESERVED_RANGE = /^q[a-t][a-z]$/;
+
+/**
+ * Codes with no CLDR name. Verified 2026-07-26 against bun/ICU:
+ * `Intl.DisplayNames(…, {fallback:"none"}).of(code)` returns undefined for
+ * these. NOT localised — override per host if that matters.
+ */
+const NO_CLDR_NAME = {
+  mis: "Uncoded language",
+};
 const RESERVED_DEFAULT = "Original audio";
 
 // Intl.DisplayNames construction is not free and the picker rebuilds on every
@@ -207,7 +235,8 @@ export function languageName(code, locale = "en", overrides = {}) {
 
   const tag = ISO_639_2B_TO_1[raw] ?? raw;
   const name = displayNames(locale)?.of(tag);
-  return name || raw.toUpperCase();
+  if (name) return name;
+  return NO_CLDR_NAME[raw] ?? raw.toUpperCase();
 }
 
 /**
@@ -229,9 +258,9 @@ export function resolveLocale(el) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd packages/player && bun test lang.test.js`
-Expected: PASS — 12 tests.
+Expected: PASS — 14 tests.
 
-If `languageName("fra", "de")` does not return exactly `Französisch`, print the actual value and adjust the *expectation* to whatever the runtime's CLDR produces — do not add a translation table. The point of the test is that the locale argument is honoured.
+All CLDR-dependent expectations in this test were verified against bun/ICU on 2026-07-26: `of("fr")` in `de` → `Französisch`, `of("en")` in `fr` → `anglais`, `und`/`zxx`/`mul` resolve, `mis`/`oth` do not. If a future ICU build disagrees, fix the table or the code — do **not** relax an expectation to match whatever came out.
 
 - [ ] **Step 5: Commit**
 
@@ -444,15 +473,16 @@ mod tests {
     }
 
     #[test]
-    fn real_eac3_fixture_is_stereo_or_more() {
+    fn real_eac3_fixture_reports_the_ffprobe_channel_count() {
         // fixtures/france2-3s.eac3 is a raw E-AC-3 elementary stream.
+        // `ffprobe -show_entries stream=codec_name,channels` -> eac3,2
+        // (verified 2026-07-26).
         let data = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/france2-3s.eac3"
         ))
         .expect("fixture");
-        let ch = channels_from_syncframe(&data).expect("probe should parse the first frame");
-        assert!((1..=8).contains(&ch), "implausible channel count {ch}");
+        assert_eq!(channels_from_syncframe(&data), Some(2));
     }
 }
 ```
@@ -659,32 +689,46 @@ Create `crates/skyfire-wasm/tests/audio_channels.rs`. Model the harness on the e
 // tests/audio_channel_consistency.rs. It already handles wasm-bindgen types
 // under a native test target. Do not invent a second harness.
 
-#[test]
-fn track_list_reports_channels_for_every_audio_pid() {
-    // orf1 carries AC3 (deu, pid 257) + MP2 (mis, pid 258): two codecs, two
-    // probe paths, and only ONE of them is the selected/decoded PID.
-    let tl = track_list_for("orf1.ts");
-    let audio = tl.audio;
-    assert!(audio.len() >= 2, "expected multiple audio tracks");
-    for t in &audio {
-        let ch = t.channels.unwrap_or_else(|| panic!("pid {} has no channel count", t.pid));
-        assert!((1..=8).contains(&ch), "pid {} implausible channels {ch}", t.pid);
-    }
+/// Expected channels per PID, from
+/// `ffprobe -select_streams a -show_entries stream=channels:stream_tags=language`
+/// (verified 2026-07-26).
+fn assert_channels(file: &str, expected: &[(u16, u8)]) {
+    let tl = track_list_for(file);
+    let got: Vec<(u16, Option<u8>)> = tl.audio.iter().map(|t| (t.pid, t.channels)).collect();
+    let want: Vec<(u16, Option<u8>)> = expected.iter().map(|(p, c)| (*p, Some(*c))).collect();
+    assert_eq!(got, want, "{file}");
 }
 
 #[test]
-fn five_one_fixture_reports_six_channels() {
-    // fixtures/ac3-51.ts and eac3-51.ts are 5.1 by construction.
+fn mixed_codec_stream_reports_channels_for_both_pids() {
+    // orf1: AC3 5.1 (deu, pid 257) + MP2 stereo (mis, pid 258). Two codecs,
+    // two probe paths, and only ONE of them is the selected/decoded PID —
+    // so this fails if the probe only runs on the selected track.
+    assert_channels("streams/orf1.ts", &[(257, 6), (258, 2)]);
+}
+
+#[test]
+fn real_broadcast_mono_mp2_is_detected_as_one_channel() {
+    // rai-1 pid 259 is genuinely mono MP2 (mode == 0b11) on real broadcast
+    // data, beside three stereo tracks. This is the case a hardcoded
+    // "MP2 is always stereo" shortcut would get wrong.
+    assert_channels(
+        "streams/rai-1.ts",
+        &[(257, 2), (258, 2), (259, 1), (260, 2)],
+    );
+}
+
+#[test]
+fn five_one_fixtures_report_six_channels() {
+    // ac3-51.ts and eac3-51.ts are 5.1(side) per ffprobe: acmod 7 + lfeon.
     for f in ["ac3-51.ts", "eac3-51.ts"] {
         let tl = track_list_for(f);
-        let ch = tl.audio[0].channels.expect("channels");
-        assert_eq!(ch, 6, "{f} should be 5.1");
+        assert_eq!(tl.audio[0].channels, Some(6), "{f} should be 5.1");
     }
 }
 
 #[test]
 fn mp2_fixture_reports_stereo() {
-    // orf-3 is the MP2-only stream from #82; mp2-tone.ts is the synthetic one.
     let tl = track_list_for("mp2-tone.ts");
     assert_eq!(tl.audio[0].channels, Some(2));
 }
@@ -777,7 +821,7 @@ Add the method next to `decode_audio` (before line 436):
 - [ ] **Step 11: Run to verify it passes**
 
 Run: `cargo test -p skyfire-wasm --test audio_channels`
-Expected: PASS — 3 tests.
+Expected: PASS — 4 tests.
 
 If a fixture's first PES payload is not frame-aligned the probe returns `None`; in that case scan forward for the syncword within the payload rather than loosening the assertion.
 
@@ -807,7 +851,7 @@ git add crates/ packages/core/index.d.ts
 git commit -m "feat(bridge): per-PID channel count from frame-header probe"
 ```
 
-Expected: clippy zero warnings; nextest all green (127 existing + 11 new).
+Expected: clippy zero warnings; nextest all green (127 existing + 12 new: 5 in skyfire-ac3, 3 in skyfire-ts, 4 in skyfire-wasm).
 
 ---
 
