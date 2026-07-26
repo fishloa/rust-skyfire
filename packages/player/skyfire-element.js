@@ -49,9 +49,14 @@ canvas.video { max-width: 100%; max-height: 100%; object-fit: contain; }
         border-radius: 6px; font-variant-numeric: tabular-nums; white-space: pre; font-size: 12px; }
 .diag[hidden] { display: none; }
 :host(:fullscreen) { width: 100vw; height: 100vh; background: #000; }
+/* !important: per CSS Scoping, ordinary declarations in the outer tree beat
+   :host — a routine embed rule like
+   "skyfire-player { width: 100%; aspect-ratio: 16/9; position: relative }"
+   would otherwise override this and defeat the only fullscreen fallback iOS
+   Safari has (no Element.requestFullscreen there). */
 :host(.sf-pseudo-fullscreen) {
-  position: fixed; inset: 0; width: 100vw; height: 100vh;
-  z-index: 2147483647; background: #000;
+  position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+  z-index: 2147483647 !important; background: #000 !important;
 }
 `;
 
@@ -76,6 +81,9 @@ export class SkyfirePlayerElement extends HTMLElement {
     this._muted2 = this.hasAttribute("muted");
     this._selAudio = null;
     this._selSub = null;
+    // Last fullscreen state this element itself emitted sf-fullscreenchange
+    // for — lets the document-wide fullscreenchange listener dedupe/skip.
+    this._lastFsState = false;
 
     this._videoCanvas = root.querySelector("canvas.video");
     this._subsCanvas = root.querySelector(".subs canvas");
@@ -111,7 +119,20 @@ export class SkyfirePlayerElement extends HTMLElement {
   connectedCallback() {
     this._buildControls();
     if (this.hasAttribute("autoplay") || this.getAttribute("src")) this._start();
-    this._onFsChange = () => this._emitFullscreen(this.isFullscreen, "native");
+    // The listener is document-wide (fullscreenchange only fires there), so
+    // ANY element on the page entering/leaving fullscreen would otherwise make
+    // every <skyfire-player> emit. Guard against both false positives:
+    //  - this element is in *pseudo*-fullscreen and some other element went
+    //    native — that is not a change to THIS element's fullscreen state.
+    //  - the computed state hasn't actually changed since we last emitted it
+    //    (e.g. two elements on the page both got a fullscreenchange callback
+    //    for the same event, or repeated events for an already-reported state).
+    this._onFsChange = () => {
+      if (this._pseudoFs) return;
+      const fs = this.ownerDocument.fullscreenElement === this;
+      if (fs === this._lastFsState) return;
+      this._emitFullscreen(fs, "native");
+    };
     this.ownerDocument.addEventListener("fullscreenchange", this._onFsChange);
   }
   disconnectedCallback() {
@@ -281,11 +302,11 @@ export class SkyfirePlayerElement extends HTMLElement {
       btn("subs-btn", "Subtitles ▾", () => this._toggleMenu("subtitle"));
       this._pipBtn = btn("pip-btn", "⧉", () => this._togglePip());
       if (this._pipBtn && !this._pipSupported()) this._pipBtn.hidden = true;
-      btn("fs-btn", "⛶", () => this.toggleFullscreen()).setAttribute("aria-pressed", "false");
+      btn("fs-btn", "⛶", () => this._onFsButtonClick()).setAttribute("aria-pressed", "false");
       btn("diag-btn", "ⓘ", () => this._toggleDiag());
     } else if (preset === "minimal") {
       const spacer = document.createElement("span"); spacer.className = "spacer"; bar.appendChild(spacer);
-      btn("fs-btn", "⛶", () => this.toggleFullscreen()).setAttribute("aria-pressed", "false");
+      btn("fs-btn", "⛶", () => this._onFsButtonClick()).setAttribute("aria-pressed", "false");
     }
   }
 
@@ -402,7 +423,22 @@ export class SkyfirePlayerElement extends HTMLElement {
     return this.isFullscreen ? this.exitFullscreen() : this.enterFullscreen();
   }
 
+  /**
+   * Click handler for the built-in ⛶ button only. The public API
+   * (toggleFullscreen/enterFullscreen/exitFullscreen) must keep rejecting so
+   * callers can react to a refusal — do not add a catch inside those. But an
+   * ordinary UI click that gets refused (e.g. cross-origin iframe without
+   * `allow="fullscreen"`) must not surface as an "Uncaught (in promise)" on
+   * every click, so this path alone logs instead of discarding.
+   */
+  _onFsButtonClick() {
+    this.toggleFullscreen().catch((err) => {
+      console.warn("[skyfire] fullscreen refused", err);
+    });
+  }
+
   _emitFullscreen(fullscreen, mode) {
+    this._lastFsState = fullscreen;
     const fsBtn = this._controlsEl?.querySelector(".fs-btn");
     if (fsBtn) fsBtn.setAttribute("aria-pressed", fullscreen ? "true" : "false");
     this.dispatchEvent(new CustomEvent("sf-fullscreenchange", {

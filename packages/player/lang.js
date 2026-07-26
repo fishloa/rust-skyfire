@@ -72,7 +72,19 @@ export function languageName(code, locale = "en", overrides = {}) {
   if (RESERVED_RANGE.test(raw)) return RESERVED_DEFAULT;
 
   const tag = ISO_639_2B_TO_1[raw] ?? raw;
-  const name = displayNames(locale)?.of(tag);
+  // `.of()` throws RangeError for any structurally invalid language tag.
+  // `raw` comes straight from a PMT ISO_639_language_descriptor (3 raw bytes,
+  // String::from_utf8_lossy) — an unset/padded/non-UTF-8 descriptor yields
+  // strings like "1ta", "e g", "e-g", "en_" or "   " that throw here. Treat a
+  // throw the same as "unresolved" so it falls through to the uppercase
+  // passthrough below instead of killing the caller (and, upstream, the
+  // stream).
+  let name;
+  try {
+    name = displayNames(locale)?.of(tag);
+  } catch {
+    name = undefined;
+  }
   if (name) return name;
   return NO_CLDR_NAME[raw] ?? raw.toUpperCase();
 }

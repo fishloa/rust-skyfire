@@ -217,6 +217,44 @@ test("integration: element plays a stream, menu switches audio, subtitle cues re
   if (r.audioRows > 1) expect(r.cues).toBe(true);
 });
 
+// ── Task: rendered audio-menu labels are human-readable, not bare codes ──
+// The picker label is the epic's only user-visible deliverable, and the
+// unguarded Intl.DisplayNames#of() crash (lang.js item 1) sits on exactly
+// this line, yet nothing asserted a rendered label before this test.
+test("audio menu renders human-readable labels, not bare ISO 639-2 codes", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const labels = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    el.setAttribute("controls", "full");
+    el.setAttribute("muted", "");
+    el.setAttribute("src", "http://localhost:8090/stream/hls/skyfire/france-2/index.m3u8");
+    document.body.appendChild(el);
+    document.body.click();
+    const rows = () => [...el.shadowRoot.querySelectorAll(".menu.audio .row")];
+    const wait = (pred, ms) => new Promise((res) => {
+      const t0 = Date.now();
+      const t = () => (pred() || Date.now() - t0 > ms) ? res(pred()) : setTimeout(t, 200);
+      t();
+    });
+    // Audio/subtitle tracks resolve their `language` on their first ES
+    // sample — AFTER the initial PAT/PMT/video snapshot (see the comment in
+    // skyfire-player.js's _consumeStream) — so waiting only for rows to
+    // exist can catch the picker mid-population, before languages are known
+    // and rows still read as positional "Track N" fallbacks. Wait for actual
+    // decoded frames (as the existing audio-switch integration test above
+    // does) so the track list has settled.
+    await wait(() => (window.__sfStats?.drawn ?? 0) > 5, 15000);
+    await wait(() => rows().length > 0, 5000);
+    return rows().map((r) => r.textContent);
+  });
+  expect(labels.length).toBeGreaterThan(0);
+  for (const label of labels) {
+    expect(label).toMatch(/^.+ · (AC3|EAC3|MP2)( 5\.1| mono)?( \(\d+\))?$/);
+    expect(label).not.toMatch(/^(fra|fre|deu|ita|eng|qaa|mis|oth)\b/);
+  }
+});
+
 // ── Task 4 (issue #97): programmatic fullscreen API ──
 test("fullscreen: exposes a programmatic API and reports state changes", async ({ page }) => {
   await page.goto(`${WEB}/element-test.html`);

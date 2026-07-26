@@ -18,9 +18,15 @@ export interface SkyfireTrackDiff {
   reselected?: { from: number; to: number };
 }
 
-export function trackSignature(tl: TrackList | null): string;
-export function diffTracks(prev: TrackList | null, next: TrackList | null): SkyfireTrackDiff;
-export function pickFallbackAudio(audio: WasmAudioTrack[], lostPid: number): number | null;
+export function trackSignature(tl: TrackList | null | undefined): string;
+export function diffTracks(
+  prev: TrackList | null | undefined,
+  next: TrackList | null | undefined,
+): SkyfireTrackDiff;
+export function pickFallbackAudio(
+  audio: WasmAudioTrack[] | null | undefined,
+  lostPid: number,
+): number | null;
 
 export class SkyfirePlayer {
   constructor(canvas: HTMLCanvasElement, opts: SkyfirePlayerOptions);
@@ -41,7 +47,7 @@ export function languageName(
   overrides?: Record<string, string>,
 ): string | null;
 
-export function resolveLocale(el: Element | null): string;
+export function resolveLocale(el: Element | null | undefined): string;
 
 export interface SkyfireFullscreenChangeDetail {
   fullscreen: boolean;
@@ -62,5 +68,6 @@ declare global {
   }
   interface HTMLElementEventMap {
     "sf-fullscreenchange": CustomEvent<SkyfireFullscreenChangeDetail>;
+    "sf-tracks-changed": CustomEvent<SkyfireTrackDiff>;
   }
 }

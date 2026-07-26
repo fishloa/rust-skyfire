@@ -8,6 +8,12 @@ import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@firemedia/sk
 import { makeSource } from "./hls-source.js";
 import { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
 
+// index.d.ts declares these as package exports; without re-exporting them
+// here the entry point only ever exposes `SkyfirePlayer`, and a TS consumer
+// following the typings gets a hard ESM link error at import time.
+export { languageName, resolveLocale } from "./lang.js";
+export { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -1022,7 +1028,13 @@ export class SkyfirePlayer {
 
             // A PMT reshuffle must never leave audio permanently silent: if the
             // selected PID is gone, fall back to the lowest surviving track.
-            const sel = this._stats.selectedAudio;
+            // `this._stats.selectedAudio` starts null and is only written by an
+            // explicit selectAudio()/opts.audioPid — but the bridge auto-selects
+            // the first audio PID it sees on its own, and in the default embed
+            // (host never opens the picker) the JS never otherwise learns that.
+            // Fall back to the bridge's actual selection so the guard still
+            // fires in that case.
+            const sel = this._stats.selectedAudio ?? this.bridge.selected_audio_pid ?? null;
             if (sel != null && !(tl.audio ?? []).some((t) => t.pid === sel)) {
               const next = pickFallbackAudio(tl.audio, sel);
               if (next != null) {

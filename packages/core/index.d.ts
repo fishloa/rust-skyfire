@@ -71,6 +71,8 @@ export class SkyfireBridge {
   set_audio_downmix(enabled: boolean): void;
   set_playing(playing: boolean): void;
   audio_native_channels(): number;
+  /** The currently selected audio PID, or `undefined` before any selection (initial auto-select included). */
+  readonly selected_audio_pid: number | undefined;
   take_video_aus(): VideoAu[];
   video_codec(): string | undefined;
   video_config_description(): Uint8Array;

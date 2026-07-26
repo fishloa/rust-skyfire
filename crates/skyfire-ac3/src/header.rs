@@ -186,8 +186,13 @@ mod tests {
         // acmod == 2 (2/0 stereo) is the one layout that carries a dsurmod
         // field. Build it with dsurmod = 0b11 and lfeon = 0: a parser that
         // omits the dsurmod skip reads the first of those two '1' bits as
-        // lfeon (= 1) and reports 3 channels instead of 2. This pins the
-        // skip against exactly that regression.
+        // lfeon (= 1) and reports 3 channels instead of 2. The dsurmod skip
+        // itself now lives in `oxideav_ac3::bsi`, not this crate — this test
+        // pins our integration with its conditional-field handling for
+        // acmod == 2, i.e. that channels_from_syncframe still gets 2 out the
+        // other end. It is byte-identical to the acmod == 2 case already
+        // exercised by the table test above; kept separate as a named,
+        // self-documenting regression pin for this specific field.
         let buf = ac3_header(2, false);
         assert_eq!(channels_from_syncframe(&buf), Some(2));
     }

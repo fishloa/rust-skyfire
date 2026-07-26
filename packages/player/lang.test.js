@@ -74,6 +74,34 @@ test("normalises case and whitespace", () => {
   expect(languageName(" FRE ", "en")).toBe("French");
 });
 
+// ── CRITICAL: Intl.DisplayNames#of() throws RangeError for any structurally
+// invalid language id. The language string comes from a raw 3-byte PMT
+// ISO_639_language_descriptor decoded with String::from_utf8_lossy, so an
+// unset/padded/non-UTF-8 descriptor can hand languageName() exactly these
+// shapes. Confirmed to throw when called unguarded (bun/ICU, 2026-07-26):
+// `new Intl.DisplayNames(["en"], {type:"language", fallback:"none"}).of("1ta")`
+// throws RangeError "argument is not a language id" — same for the other three.
+// languageName() must swallow the throw and fall through to the uppercase
+// passthrough rather than propagating (a propagated throw here kills a live
+// stream: _buildMenus -> _applyTracks -> the `tracks` listener -> `_emit`,
+// uncaught, out of `_consumeStream`, treated as a stream failure).
+test("swallows Intl RangeError for structurally invalid language ids and does not throw", () => {
+  expect(() => languageName("1ta", "en")).not.toThrow();
+  expect(() => languageName("e g", "en")).not.toThrow();
+  expect(() => languageName("e-g", "en")).not.toThrow();
+  expect(() => languageName("en_", "en")).not.toThrow();
+  expect(() => languageName("   ", "en")).not.toThrow();
+
+  expect(languageName("1ta", "en")).toBe("1TA");
+  expect(languageName("e g", "en")).toBe("E G");
+  expect(languageName("e-g", "en")).toBe("E-G");
+  expect(languageName("en_", "en")).toBe("EN_");
+  // Whitespace-only trims to the empty string before it ever reaches Intl —
+  // it hits the existing "no code at all" contract (see the null-return test
+  // above) rather than the uppercase-passthrough path. Still must not throw.
+  expect(languageName("   ", "en")).toBeNull();
+});
+
 test("falls back to uppercase when Intl.DisplayNames is unavailable", () => {
   const saved = globalThis.Intl.DisplayNames;
   try {

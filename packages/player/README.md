@@ -38,8 +38,14 @@ subtitle menu (Off + per-language), picture-in-picture, fullscreen, diagnostics 
 Auto-hides on idle.
 
 **Properties/methods:** `play()`, `pause()`, `selectAudio(pid)`, `selectSubtitle(pid|null)`,
-`tracks`. **DOM events:** `sf-tracks`, `sf-stats`, `sf-error`, `sf-ended` (detail carries
-the engine payload). Also mirrors stats to `window.__sfStats`.
+`tracks`. **DOM events:** `sf-tracks`, `sf-tracks-changed`, `sf-stats`, `sf-error`,
+`sf-ended`, `sf-fullscreenchange` (detail carries the engine payload). Also mirrors
+stats to `window.__sfStats`.
+
+- `sf-tracks-changed` — detail `{ added, removed, changed, reselected? }`: what changed
+  since the previous track list (not merely the count). `reselected` is present (`{
+  from, to }`) when the selected audio PID vanished and a fallback PID was chosen.
+- `sf-fullscreenchange` — detail `{ fullscreen, mode }`, see [Fullscreen](#fullscreen) below.
 
 ```js
 const el = document.querySelector("skyfire-player");
@@ -85,9 +91,13 @@ const player = new SkyfirePlayer(canvas, {
 });
 
 // Listen for events before calling init().
-player.on("tracks", (trackList) => {
+player.on("tracks", (trackList, diff) => {
   // trackList: { videoPid, videoCodec, audio: [{pid, kind, language, codec}], subtitles: [...] }
-  console.log("tracks available", trackList);
+  // diff: { added, removed, changed, reselected? } — what changed vs. the previous
+  // track list (a PMT reshuffle can swap a PID or correct a language without
+  // changing the track count). `reselected` is present when the selected audio
+  // PID vanished and the player fell back to another one.
+  console.log("tracks available", trackList, diff);
   // Populate your own UI pickers here, then call player.selectAudio() / selectSubtitle().
 });
 
@@ -137,7 +147,7 @@ await player.init();
 
 | Event | Payload | Description |
 |---|---|---|
-| `"tracks"` | `TrackList` | Fired once when the PAT/PMT is parsed and the track list is available. |
+| `"tracks"` | `(TrackList, diff)` | Fired when the PAT/PMT is parsed and whenever the track set's identity changes; `diff` is `{ added, removed, changed, reselected? }`. |
 | `"stats"` | `object` | Fired on each decoded frame and on status changes. |
 | `"error"` | `{ message, cause }` | Non-recoverable playback error. |
 | `"ended"` | `object` | Stream finished (EOS). |
