@@ -10,7 +10,7 @@ pub mod mp2_header;
 pub mod subtitle_compositor;
 
 pub use transmux::avc_config::AVCDecoderConfigurationRecord;
-pub use transmux::ts_demux::DemuxEvent;
+pub use transmux::ir::DemuxEvent;
 
 /// MPEG-TS packet size in bytes (ISO/IEC 13818-1 §2.4.3.2).
 pub const TS_PACKET_LEN: usize = 188;
@@ -88,6 +88,32 @@ pub fn build_avcc_config(record: &AVCDecoderConfigurationRecord) -> (String, Vec
     } else {
         // Should never happen — serialised_len reserves the exact size.
         (codec, Vec::new())
+    }
+}
+
+/// Convert a transmux absolute PTS/DTS tick value (`Option<i64>`, media plane
+/// step 2c) to the `u64` ticks type Skyfire's sync layer (`skyfire-sync`,
+/// `WasmVideoAu::pts_ticks`, …) carries.
+///
+/// Returns `None` both when transmux reports no timestamp at all (`None` —
+/// e.g. a section-carried sample) **and** when it reports a negative value.
+/// A negative PTS/DTS is not expected from any DVB TS this player demuxes:
+/// wire PTS/DTS are unsigned 33-bit values (ISO/IEC 13818-1 §2.4.3.6) and
+/// transmux only unwraps their rollover at the demux edge — it never
+/// manufactures a negative absolute value from that. But `Sample::pts`/`dts`
+/// are typed `Option<i64>` (container-neutral IR), so a caller casting with
+/// `pts as u64` would silently turn e.g. `-1` into `u64::MAX` and corrupt
+/// every downstream A/V-sync computation without a single visible error.
+/// Treating a negative value the same as "no timestamp" is a defensive
+/// rejection of data this player's own domain says should never occur — it
+/// is deliberately *not* a clamp to `0` (which would misrepresent a bogus
+/// negative value as "the very first tick", asserting a false fact) or a
+/// panic (which would take a whole feed down over one bad sample).
+#[must_use]
+pub fn checked_ticks(ts: Option<i64>) -> Option<u64> {
+    match ts {
+        Some(v) if v >= 0 => Some(v as u64),
+        _ => None,
     }
 }
 
@@ -307,6 +333,41 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // checked_ticks — the i64 -> u64 PTS/DTS conversion (negative rejection)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn checked_ticks_none_stays_none() {
+        assert_eq!(checked_ticks(None), None);
+    }
+
+    #[test]
+    fn checked_ticks_zero_is_some_zero() {
+        assert_eq!(checked_ticks(Some(0)), Some(0));
+    }
+
+    #[test]
+    fn checked_ticks_positive_value_round_trips() {
+        assert_eq!(checked_ticks(Some(900_000)), Some(900_000u64));
+        assert_eq!(checked_ticks(Some(i64::MAX)), Some(i64::MAX as u64));
+    }
+
+    #[test]
+    fn checked_ticks_negative_value_is_rejected_not_wrapped() {
+        // The corruption case the migration brief called out: a naive
+        // `pts as u64` cast turns -1 into u64::MAX. checked_ticks must
+        // reject it as None instead of ever producing that huge value.
+        let converted = checked_ticks(Some(-1));
+        assert_eq!(converted, None, "negative PTS must not silently wrap");
+        assert_ne!(converted, Some(u64::MAX));
+    }
+
+    #[test]
+    fn checked_ticks_i64_min_is_rejected() {
+        assert_eq!(checked_ticks(Some(i64::MIN)), None);
+    }
+
+    // ------------------------------------------------------------------
     // gulli-15s track enumeration
     // ------------------------------------------------------------------
 
@@ -320,16 +381,16 @@ mod tests {
 
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 match meta.kind {
                     TrackKind::Video(_) => {
-                        video_meta = Some((track.spec.track_id, meta));
+                        video_meta = Some((track.track_id, meta));
                     }
                     TrackKind::Audio(_) => {
-                        audio_metas.push((track.spec.track_id, meta));
+                        audio_metas.push((track.track_id, meta));
                     }
                     TrackKind::Subtitle(_) => {
-                        subtitle_metas.push((track.spec.track_id, meta));
+                        subtitle_metas.push((track.track_id, meta));
                     }
                     TrackKind::Other => {}
                 }
@@ -378,9 +439,9 @@ mod tests {
         // Find the video track_id.
         let video_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Video(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -390,7 +451,9 @@ mod tests {
         let video_samples: Vec<_> = events
             .iter()
             .filter_map(|ev| {
-                if let DemuxEvent::Sample { track_id, sample } = ev
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
                     && *track_id == video_track_id
                 {
                     return Some(sample);
@@ -404,15 +467,10 @@ mod tests {
             "must extract video samples from gulli-15s.ts"
         );
 
-        // All video samples must carry source_timing with a finite PTS.
+        // All video samples must carry an absolute, non-negative PTS.
         let pts_vals: Vec<u64> = video_samples
             .iter()
-            .map(|s| {
-                s.source_timing
-                    .as_ref()
-                    .expect("video sample must have source_timing")
-                    .pts
-            })
+            .map(|s| checked_ticks(s.pts).expect("video sample must have a non-negative pts"))
             .collect();
 
         let max_pts = *pts_vals.iter().max().unwrap();
@@ -462,9 +520,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -474,7 +532,9 @@ mod tests {
         let audio_samples: Vec<_> = events
             .iter()
             .filter_map(|ev| {
-                if let DemuxEvent::Sample { track_id, sample } = ev
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
                     && *track_id == audio_track_id
                 {
                     return Some(sample);
@@ -490,11 +550,7 @@ mod tests {
 
         let mut last_pts: Option<u64> = None;
         for s in &audio_samples {
-            let pts = s
-                .source_timing
-                .as_ref()
-                .expect("audio sample must have source_timing")
-                .pts;
+            let pts = checked_ticks(s.pts).expect("audio sample must have a non-negative pts");
             assert!(pts < (1u64 << 33), "PTS must be under 33-bit cap");
             if let Some(last) = last_pts {
                 assert!(
@@ -512,9 +568,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -523,7 +579,9 @@ mod tests {
 
         let mut extracted_audio: Vec<u8> = Vec::new();
         for ev in &events {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && *track_id == audio_track_id
             {
                 extracted_audio.extend_from_slice(&sample.data);
@@ -550,9 +608,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -561,7 +619,9 @@ mod tests {
 
         let mut extracted_audio: Vec<u8> = Vec::new();
         for ev in &events {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && *track_id == audio_track_id
             {
                 extracted_audio.extend_from_slice(&sample.data);
@@ -609,7 +669,7 @@ mod tests {
 
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 match meta.kind {
                     TrackKind::Audio(_) => audio_metas.push(meta),
                     TrackKind::Subtitle(_) => subtitle_metas.push(meta),
@@ -679,9 +739,9 @@ mod tests {
             .iter()
             .find_map(|ev| {
                 if let DemuxEvent::TrackAdded(t) = ev {
-                    let meta = track_meta(&t.spec);
+                    let meta = track_meta(t);
                     if matches!(meta.kind, TrackKind::Video(_)) {
-                        return Some(t.spec.track_id);
+                        return Some(t.track_id);
                     }
                 }
                 None
@@ -690,7 +750,7 @@ mod tests {
         let sync: usize = events
             .iter()
             .filter(|ev| {
-                matches!(ev, DemuxEvent::Sample { track_id, sample } if *track_id == vid_id && sample.is_sync)
+                matches!(ev, DemuxEvent::Sample { track_id, sample, .. } if *track_id == vid_id && sample.flags.is_sync)
             })
             .count();
         let total: usize = events
