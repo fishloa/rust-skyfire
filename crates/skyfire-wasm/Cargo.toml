@@ -10,11 +10,11 @@ description = "WASM bindings for Skyfire — exposes the engine to the JS/WebCod
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-broadcast-common = "8"
+broadcast-common = "9"
 skyfire-core.workspace = true
 skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-mpa.workspace = true
-dvb-subtitle = "0.2"
-transmux = "0.15"
+dvb-subtitle = "0.3"
+transmux = "0.20"
 wasm-bindgen = "0.2"
