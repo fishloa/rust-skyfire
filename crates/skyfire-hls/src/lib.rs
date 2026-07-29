@@ -80,6 +80,12 @@ pub struct HlsSession {
     /// backs `skyfire-server`'s HLS-of-TS and could silently degrade to a
     /// short/empty playlist with no diagnostic at all.
     segmenter_error_count: u64,
+    /// Number of `DiscontinuityKind::TimelineReanchored` events observed
+    /// since construction — issue #101 review, item 1: this arm was
+    /// previously completely silent, so a field report could never confirm
+    /// whether it ever fires. See the match arm in `drain_events` for why
+    /// it deliberately does not mark the segmenter discontinuous.
+    timeline_reanchor_count: u64,
 }
 
 /// Upper bound on samples buffered while waiting for the first video RAP /
@@ -107,6 +113,7 @@ impl HlsSession {
             discontinuity_sequence: 0,
             finished: false,
             segmenter_error_count: 0,
+            timeline_reanchor_count: 0,
         }
     }
 
@@ -121,6 +128,16 @@ impl HlsSession {
     #[must_use]
     pub const fn segmenter_error_count(&self) -> u64 {
         self.segmenter_error_count
+    }
+
+    /// Number of `DiscontinuityKind::TimelineReanchored` events observed
+    /// since construction (>20ms audio dts/pts re-anchor; see the
+    /// `drain_events` match arm for why the segmenter is deliberately not
+    /// marked discontinuous for these). JS-observable analogue: see
+    /// `skyfire-wasm`'s `SkyfireBridge::timeline_reanchor_count`.
+    #[must_use]
+    pub const fn timeline_reanchor_count(&self) -> u64 {
+        self.timeline_reanchor_count
     }
 
     #[must_use]
@@ -259,19 +276,60 @@ impl HlsSession {
                             }
                         }
                         transmux::DiscontinuityKind::TimelineReanchored => {
-                            // Transmux's own ordinary live-audio anchor drift
-                            // correction (see transmux::ts_demux's
-                            // `audio_discontinuity_threshold_90k`) — the
-                            // bitstream itself is unbroken, only its
-                            // dts/pts anchor was rebased; each `Sample`
-                            // reaching the segmenter already carries the
-                            // corrected absolute value (media plane step 2c).
-                            // Emitting EXT-X-DISCONTINUITY here would tell
-                            // every HLS client to expect a new elementary
-                            // stream on an ordinary, splice-free live feed —
-                            // exactly the false signal (and downstream
-                            // audible-click risk) this migration must not
-                            // introduce. Do not mark.
+                            // Corrected per #101 review, item 1: upstream
+                            // transmux 0.20 does NOT classify this as
+                            // ordinary drift absorption — it is the opposite.
+                            // `transmux::ir::event::DiscontinuityKind::
+                            // TimelineReanchored`'s own doc: the live audio
+                            // anchor "drifted from the wire PES clock past
+                            // the re-anchor threshold and was re-anchored —
+                            // a genuine gap (splice, encoder restart), not
+                            // the 90 kHz/sample-rate rounding drift ... which
+                            // the anchor absorbs silently". `ts_demux`'s
+                            // `AudioAnchor` re-anchor logic only fires "when
+                            // the wire clock drifts ... by more than
+                            // audio_discontinuity_threshold_90k, a genuine
+                            // gap" — a threshold deliberately set at 20 ms /
+                            // 1800 ticks @ 90 kHz specifically so ordinary
+                            // muxer rounding noise never reaches it (see that
+                            // constant's own derivation doc).
+                            //
+                            // So this event IS upstream's splice/encoder-
+                            // restart/PID-reuse signal, not muxer noise. We
+                            // still choose NOT to mark_discontinuity() here —
+                            // an accepted risk, not a misreading of the
+                            // event: `DiscontinuityKind` carries no drift
+                            // magnitude, so this call site cannot tell "just
+                            // over the 20 ms line" from "genuinely spliced
+                            // stream", and marking every one of these
+                            // discontinuous on a long-running live feed would
+                            // fragment the playlist (forcing every
+                            // downstream HLS client through an unnecessary
+                            // decoder reset) far more often than a real
+                            // splice occurs. A muxer restart that *does* set
+                            // the adaptation-field discontinuity_indicator is
+                            // already caught by `Signalled` above.
+                            //
+                            // Accepted residual risk: on a live feed whose
+                            // muxer does not set discontinuity_indicator
+                            // across an encoder restart/PID reuse, this path
+                            // emits no #EXT-X-DISCONTINUITY for that seam, so
+                            // a downstream player's own AC-3/E-AC-3 decoder
+                            // keeps its IMDCT overlap-add state running
+                            // across it (possible audible glitch on that
+                            // client) — this crate holds no audio decoder of
+                            // its own to reset. We accept that over marking
+                            // every ordinary >20ms wobble discontinuous.
+                            // Each `Sample`'s dts/pts is already the
+                            // corrected, absolute value (media plane step
+                            // 2c) by the time it reaches the segmenter
+                            // regardless.
+                            self.timeline_reanchor_count += 1;
+                            std::eprintln!(
+                                "[skyfire-hls] discontinuity: TimelineReanchored \
+                                 (audio dts/pts re-anchored, >20ms drift; per \
+                                 accepted risk, segmenter not marked discontinuous)"
+                            );
                         }
                         transmux::DiscontinuityKind::BudgetExceeded { bytes } => {
                             // A per-PID PES buffer cap was tripped and

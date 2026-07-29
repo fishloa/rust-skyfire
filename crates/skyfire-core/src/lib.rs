@@ -312,6 +312,18 @@ impl Engine {
                     // Update video codec config if it has changed (e.g. SPS update).
                     if Some(track.track_id) == self.video_track_id {
                         self.video_codec_config = Some(track.config.clone());
+                        self.video_timescale = Some(track.timescale);
+                    }
+                    // #101 review, finding 3: `video_timescale`/`audio_timescale`
+                    // were only ever set on `TrackAdded`, so a `TrackUpdated`
+                    // that changes a track's timescale (transmux may reopen a
+                    // track with a corrected sample rate after an initial
+                    // misdetect) would silently keep rescaling with the stale
+                    // value — `skyfire-wasm`'s bridge already avoids this by
+                    // re-reading `TrackMeta::timescale` from its per-track map
+                    // on every sample; mirror that freshness here.
+                    if Some(track.track_id) == self.audio_track_id {
+                        self.audio_timescale = Some(track.timescale);
                     }
                     // Update entry in track list.
                     if let Some(entry) = self
@@ -677,12 +689,22 @@ mod tests {
             audio_timescale, 48_000,
             "gulli-15s.ts audio timescale must be its 48 kHz sample rate, not 90 kHz"
         );
-
-        let expected_anchor = checked_ticks_90k(first_raw_pts, audio_timescale)
-            .expect("first audio sample must have a non-negative pts");
-
         assert_eq!(
-            clock.anchor_pts_raw, expected_anchor,
+            first_raw_pts,
+            Some(67_200),
+            "gulli-15s.ts first audio sample's raw pts (48 kHz track units) \
+             must be the measured literal 67_200 — verified 2026-07-29"
+        );
+
+        // #101 review, finding 5: the previous version of this assertion
+        // computed `expected_anchor` by calling `checked_ticks_90k` — the
+        // very function under test — so the assertion would pass even if
+        // that function's rescale formula were wrong. Use the independently
+        // measured literal instead: 126_000 == 67_200 raw @ 48 kHz rescaled
+        // to 90 kHz (67_200 * 90_000 / 48_000 = 126_000), verified 2026-07-29.
+        const EXPECTED_ANCHOR_90K: u64 = 126_000;
+        assert_eq!(
+            clock.anchor_pts_raw, EXPECTED_ANCHOR_90K,
             "clock anchor must equal the first audio pts correctly rescaled \
              from its 48 kHz track timescale to 90 kHz ticks, not the raw \
              48 kHz wire value"

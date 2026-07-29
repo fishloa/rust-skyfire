@@ -71,6 +71,13 @@ pub struct SkyfireBridge {
     audio_decode_error_count: u64,
     /// Number of segmenter errors since construction (JS-observable).
     segmenter_error_count: u64,
+    /// Number of `DiscontinuityKind::TimelineReanchored` events observed
+    /// since construction (JS-observable) — issue #101 review, item 1: this
+    /// arm was previously completely silent, so a field report could never
+    /// confirm whether it ever fires. See the match arm in `drain_events`
+    /// for why it deliberately does not reset the audio decoders or mark
+    /// the segmenter discontinuous.
+    timeline_reanchor_count: u64,
 }
 
 #[wasm_bindgen]
@@ -104,6 +111,7 @@ impl SkyfireBridge {
             last_audio_channels: 0,
             audio_decode_error_count: 0,
             segmenter_error_count: 0,
+            timeline_reanchor_count: 0,
         }
     }
 
@@ -132,6 +140,16 @@ impl SkyfireBridge {
     #[must_use]
     pub fn segmenter_error_count(&self) -> u64 {
         self.segmenter_error_count
+    }
+
+    /// Number of `DiscontinuityKind::TimelineReanchored` events observed
+    /// since construction (>20ms audio dts/pts re-anchor; see the
+    /// `drain_events` match arm for why decoders are deliberately not reset
+    /// for these).
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn timeline_reanchor_count(&self) -> u64 {
+        self.timeline_reanchor_count
     }
 
     /// Push a raw TS chunk into the bridge.
@@ -403,37 +421,65 @@ impl SkyfireBridge {
                             self.mpa_decoder.reset();
                         }
                         DiscontinuityKind::TimelineReanchored => {
-                            // A live audio track's frame-exact dts/pts anchor
-                            // drifted from the wire PES clock past the
-                            // re-anchor threshold and was corrected — this is
-                            // transmux's own ordinary drift absorption on a
-                            // live feed (see transmux::ts_demux's
-                            // `audio_discontinuity_threshold_90k`), not a
-                            // splice. The *timeline* moved; the coded
-                            // bitstream the decoder has already parsed did
-                            // not, so its IMDCT state is still valid. Do NOT
-                            // reset audio_decoder/mpa_decoder here — that
-                            // would introduce an audible click on an
-                            // ordinary, splice-free live stream, which is new
-                            // (and wrong) behaviour this migration must not
-                            // introduce.
+                            // Corrected per #101 review, item 1: upstream
+                            // transmux 0.20 does NOT classify this as
+                            // ordinary drift absorption — it is the opposite.
+                            // `transmux::ir::event::DiscontinuityKind::
+                            // TimelineReanchored`'s own doc: the live audio
+                            // anchor "drifted from the wire PES clock past
+                            // the re-anchor threshold and was re-anchored —
+                            // a genuine gap (splice, encoder restart), not
+                            // the 90 kHz/sample-rate rounding drift ... which
+                            // the anchor absorbs silently". `ts_demux`'s
+                            // `AudioAnchor` re-anchor logic only fires "when
+                            // the wire clock drifts ... by more than
+                            // audio_discontinuity_threshold_90k, a genuine
+                            // gap" — a threshold deliberately set at 20 ms /
+                            // 1800 ticks @ 90 kHz specifically so ordinary
+                            // muxer rounding noise never reaches it (see that
+                            // constant's own derivation doc).
                             //
-                            // Also do NOT mark the segmenter discontinuous:
-                            // `mark_discontinuity()` tells the *client*
-                            // (EXT-X-DISCONTINUITY for HLS, an analogous CMAF
-                            // signal here) that the bitstream itself may not
-                            // be contiguous with what came before, which is
-                            // exactly the false signal we just decided not
-                            // to act on locally — telling a downstream player
-                            // "treat this as a new program" while our own
-                            // decoder keeps running unreset would be
-                            // self-contradictory, and would just relocate the
-                            // audible-click bug from this process to the
-                            // client's. Each `Sample`'s dts/pts is already
-                            // the corrected, absolute value (transmux's own
-                            // IR, media plane step 2c) by the time it reaches
-                            // the segmenter, so no boundary-math correction
-                            // is needed here either.
+                            // So this event IS upstream's splice/encoder-
+                            // restart/PID-reuse signal, not muxer noise. We
+                            // still choose NOT to reset audio_decoder/
+                            // mpa_decoder or mark_discontinuity() here — an
+                            // accepted risk, not a misreading of the event:
+                            // `DiscontinuityKind` carries no drift magnitude,
+                            // so this call site cannot tell "just over the
+                            // 20 ms line" from "genuinely spliced stream",
+                            // and resetting the AC-3/E-AC-3/MP2 decoders'
+                            // IMDCT overlap-add state plus forcing a CMAF/HLS
+                            // discontinuity signal on every one of these on a
+                            // long-running live feed would itself introduce
+                            // audible clicks / unnecessary client-side resets
+                            // far more often than a genuine splice occurs. A
+                            // muxer restart that *does* set the adaptation-
+                            // field discontinuity_indicator is already
+                            // caught by `Signalled` above with a full reset.
+                            //
+                            // Accepted residual risk: on a live feed whose
+                            // muxer does not set discontinuity_indicator
+                            // across an encoder restart/PID reuse, we keep
+                            // the AC-3/E-AC-3 decoders' IMDCT overlap-add
+                            // window running across that seam (a possible
+                            // audible glitch) and emit no
+                            // #EXT-X-DISCONTINUITY / CMAF discontinuity
+                            // signal for it. We accept that rather than
+                            // reset-on-every-wobble because ordinary jittery
+                            // live muxers cross the 20 ms line routinely,
+                            // and a full reset there is a more frequent,
+                            // certainly-audible regression traded for a rare,
+                            // possibly-inaudible one. Each `Sample`'s dts/pts
+                            // is already the corrected, absolute value
+                            // (transmux's own IR, media plane step 2c) by
+                            // the time it reaches the segmenter regardless.
+                            self.timeline_reanchor_count += 1;
+                            std::eprintln!(
+                                "[skyfire-wasm] discontinuity: TimelineReanchored \
+                                 (audio dts/pts re-anchored, >20ms drift; per \
+                                 accepted risk, decoders not reset, segmenter \
+                                 not marked discontinuous)"
+                            );
                         }
                         DiscontinuityKind::BudgetExceeded { bytes } => {
                             // A per-PID PES buffer cap was tripped and
@@ -492,7 +538,18 @@ impl SkyfireBridge {
                 self.cached_video_config = Some(CachedVideoConfig { codec, description });
             }
 
-            let ts = transmux::TrackSpec::new(track_id, 90_000, track.config.clone());
+            // #101 review, finding 2: this must be the *track's own*
+            // timescale, not a hardcoded 90_000 — the mirror image of the
+            // bug just fixed. Harmless today (only the video track is ever
+            // pushed into this MSE-fallback segmenter, and video's timescale
+            // is always 90 000), but `Sample`s pushed into `seg` below carry
+            // ticks in `track.timescale` units, and this value becomes the
+            // segmenter's per-track `TrackSpec::timescale`, which in turn
+            // feeds `WasmMediaSegment.base_media_decode_time` — documented as
+            // 90 kHz. The `Segmenter::new` second argument (2.0s target
+            // duration's `90_000`) is that separate global fragmenting
+            // timescale, not this per-track one, and is unaffected.
+            let ts = transmux::TrackSpec::new(track_id, track.timescale, track.config.clone());
             if let Ok(seg) = transmux::Segmenter::new(vec![ts], 90_000, 2.0) {
                 self.segmenter = Some(seg);
             }

@@ -142,13 +142,25 @@ pub fn checked_ticks(ts: Option<i64>) -> Option<u64> {
 ///   assume 90 kHz.
 ///
 /// The rescale (`ticks * 90_000 / timescale`) runs in a `u128` intermediate,
-/// not `f64` (must be exact) and not a bare `u64` multiply (must not
-/// overflow): a 33-bit wire PTS (`< 2^33`) times 90 000 is only ~2^47, well
-/// inside `u64`, but [`checked_ticks`] accepts any non-negative `i64` up to
-/// `i64::MAX` (~2^63), and `2^63 * 90_000` (~2^80) overflows `u64` — a real,
-/// reachable overflow, not a theoretical one. If the final quotient still
-/// doesn't fit `u64` (only possible for a pathologically tiny `timescale`),
-/// this returns `None` rather than truncating or wrapping.
+/// not `f64` and not a bare `u64` multiply. Not `f64`: a `PTS` can carry up
+/// to 33+ significant bits (`checked_ticks` accepts any non-negative `i64`,
+/// practically up to the low 2^33 range and beyond), which is already past
+/// `f64`'s 53-bit mantissa once multiplied by 90 000 — silent precision loss,
+/// not a rounding nicety. Not a bare `u64` multiply: a 33-bit wire PTS
+/// (`< 2^33`) times 90 000 is only ~2^47, well inside `u64`, but
+/// [`checked_ticks`] accepts any non-negative `i64` up to `i64::MAX` (~2^63),
+/// and `2^63 * 90_000` (~2^80) overflows `u64` — a real, reachable overflow,
+/// not a theoretical one. If the final quotient still doesn't fit `u64`
+/// (only possible for a pathologically tiny `timescale`), this returns
+/// `None` rather than truncating or wrapping.
+///
+/// The integer division (`/timescale`) is not exact in general — e.g.
+/// 48 kHz → 90 kHz is a ×1.875 rescale, so truncation can lose up to 1 tick
+/// (≈11 µs at 90 kHz). That is harmless here: the truncation is monotone
+/// (non-decreasing input ticks never produce a decreasing output), so it can
+/// never invert the order of two PTS/DTS values — only shave sub-tick
+/// precision no downstream consumer (WebCodecs, `AudioClock`, HLS segment
+/// timing) resolves anyway.
 #[must_use]
 pub fn checked_ticks_90k(ts: Option<i64>, timescale: u32) -> Option<u64> {
     let raw = checked_ticks(ts)?;
@@ -958,5 +970,85 @@ mod tests {
             "gulli-15s open-GOP: transmux 0.14 must flag GOP-start RAPs (a subset), \
              not zero and not all — got {sync}/{total}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // audio/video absolute first-PTS offset: the bug's fixture-independent
+    // signature (#101 review, finding 4). The span-agreement test above
+    // discriminates well on gulli-15s.ts (pre-fix span diff ~5.553s) but is
+    // fixture-dependent: on france2-8s.ts the pre-fix span diff is only
+    // ~2.65s and would pass. Pre-fix, audio's raw sample-rate ticks were read
+    // directly as if they were already 90 kHz ticks; for a PCR-anchored DVB
+    // feed that puts the two tracks' absolute PTS bases tens of thousands of
+    // seconds apart — never a plausible live audio/video pre-roll gap (a
+    // couple of seconds at most). Verified pre-fix (rescale temporarily
+    // reverted to a raw `checked_ticks` pass-through for audio): gulli-15s.ts
+    // first_video_pts_90k=285120 first_audio_pts_90k(raw)=67200 (offset
+    // 2.421s — this fixture alone doesn't discriminate either); france2-8s.ts
+    // first_video_pts_90k=4535564304 first_audio_pts_90k(raw)=2418925532, an
+    // offset of ~23518s — the bug's real, fixture-independent signature.
+    // Runs over both fixtures; keeps the existing span check above as-is.
+    #[test]
+    fn audio_video_first_pts_offset_is_small_once_scaled_to_90khz() {
+        for name in ["gulli-15s.ts", "france2-8s.ts"] {
+            let events = demux_fixture(name);
+
+            let mut video_track: Option<(u32, u32)> = None;
+            let mut audio_track: Option<(u32, u32)> = None;
+            for ev in &events {
+                if let DemuxEvent::TrackAdded(track) = ev {
+                    let meta = track_meta(track);
+                    match meta.kind {
+                        TrackKind::Video(_) if video_track.is_none() => {
+                            video_track = Some((track.track_id, track.timescale));
+                        }
+                        TrackKind::Audio(_) if audio_track.is_none() => {
+                            audio_track = Some((track.track_id, track.timescale));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let (video_id, video_timescale) =
+                video_track.unwrap_or_else(|| panic!("{name}: must find a video track"));
+            let (audio_id, audio_timescale) =
+                audio_track.unwrap_or_else(|| panic!("{name}: must find an audio track"));
+
+            let mut first_video_pts_90k: Option<u64> = None;
+            let mut first_audio_pts_90k: Option<u64> = None;
+            for ev in &events {
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
+                {
+                    if *track_id == video_id && first_video_pts_90k.is_none() {
+                        first_video_pts_90k = checked_ticks_90k(sample.pts, video_timescale);
+                    } else if *track_id == audio_id && first_audio_pts_90k.is_none() {
+                        first_audio_pts_90k = checked_ticks_90k(sample.pts, audio_timescale);
+                    }
+                }
+            }
+
+            let first_video_pts_90k = first_video_pts_90k
+                .unwrap_or_else(|| panic!("{name}: must have a first video PTS"));
+            let first_audio_pts_90k = first_audio_pts_90k
+                .unwrap_or_else(|| panic!("{name}: must have a first audio PTS"));
+
+            let offset_secs =
+                (first_video_pts_90k as f64 - first_audio_pts_90k as f64).abs() / 90_000.0;
+            eprintln!(
+                "{name}: first_video_pts_90k={first_video_pts_90k} \
+                 first_audio_pts_90k={first_audio_pts_90k} offset={offset_secs:.3}s"
+            );
+            assert!(
+                offset_secs < 3.0,
+                "{name}: audio/video first-PTS offset must be a couple of \
+                 seconds once both are correctly scaled to 90 kHz ticks (a \
+                 live pre-roll gap), not tens of thousands of seconds (the \
+                 bug's fixture-independent signature): \
+                 first_video_pts_90k={first_video_pts_90k} \
+                 first_audio_pts_90k={first_audio_pts_90k} offset={offset_secs:.3}s"
+            );
+        }
     }
 }
