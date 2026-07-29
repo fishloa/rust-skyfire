@@ -125,18 +125,19 @@ impl HlsSession {
         self.finished = true;
         self.demux.finish();
         self.drain_events();
-        if let Some(seg) = self.seg.as_mut()
-            && let Ok(Some(ts)) = seg.finish()
-        {
-            Self::store(
-                &mut self.segments,
-                &mut self.next_seq,
-                &mut self.media_sequence,
-                &mut self.target_duration,
-                &mut self.discontinuity_sequence,
-                &self.cfg,
-                ts,
-            );
+        if let Some(seg) = self.seg.as_mut() {
+            let _ = seg.finish();
+            for ts in seg.take_ready() {
+                Self::store(
+                    &mut self.segments,
+                    &mut self.next_seq,
+                    &mut self.media_sequence,
+                    &mut self.target_duration,
+                    &mut self.discontinuity_sequence,
+                    &self.cfg,
+                    ts,
+                );
+            }
         }
     }
 
@@ -175,21 +176,23 @@ impl HlsSession {
         while let Some(ev) = self.demux.poll_event() {
             match ev {
                 DemuxEvent::TrackAdded(track) => {
-                    let tid = track.spec.track_id;
+                    let tid = track.track_id;
                     if !self.known_track_ids.contains(&tid) {
                         self.known_track_ids.push(tid);
-                        if matches!(track_meta(&track.spec).kind, TrackKind::Video(_)) {
+                        if matches!(track_meta(&track).kind, TrackKind::Video(_)) {
                             self.video_track_id.get_or_insert(tid);
                         }
                         if self.seg.is_none() {
-                            self.pending_specs.push(track.spec.clone());
+                            self.pending_specs.push(track.clone());
                         } else if let Some(seg) = self.seg.as_mut() {
-                            let _ = seg.add_track(track.spec.clone());
+                            let _ = seg.add_track(track.clone());
                         }
                     }
                 }
                 DemuxEvent::TrackUpdated(_) => {}
-                DemuxEvent::Sample { track_id, sample } => {
+                DemuxEvent::Sample {
+                    track_id, sample, ..
+                } => {
                     if self.seg.is_some() {
                         self.push_sample(track_id, sample);
                     } else {
@@ -212,7 +215,7 @@ impl HlsSession {
                         self.try_build();
                     }
                 }
-                DemuxEvent::TracksResolved => {
+                DemuxEvent::TracksResolved { .. } => {
                     self.tracks_resolved = true;
                     self.try_build();
                 }
@@ -221,7 +224,7 @@ impl HlsSession {
                         seg.mark_discontinuity();
                     }
                 }
-                DemuxEvent::Pcr(_) => {}
+                DemuxEvent::ClockReference { .. } => {}
                 _ => {}
             }
         }
@@ -240,7 +243,7 @@ impl HlsSession {
         let Some(rap_idx) = self
             .buffer
             .iter()
-            .position(|(tid, s)| *tid == vid && s.is_sync)
+            .position(|(tid, s)| *tid == vid && s.flags.is_sync)
         else {
             return;
         };
@@ -263,18 +266,25 @@ impl HlsSession {
     }
 
     fn push_sample(&mut self, track_id: u32, sample: transmux::Sample) {
-        if let Some(seg) = self.seg.as_mut()
-            && let Ok(Some(ts)) = seg.push(track_id, sample)
-        {
-            Self::store(
-                &mut self.segments,
-                &mut self.next_seq,
-                &mut self.media_sequence,
-                &mut self.target_duration,
-                &mut self.discontinuity_sequence,
-                &self.cfg,
-                ts,
-            );
+        if let Some(seg) = self.seg.as_mut() {
+            // Any segment this push cuts is queued (not returned inline) —
+            // transmux 0.20 (issue R2) removed the `Result<Option<TsSegment>>`
+            // inline return since `finish` is both an inherent and a `Stage`
+            // trait method with the same name/arity, so an unqualified
+            // `finish()` call always resolved to the inherent one; retrieval
+            // is now exclusively via `take_ready()`.
+            let _ = seg.push(track_id, sample);
+            for ts in seg.take_ready() {
+                Self::store(
+                    &mut self.segments,
+                    &mut self.next_seq,
+                    &mut self.media_sequence,
+                    &mut self.target_duration,
+                    &mut self.discontinuity_sequence,
+                    &self.cfg,
+                    ts,
+                );
+            }
         }
     }
 
