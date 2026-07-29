@@ -332,10 +332,19 @@ impl SkyfireBridge {
             match ev {
                 DemuxEvent::TrackAdded(track) => self.on_track_added(track),
                 DemuxEvent::TrackUpdated(track) => self.on_track_updated(track),
-                DemuxEvent::Sample { track_id, sample } => self.on_sample(track_id, sample),
-                DemuxEvent::Pcr(pcr) => {
-                    // pcr_27mhz is 27 MHz; convert to 90 kHz by dividing by 300.
-                    self.latest_pcr = Some((pcr.pcr_27mhz / 300) as i64);
+                DemuxEvent::Sample {
+                    track_id, sample, ..
+                } => self.on_sample(track_id, sample),
+                DemuxEvent::ClockReference {
+                    ticks, clock_hz, ..
+                } => {
+                    // Container-neutral clock reference: convert `ticks` (in
+                    // `clock_hz` Hz, 27 MHz for an MPEG-2 TS PCR — but read,
+                    // never assumed) to 90 kHz ticks.
+                    if clock_hz > 0 {
+                        let ticks_90k = u128::from(ticks) * 90_000 / u128::from(clock_hz);
+                        self.latest_pcr = i64::try_from(ticks_90k).ok();
+                    }
                 }
                 DemuxEvent::Discontinuity { .. } => {
                     if let Some(ref mut seg) = self.segmenter {
@@ -352,19 +361,19 @@ impl SkyfireBridge {
         }
     }
 
-    fn on_track_added(&mut self, track: transmux::Track) {
-        let meta = skyfire_ts::track_meta(&track.spec);
-        let track_id = track.spec.track_id;
+    fn on_track_added(&mut self, track: transmux::TrackSpec) {
+        let meta = skyfire_ts::track_meta(&track);
+        let track_id = track.track_id;
 
         if matches!(meta.kind, TrackKind::Video(_)) && self.video_track_id.is_none() {
             self.video_track_id = Some(track_id);
 
-            if let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config {
+            if let transmux::CodecConfig::Avc { ref config, .. } = track.config {
                 let (codec, description) = skyfire_ts::build_avcc_config(&config.config);
                 self.cached_video_config = Some(CachedVideoConfig { codec, description });
             }
 
-            let ts = transmux::TrackSpec::new(track_id, 90_000, track.spec.config.clone());
+            let ts = transmux::TrackSpec::new(track_id, 90_000, track.config.clone());
             if let Ok(seg) = transmux::Segmenter::new(vec![ts], 90_000, 2.0) {
                 self.segmenter = Some(seg);
             }
@@ -380,17 +389,17 @@ impl SkyfireBridge {
         self.tracks.insert(track_id, meta);
     }
 
-    fn on_track_updated(&mut self, track: transmux::Track) {
-        let meta = skyfire_ts::track_meta(&track.spec);
+    fn on_track_updated(&mut self, track: transmux::TrackSpec) {
+        let meta = skyfire_ts::track_meta(&track);
         // If the video track's config changed (e.g. in-band SPS update), rebuild
         // cached_video_config — mirrors what skyfire-core's Engine already does.
-        if Some(track.spec.track_id) == self.video_track_id
-            && let transmux::CodecConfig::Avc { ref config, .. } = track.spec.config
+        if Some(track.track_id) == self.video_track_id
+            && let transmux::CodecConfig::Avc { ref config, .. } = track.config
         {
             let (codec, description) = skyfire_ts::build_avcc_config(&config.config);
             self.cached_video_config = Some(CachedVideoConfig { codec, description });
         }
-        self.tracks.insert(track.spec.track_id, meta);
+        self.tracks.insert(track.track_id, meta);
     }
 
     fn on_sample(&mut self, track_id: u32, sample: transmux::Sample) {
@@ -401,24 +410,26 @@ impl SkyfireBridge {
 
         match meta.kind {
             TrackKind::Video(_) if Some(track_id) == self.video_track_id => {
-                // Seed latest_pcr from video PTS only before the first real PCR
-                // event arrives.  DemuxEvent::Pcr is the authoritative source and
-                // must not be overwritten by every video sample.
+                // Seed latest_pcr from video PTS only before the first real
+                // clock-reference event arrives. DemuxEvent::ClockReference is
+                // the authoritative source and must not be overwritten by
+                // every video sample. checked_ticks rejects a negative pts
+                // (never expected) rather than trusting it.
                 if self.latest_pcr.is_none()
-                    && let Some(ref st) = sample.source_timing
+                    && let Some(pts) = skyfire_ts::checked_ticks(sample.pts)
                 {
-                    self.latest_pcr = Some(st.pts as i64);
+                    self.latest_pcr = Some(pts as i64);
                 }
-                let pts = sample.source_timing.as_ref().map(|t| t.pts);
-                let dts = sample.source_timing.as_ref().map(|t| t.dts);
+                let pts = skyfire_ts::checked_ticks(sample.pts);
+                let dts = skyfire_ts::checked_ticks(sample.dts);
                 // transmux 0.14 (rust-broadcast#595) sets is_sync on open-GOP
                 // random-access points (IDR / recovery-point SEI / SPS-led AU),
                 // so no client-side keyframe re-derivation is needed.
                 self.video_aus.push(WasmVideoAu {
                     pts_ticks: pts,
                     dts_ticks: dts,
-                    is_keyframe: sample.is_sync,
-                    bytes: sample.data.clone(),
+                    is_keyframe: sample.flags.is_sync,
+                    bytes: sample.data.to_vec(),
                 });
                 if let Some(ref mut seg) = self.segmenter
                     && let Err(e) = seg.push(track_id, sample)
@@ -429,7 +440,7 @@ impl SkyfireBridge {
             }
             TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
                 self.probe_channels(meta.pid, codec, &sample.data);
-                let pts_ticks = sample.source_timing.as_ref().map(|t| t.pts);
+                let pts_ticks = skyfire_ts::checked_ticks(sample.pts);
                 self.decode_audio(codec, pts_ticks, &sample.data);
             }
             // Unselected audio PIDs are never decoded, but their frame headers
@@ -440,7 +451,7 @@ impl SkyfireBridge {
             }
             TrackKind::Subtitle(_) if meta.pid == self.selected_subtitle_pid => {
                 let pid = meta.pid.unwrap_or(0);
-                let pts_ticks = sample.source_timing.as_ref().map(|t| t.pts);
+                let pts_ticks = skyfire_ts::checked_ticks(sample.pts);
                 if sample.data.first() == Some(&dvb_subtitle::DataIdentifier)
                     && let Ok(field) = dvb_subtitle::PesDataField::parse(&sample.data)
                 {
