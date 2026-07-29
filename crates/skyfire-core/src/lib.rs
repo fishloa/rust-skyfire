@@ -18,7 +18,7 @@ pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
 use skyfire_sync::{AudioClock, VideoFrameQueue};
-use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, checked_ticks, track_meta};
+use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, checked_ticks_90k, track_meta};
 use transmux::pipeline::CodecConfig;
 
 /// Engine build identifier (crate version).
@@ -37,9 +37,10 @@ pub const fn version() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct VideoUnit {
     /// Presentation timestamp in 90 kHz ticks, or `None` when transmux
-    /// reported no timestamp — or a negative one (see
-    /// [`skyfire_ts::checked_ticks`]; never fabricated, never silently
-    /// wrapped from a negative `i64`).
+    /// reported no timestamp, a negative one, or an unknown track timescale
+    /// (see [`skyfire_ts::checked_ticks_90k`]; never fabricated, never
+    /// silently wrapped from a negative `i64`, never assumed to already be
+    /// 90 kHz).
     pub pts: Option<u64>,
     /// Whether this access unit is a sync/keyframe (IDR).
     pub is_sync: bool,
@@ -108,6 +109,14 @@ pub struct Engine {
     audio_track_id: Option<u32>,
     /// `CodecConfig` for the video track (held to build `video_config()`).
     video_codec_config: Option<CodecConfig>,
+    /// The video track's own media timescale (`TrackSpec::timescale`), used
+    /// to rescale its samples' pts/dts to 90 kHz ticks. Always 90 000 in
+    /// practice, but read off the track rather than assumed — see
+    /// [`skyfire_ts::checked_ticks_90k`].
+    video_timescale: Option<u32>,
+    /// The audio track's own media timescale (its sample rate, e.g.
+    /// 48 000) — **not** 90 kHz. See [`skyfire_ts::checked_ticks_90k`].
+    audio_timescale: Option<u32>,
 
     // ── audio ──────────────────────────────────────────────────────
     /// Accumulated raw E-AC-3 ES bytes (before batch decode).
@@ -137,6 +146,8 @@ impl Engine {
             video_track_id: None,
             audio_track_id: None,
             video_codec_config: None,
+            video_timescale: None,
+            audio_timescale: None,
             audio_es_buf: Vec::new(),
             pcm_output: Vec::new(),
             audio_sample_rate: 0,
@@ -287,9 +298,11 @@ impl Engine {
                         TrackKind::Video(_) if self.video_track_id.is_none() => {
                             self.video_track_id = Some(track.track_id);
                             self.video_codec_config = Some(track.config.clone());
+                            self.video_timescale = Some(track.timescale);
                         }
                         TrackKind::Audio(_) if self.audio_track_id.is_none() => {
                             self.audio_track_id = Some(track.track_id);
+                            self.audio_timescale = Some(track.timescale);
                         }
                         _ => {}
                     }
@@ -316,7 +329,12 @@ impl Engine {
                     track_id, sample, ..
                 } => {
                     if Some(track_id) == self.video_track_id {
-                        let pts = checked_ticks(sample.pts);
+                        // Rescale via the video track's own timescale (always
+                        // 90_000 in practice) rather than assuming it — same
+                        // conversion function, same code path as audio, no
+                        // special case that could drift (see
+                        // `checked_ticks_90k`'s docs).
+                        let pts = checked_ticks_90k(sample.pts, self.video_timescale.unwrap_or(0));
                         self.video_units.push(VideoUnit {
                             pts,
                             is_sync: sample.flags.is_sync,
@@ -324,8 +342,12 @@ impl Engine {
                         });
                     } else if Some(track_id) == self.audio_track_id {
                         // Capture the first audio PTS for clock anchoring.
+                        // The audio track's timescale is its sample rate
+                        // (e.g. 48_000), not 90 kHz (transmux 0.20) — must be
+                        // rescaled before it becomes AudioClock's anchor.
                         if self.first_audio_pts.is_none()
-                            && let Some(pts) = checked_ticks(sample.pts)
+                            && let Some(pts) =
+                                checked_ticks_90k(sample.pts, self.audio_timescale.unwrap_or(0))
                         {
                             self.first_audio_pts = Some(pts);
                         }
@@ -610,14 +632,64 @@ mod tests {
         let engine = engine_for_fixture("gulli-15s.ts");
 
         let clock = engine.clock();
-        assert!(
-            clock.anchor_pts_raw > 0,
-            "clock must be anchored on first audio PTS"
-        );
         assert_eq!(clock.sample_rate, 48_000);
         assert!(
             clock.samples_played > 0,
             "clock must have advanced with decoded samples"
+        );
+
+        // Strengthened per #101 review: `anchor_pts_raw > 0` alone passes
+        // with the timescale bug too (a raw 48 kHz tick value is also `> 0`,
+        // just the wrong magnitude — 48_000 raw ticks misread as 90 kHz reads
+        // as ~0.53 s instead of the true 1 s). Independently recover the
+        // first audio sample's *raw* pts (in the audio track's own 48 kHz
+        // timescale) and assert the clock's anchor equals that value
+        // correctly rescaled to 90 kHz — not merely non-zero.
+        let data = load_fixture("gulli-15s.ts");
+        let mut demux = TsDemux::new();
+        let mut audio_track: Option<(u32, u32)> = None; // (track_id, timescale)
+        let mut first_raw_pts: Option<i64> = None;
+        for chunk in data.chunks(4096) {
+            demux.feed(chunk);
+            while let Some(ev) = demux.poll_event() {
+                match ev {
+                    DemuxEvent::TrackAdded(track) => {
+                        let meta = track_meta(&track);
+                        if matches!(meta.kind, TrackKind::Audio(_)) && audio_track.is_none() {
+                            audio_track = Some((track.track_id, track.timescale));
+                        }
+                    }
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
+                        if audio_track.is_some_and(|(id, _)| id == track_id)
+                            && first_raw_pts.is_none()
+                        {
+                            first_raw_pts = sample.pts;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (_, audio_timescale) = audio_track.expect("must find an audio track");
+        assert_eq!(
+            audio_timescale, 48_000,
+            "gulli-15s.ts audio timescale must be its 48 kHz sample rate, not 90 kHz"
+        );
+
+        let expected_anchor = checked_ticks_90k(first_raw_pts, audio_timescale)
+            .expect("first audio sample must have a non-negative pts");
+
+        assert_eq!(
+            clock.anchor_pts_raw, expected_anchor,
+            "clock anchor must equal the first audio pts correctly rescaled \
+             from its 48 kHz track timescale to 90 kHz ticks, not the raw \
+             48 kHz wire value"
+        );
+        assert!(
+            clock.anchor_pts_raw > 0,
+            "clock must be anchored on first audio PTS"
         );
     }
 

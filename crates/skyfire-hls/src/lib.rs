@@ -74,6 +74,12 @@ pub struct HlsSession {
     // a rolling playlist (RFC 8216 §4.3.3.3).
     discontinuity_sequence: u64,
     finished: bool,
+    /// Number of `transmux` segmenter errors observed since construction
+    /// (`add_track`/`push`/`finish` returning `Err`) — issue #101 review,
+    /// item 3: these used to be silently swallowed via `let _ = ...`, which
+    /// backs `skyfire-server`'s HLS-of-TS and could silently degrade to a
+    /// short/empty playlist with no diagnostic at all.
+    segmenter_error_count: u64,
 }
 
 /// Upper bound on samples buffered while waiting for the first video RAP /
@@ -100,12 +106,21 @@ impl HlsSession {
             target_duration: default_td,
             discontinuity_sequence: 0,
             finished: false,
+            segmenter_error_count: 0,
         }
     }
 
     #[must_use]
     pub fn is_ready(&self) -> bool {
         !self.segments.is_empty()
+    }
+
+    /// Number of `transmux` segmenter errors (`add_track`/`push`/`finish`
+    /// failures) observed since construction. JS-observable analogue: see
+    /// `skyfire-wasm`'s `SkyfireBridge::segmenter_error_count`.
+    #[must_use]
+    pub const fn segmenter_error_count(&self) -> u64 {
+        self.segmenter_error_count
     }
 
     #[must_use]
@@ -126,7 +141,10 @@ impl HlsSession {
         self.demux.finish();
         self.drain_events();
         if let Some(seg) = self.seg.as_mut() {
-            let _ = seg.finish();
+            if let Err(e) = seg.finish() {
+                self.segmenter_error_count += 1;
+                std::eprintln!("[skyfire-hls] segmenter finish error: {e}");
+            }
             for ts in seg.take_ready() {
                 Self::store(
                     &mut self.segments,
@@ -184,8 +202,11 @@ impl HlsSession {
                         }
                         if self.seg.is_none() {
                             self.pending_specs.push(track.clone());
-                        } else if let Some(seg) = self.seg.as_mut() {
-                            let _ = seg.add_track(track.clone());
+                        } else if let Some(seg) = self.seg.as_mut()
+                            && let Err(e) = seg.add_track(track.clone())
+                        {
+                            self.segmenter_error_count += 1;
+                            std::eprintln!("[skyfire-hls] segmenter add_track error: {e}");
                         }
                     }
                 }
@@ -219,9 +240,62 @@ impl HlsSession {
                     self.tracks_resolved = true;
                     self.try_build();
                 }
-                DemuxEvent::Discontinuity { .. } => {
-                    if let Some(seg) = self.seg.as_mut() {
-                        seg.mark_discontinuity();
+                DemuxEvent::Discontinuity { kind, .. } => {
+                    // Per-kind decision (issue #101 review, item 2; mirrors
+                    // skyfire-wasm's `SkyfireBridge::drain_events`, whose
+                    // per-arm reasoning this repeats for the HLS-of-TS path):
+                    // `mark_discontinuity()` here means "emit
+                    // #EXT-X-DISCONTINUITY before the next segment" (RFC 8216
+                    // §4.3.2.3) — telling every HLS client the bitstream may
+                    // not be contiguous with what came before, which is only
+                    // true for a real splice/data-loss cause.
+                    match kind {
+                        transmux::DiscontinuityKind::Signalled => {
+                            // Explicit adaptation-field discontinuity_indicator
+                            // (ISO/IEC 13818-1 §2.4.3.5) — a genuine
+                            // splice/encoder restart. Keep today's behaviour.
+                            if let Some(seg) = self.seg.as_mut() {
+                                seg.mark_discontinuity();
+                            }
+                        }
+                        transmux::DiscontinuityKind::TimelineReanchored => {
+                            // Transmux's own ordinary live-audio anchor drift
+                            // correction (see transmux::ts_demux's
+                            // `audio_discontinuity_threshold_90k`) — the
+                            // bitstream itself is unbroken, only its
+                            // dts/pts anchor was rebased; each `Sample`
+                            // reaching the segmenter already carries the
+                            // corrected absolute value (media plane step 2c).
+                            // Emitting EXT-X-DISCONTINUITY here would tell
+                            // every HLS client to expect a new elementary
+                            // stream on an ordinary, splice-free live feed —
+                            // exactly the false signal (and downstream
+                            // audible-click risk) this migration must not
+                            // introduce. Do not mark.
+                        }
+                        transmux::DiscontinuityKind::BudgetExceeded { bytes } => {
+                            // A per-PID PES buffer cap was tripped and
+                            // in-flight payload was dropped — real data loss,
+                            // not just a timeline correction. Treat like
+                            // `Signalled`.
+                            std::eprintln!(
+                                "[skyfire-hls] discontinuity: PES budget exceeded, \
+                                 {bytes} bytes dropped"
+                            );
+                            if let Some(seg) = self.seg.as_mut() {
+                                seg.mark_discontinuity();
+                            }
+                        }
+                        // `#[non_exhaustive]`: default new/unknown kinds to
+                        // the conservative, mark-discontinuous behaviour —
+                        // the safe assumption is "may not be contiguous",
+                        // never the `TimelineReanchored` exemption, which is
+                        // earned per known cause, not a default.
+                        _ => {
+                            if let Some(seg) = self.seg.as_mut() {
+                                seg.mark_discontinuity();
+                            }
+                        }
                     }
                 }
                 DemuxEvent::ClockReference { .. } => {}
@@ -273,7 +347,10 @@ impl HlsSession {
             // trait method with the same name/arity, so an unqualified
             // `finish()` call always resolved to the inherent one; retrieval
             // is now exclusively via `take_ready()`.
-            let _ = seg.push(track_id, sample);
+            if let Err(e) = seg.push(track_id, sample) {
+                self.segmenter_error_count += 1;
+                std::eprintln!("[skyfire-hls] segmenter push error: {e}");
+            }
             for ts in seg.take_ready() {
                 Self::store(
                     &mut self.segments,

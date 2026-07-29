@@ -1,6 +1,7 @@
 use broadcast_common::traits::Parse;
 use skyfire_ts::{AudioCodec, DemuxEvent, SubtitleKind, TrackKind, TrackMeta};
 use skyfire_ts::{audio_codec_str, video_codec_str};
+use transmux::DiscontinuityKind;
 use wasm_bindgen::prelude::*;
 
 use crate::bridge_dto::{
@@ -336,25 +337,143 @@ impl SkyfireBridge {
                     track_id, sample, ..
                 } => self.on_sample(track_id, sample),
                 DemuxEvent::ClockReference {
-                    ticks, clock_hz, ..
+                    ticks,
+                    clock_hz,
+                    discontinuous,
+                    ..
                 } => {
                     // Container-neutral clock reference: convert `ticks` (in
                     // `clock_hz` Hz, 27 MHz for an MPEG-2 TS PCR — but read,
                     // never assumed) to 90 kHz ticks.
                     if clock_hz > 0 {
                         let ticks_90k = u128::from(ticks) * 90_000 / u128::from(clock_hz);
-                        self.latest_pcr = i64::try_from(ticks_90k).ok();
+                        // Assign only on success (mirrors the `clock_hz > 0`
+                        // guard above): a conversion failure must never
+                        // clobber a previously valid `latest_pcr` to `None`
+                        // (issue #101 review, item 5) — stale-but-valid beats
+                        // silently absent.
+                        if let Ok(v) = i64::try_from(ticks_90k) {
+                            self.latest_pcr = Some(v);
+                        }
                     }
+                    // `discontinuous` (issue #101 review, item 4): explicitly
+                    // bound rather than dropped via `..`, so this reasoning
+                    // is visible and re-examined if it ever stops holding,
+                    // not an invisible assumption.
+                    //
+                    // Left as a no-op deliberately, not silently: `latest_pcr`
+                    // above is a plain last-value overwrite with no delta/
+                    // accumulator state, so a discontinuous jump in the
+                    // *value* is not a corruption risk here the way it would
+                    // be for e.g. `skyfire_sync::AudioClock`'s wrap-tracking.
+                    // Every `WasmVideoAu`/`WasmPcmChunk` timestamp this
+                    // bridge emits is each independently absolute (transmux's
+                    // IR, media plane step 2c) — never derived from or
+                    // adjusted by `latest_pcr` — so a PCR jump cannot
+                    // retroactively corrupt an already-emitted timestamp.
+                    // The audio-decoder IMDCT reset this bridge performs on a
+                    // splice is triggered by `DemuxEvent::Discontinuity` (see
+                    // below), not by this event; a PCR's own `discontinuous`
+                    // bit and a `DiscontinuityKind::Signalled` observation
+                    // are both driven by the same adaptation-field
+                    // `discontinuity_indicator` bit on the same TS packet, so
+                    // in practice they always co-occur for that cause.
+                    // Residual risk this crate cannot fix: if the browser
+                    // shell derives its own expected-next-PCR delta from
+                    // consecutive `pcr_pts()` reads, a jump could still
+                    // surprise that JS-side logic — out of scope for this
+                    // Rust bridge (the shell owns that clock, per ADR 0008).
+                    let _ = discontinuous;
                 }
-                DemuxEvent::Discontinuity { .. } => {
-                    if let Some(ref mut seg) = self.segmenter {
-                        seg.mark_discontinuity();
+                DemuxEvent::Discontinuity { kind, .. } => {
+                    match kind {
+                        DiscontinuityKind::Signalled => {
+                            // Explicit adaptation-field discontinuity_indicator
+                            // (ISO/IEC 13818-1 §2.4.3.5): the source stream
+                            // itself signalled a splice/encoder restart. Keep
+                            // today's full reset — mark the segmenter
+                            // discontinuous (HLS emits EXT-X-DISCONTINUITY)
+                            // and flush the AC-3/E-AC-3 + MP2 decoders' IMDCT
+                            // state, since audio either side of a genuine
+                            // splice is not one coded sequence.
+                            if let Some(ref mut seg) = self.segmenter {
+                                seg.mark_discontinuity();
+                            }
+                            self.audio_decoder.reset();
+                            self.mpa_decoder.reset();
+                        }
+                        DiscontinuityKind::TimelineReanchored => {
+                            // A live audio track's frame-exact dts/pts anchor
+                            // drifted from the wire PES clock past the
+                            // re-anchor threshold and was corrected — this is
+                            // transmux's own ordinary drift absorption on a
+                            // live feed (see transmux::ts_demux's
+                            // `audio_discontinuity_threshold_90k`), not a
+                            // splice. The *timeline* moved; the coded
+                            // bitstream the decoder has already parsed did
+                            // not, so its IMDCT state is still valid. Do NOT
+                            // reset audio_decoder/mpa_decoder here — that
+                            // would introduce an audible click on an
+                            // ordinary, splice-free live stream, which is new
+                            // (and wrong) behaviour this migration must not
+                            // introduce.
+                            //
+                            // Also do NOT mark the segmenter discontinuous:
+                            // `mark_discontinuity()` tells the *client*
+                            // (EXT-X-DISCONTINUITY for HLS, an analogous CMAF
+                            // signal here) that the bitstream itself may not
+                            // be contiguous with what came before, which is
+                            // exactly the false signal we just decided not
+                            // to act on locally — telling a downstream player
+                            // "treat this as a new program" while our own
+                            // decoder keeps running unreset would be
+                            // self-contradictory, and would just relocate the
+                            // audible-click bug from this process to the
+                            // client's. Each `Sample`'s dts/pts is already
+                            // the corrected, absolute value (transmux's own
+                            // IR, media plane step 2c) by the time it reaches
+                            // the segmenter, so no boundary-math correction
+                            // is needed here either.
+                        }
+                        DiscontinuityKind::BudgetExceeded { bytes } => {
+                            // A per-PID PES buffer cap was tripped and
+                            // in-flight payload was dropped (transmux's
+                            // `MAX_PES_BUFFER_BYTES`) — real data loss, not
+                            // just a timeline correction. The decoder's next
+                            // input is missing bytes it has no way to know
+                            // about, so its IMDCT state cannot be trusted to
+                            // continue cleanly. Treat like `Signalled`: reset
+                            // both audio decoders and mark the segmenter
+                            // discontinuous.
+                            std::eprintln!(
+                                "[skyfire-wasm] discontinuity: PES budget exceeded, \
+                                 {bytes} bytes dropped"
+                            );
+                            if let Some(ref mut seg) = self.segmenter {
+                                seg.mark_discontinuity();
+                            }
+                            self.audio_decoder.reset();
+                            self.mpa_decoder.reset();
+                        }
+                        // `DiscontinuityKind` is `#[non_exhaustive]` (a future
+                        // discontinuity source, e.g. issue #778's
+                        // continuity-counter gap, adds a variant without a
+                        // breaking change). Default to the conservative,
+                        // full-reset behaviour for any kind this bridge
+                        // doesn't recognise yet — the same rationale as
+                        // `Signalled`/`BudgetExceeded` above: an unknown cause
+                        // gets the safe assumption (audio state may not be
+                        // trustworthy), never the `TimelineReanchored`
+                        // no-audible-reset exemption, which is earned per
+                        // known-cause, not a default.
+                        _ => {
+                            if let Some(ref mut seg) = self.segmenter {
+                                seg.mark_discontinuity();
+                            }
+                            self.audio_decoder.reset();
+                            self.mpa_decoder.reset();
+                        }
                     }
-                    // Reset AC-3/E-AC-3 and MP2 decoder IMDCT state at HLS splices
-                    // to avoid glitched PCM.  Mirror the same resets used by
-                    // select_audio() on a PID change.
-                    self.audio_decoder.reset();
-                    self.mpa_decoder.reset();
                 }
                 _ => {}
             }
@@ -413,15 +532,25 @@ impl SkyfireBridge {
                 // Seed latest_pcr from video PTS only before the first real
                 // clock-reference event arrives. DemuxEvent::ClockReference is
                 // the authoritative source and must not be overwritten by
-                // every video sample. checked_ticks rejects a negative pts
-                // (never expected) rather than trusting it.
+                // every video sample. checked_ticks_90k rejects a negative
+                // pts (never expected) rather than trusting it, and rescales
+                // from this track's own timescale to 90 kHz (a no-op for
+                // video, whose timescale is 90 000, but the same conversion
+                // function as every other track — never a special case).
                 if self.latest_pcr.is_none()
-                    && let Some(pts) = skyfire_ts::checked_ticks(sample.pts)
+                    && let Some(pts) = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale)
                 {
-                    self.latest_pcr = Some(pts as i64);
+                    // Checked conversion (issue #101 review, item 5): a raw
+                    // `pts as i64` cast is never reachable-safe on a
+                    // timestamp. `pts` (u64, 90 kHz ticks) practically never
+                    // exceeds i64::MAX, but a failed conversion here is
+                    // simply "don't seed the fallback", not an error.
+                    if let Ok(v) = i64::try_from(pts) {
+                        self.latest_pcr = Some(v);
+                    }
                 }
-                let pts = skyfire_ts::checked_ticks(sample.pts);
-                let dts = skyfire_ts::checked_ticks(sample.dts);
+                let pts = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
+                let dts = skyfire_ts::checked_ticks_90k(sample.dts, meta.timescale);
                 // transmux 0.14 (rust-broadcast#595) sets is_sync on open-GOP
                 // random-access points (IDR / recovery-point SEI / SPS-led AU),
                 // so no client-side keyframe re-derivation is needed.
@@ -440,7 +569,12 @@ impl SkyfireBridge {
             }
             TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
                 self.probe_channels(meta.pid, codec, &sample.data);
-                let pts_ticks = skyfire_ts::checked_ticks(sample.pts);
+                // CRITICAL fix (issue #101 review): an audio track's own
+                // timescale is its sample rate (e.g. 48 000), not 90 kHz
+                // (transmux 0.20's absolute Sample::pts/dts are in the
+                // owning track's TrackSpec::timescale) — must rescale via
+                // `meta.timescale`, the same conversion every track uses.
+                let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
                 self.decode_audio(codec, pts_ticks, &sample.data);
             }
             // Unselected audio PIDs are never decoded, but their frame headers
@@ -451,7 +585,10 @@ impl SkyfireBridge {
             }
             TrackKind::Subtitle(_) if meta.pid == self.selected_subtitle_pid => {
                 let pid = meta.pid.unwrap_or(0);
-                let pts_ticks = skyfire_ts::checked_ticks(sample.pts);
+                // Subtitle (Data) tracks already carry timescale == 90_000,
+                // so this is a no-op rescale — but the same conversion
+                // function as video/audio, never a special case.
+                let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
                 if sample.data.first() == Some(&dvb_subtitle::DataIdentifier)
                     && let Ok(field) = dvb_subtitle::PesDataField::parse(&sample.data)
                 {

@@ -273,23 +273,27 @@ fn sub_activity(data: &[u8]) -> SubActivityJson {
     let mut demux = TsDemux::new();
     demux.feed(data);
     demux.finish();
-    // Map subtitle track_id → pid.
-    let mut sub_ids: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
+    // Map subtitle track_id → (pid, timescale). Subtitle (Data) tracks
+    // already carry timescale == 90_000, but `checked_ticks_90k` is the one
+    // conversion point in the codebase (issue #101 review) — no site may
+    // convert a raw Sample::pts without supplying its track's real
+    // timescale, even where the rescale is a no-op.
+    let mut sub_ids: std::collections::HashMap<u32, (u16, u32)> = std::collections::HashMap::new();
     let mut activity = Vec::new();
     while let Some(ev) = demux.poll_event() {
         match ev {
             DemuxEvent::TrackAdded(track) => {
                 let meta = track_meta(&track);
                 if matches!(meta.kind, TrackKind::Subtitle(_)) {
-                    sub_ids.insert(track.track_id, meta.pid.unwrap_or(0));
+                    sub_ids.insert(track.track_id, (meta.pid.unwrap_or(0), track.timescale));
                 }
             }
             DemuxEvent::Sample {
                 track_id, sample, ..
             } => {
-                if let Some(&pid) = sub_ids.get(&track_id)
+                if let Some(&(pid, timescale)) = sub_ids.get(&track_id)
                     && payload_has_page_composition(&sample.data)
-                    && let Some(pts_ticks) = skyfire_ts::checked_ticks(sample.pts)
+                    && let Some(pts_ticks) = skyfire_ts::checked_ticks_90k(sample.pts, timescale)
                 {
                     activity.push(SubActivity { pid, pts_ticks });
                 }
