@@ -18,7 +18,7 @@ pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
 use skyfire_sync::{AudioClock, VideoFrameQueue};
-use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, track_meta};
+use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, checked_ticks, track_meta};
 use transmux::pipeline::CodecConfig;
 
 /// Engine build identifier (crate version).
@@ -36,8 +36,11 @@ pub const fn version() -> &'static str {
 /// `data` contains length-prefixed NAL data (as produced by transmux).
 #[derive(Debug, Clone)]
 pub struct VideoUnit {
-    /// Presentation timestamp in 90 kHz ticks.
-    pub pts: u64,
+    /// Presentation timestamp in 90 kHz ticks, or `None` when transmux
+    /// reported no timestamp — or a negative one (see
+    /// [`skyfire_ts::checked_ticks`]; never fabricated, never silently
+    /// wrapped from a negative `i64`).
+    pub pts: Option<u64>,
     /// Whether this access unit is a sync/keyframe (IDR).
     pub is_sync: bool,
     /// Length-prefixed NAL data bytes.
@@ -272,9 +275,9 @@ impl Engine {
         while let Some(event) = self.demux.poll_event() {
             match event {
                 DemuxEvent::TrackAdded(track) => {
-                    let meta: TrackMeta = track_meta(&track.spec);
+                    let meta: TrackMeta = track_meta(&track);
                     let info = TrackInfo {
-                        track_id: track.spec.track_id,
+                        track_id: track.track_id,
                         pid: meta.pid,
                         kind: meta.kind,
                         language: meta.language,
@@ -282,11 +285,11 @@ impl Engine {
                     // Record the first video and first audio track_ids.
                     match meta.kind {
                         TrackKind::Video(_) if self.video_track_id.is_none() => {
-                            self.video_track_id = Some(track.spec.track_id);
-                            self.video_codec_config = Some(track.spec.config.clone());
+                            self.video_track_id = Some(track.track_id);
+                            self.video_codec_config = Some(track.config.clone());
                         }
                         TrackKind::Audio(_) if self.audio_track_id.is_none() => {
-                            self.audio_track_id = Some(track.spec.track_id);
+                            self.audio_track_id = Some(track.track_id);
                         }
                         _ => {}
                     }
@@ -294,40 +297,42 @@ impl Engine {
                 }
                 DemuxEvent::TrackUpdated(track) => {
                     // Update video codec config if it has changed (e.g. SPS update).
-                    if Some(track.spec.track_id) == self.video_track_id {
-                        self.video_codec_config = Some(track.spec.config.clone());
+                    if Some(track.track_id) == self.video_track_id {
+                        self.video_codec_config = Some(track.config.clone());
                     }
                     // Update entry in track list.
                     if let Some(entry) = self
                         .tracks
                         .iter_mut()
-                        .find(|t| t.track_id == track.spec.track_id)
+                        .find(|t| t.track_id == track.track_id)
                     {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         entry.pid = meta.pid;
                         entry.kind = meta.kind;
                         entry.language = meta.language;
                     }
                 }
-                DemuxEvent::Sample { track_id, sample } => {
+                DemuxEvent::Sample {
+                    track_id, sample, ..
+                } => {
                     if Some(track_id) == self.video_track_id {
-                        let pts = sample.source_timing.map(|t| t.pts).unwrap_or(0);
+                        let pts = checked_ticks(sample.pts);
                         self.video_units.push(VideoUnit {
                             pts,
-                            is_sync: sample.is_sync,
-                            data: sample.data,
+                            is_sync: sample.flags.is_sync,
+                            data: sample.data.to_vec(),
                         });
                     } else if Some(track_id) == self.audio_track_id {
                         // Capture the first audio PTS for clock anchoring.
                         if self.first_audio_pts.is_none()
-                            && let Some(t) = sample.source_timing
+                            && let Some(pts) = checked_ticks(sample.pts)
                         {
-                            self.first_audio_pts = Some(t.pts);
+                            self.first_audio_pts = Some(pts);
                         }
                         self.audio_es_buf.extend_from_slice(&sample.data);
                     }
                 }
-                DemuxEvent::Pcr(_) | DemuxEvent::Discontinuity { .. } => {
+                DemuxEvent::ClockReference { .. } | DemuxEvent::Discontinuity { .. } => {
                     // Not used by the core engine; consumed by skyfire-wasm.
                 }
                 _ => {}
@@ -465,12 +470,14 @@ mod tests {
             while let Some(ev) = demux2.poll_event() {
                 match ev {
                     DemuxEvent::TrackAdded(track) => {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id2.is_none() {
-                            audio_track_id2 = Some(track.spec.track_id);
+                            audio_track_id2 = Some(track.track_id);
                         }
                     }
-                    DemuxEvent::Sample { track_id, sample } => {
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
                         if Some(track_id) == audio_track_id2 {
                             expected_audio_es.extend_from_slice(&sample.data);
                         }
@@ -481,7 +488,9 @@ mod tests {
         }
         demux2.finish();
         while let Some(ev) = demux2.poll_event() {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && Some(track_id) == audio_track_id2
             {
                 expected_audio_es.extend_from_slice(&sample.data);
@@ -507,8 +516,13 @@ mod tests {
         let video_units = engine.video_units();
         assert!(!video_units.is_empty());
 
-        // Every video AU must have a finite PTS under the 33-bit cap.
-        let pts_vals: Vec<u64> = video_units.iter().map(|au| au.pts).collect();
+        // Every video AU must have a finite, non-negative PTS under the
+        // 33-bit cap — real video access units always carry a pts (only
+        // section-carried tracks legitimately have none).
+        let pts_vals: Vec<u64> = video_units
+            .iter()
+            .map(|au| au.pts.expect("video AU must have a pts"))
+            .collect();
 
         let max_pts = pts_vals.iter().max().copied().unwrap();
         let min_pts = pts_vals.iter().min().copied().unwrap();
@@ -630,12 +644,14 @@ mod tests {
             while let Some(ev) = demux.poll_event() {
                 match ev {
                     DemuxEvent::TrackAdded(track) => {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id.is_none() {
-                            audio_track_id = Some(track.spec.track_id);
+                            audio_track_id = Some(track.track_id);
                         }
                     }
-                    DemuxEvent::Sample { track_id, sample } => {
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
                         if Some(track_id) == audio_track_id {
                             es.extend_from_slice(&sample.data);
                         }
@@ -646,7 +662,9 @@ mod tests {
         }
         demux.finish();
         while let Some(ev) = demux.poll_event() {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && Some(track_id) == audio_track_id
             {
                 es.extend_from_slice(&sample.data);
