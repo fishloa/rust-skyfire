@@ -16,5 +16,5 @@ skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-mpa.workspace = true
 dvb-subtitle = "0.3"
-transmux = "0.20"
+transmux = "0.21"
 wasm-bindgen = "0.2"
