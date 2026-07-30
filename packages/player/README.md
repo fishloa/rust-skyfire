@@ -38,8 +38,14 @@ subtitle menu (Off + per-language), picture-in-picture, fullscreen, diagnostics 
 Auto-hides on idle.
 
 **Properties/methods:** `play()`, `pause()`, `selectAudio(pid)`, `selectSubtitle(pid|null)`,
-`tracks`. **DOM events:** `sf-tracks`, `sf-stats`, `sf-error`, `sf-ended` (detail carries
-the engine payload). Also mirrors stats to `window.__sfStats`.
+`tracks`. **DOM events:** `sf-tracks`, `sf-tracks-changed`, `sf-stats`, `sf-error`,
+`sf-ended`, `sf-fullscreenchange` (detail carries the engine payload). Also mirrors
+stats to `window.__sfStats`.
+
+- `sf-tracks-changed` — detail `{ added, removed, changed, reselected? }`: what changed
+  since the previous track list (not merely the count). `reselected` is present (`{
+  from, to }`) when the selected audio PID vanished and a fallback PID was chosen.
+- `sf-fullscreenchange` — detail `{ fullscreen, mode }`, see [Fullscreen](#fullscreen) below.
 
 ```js
 const el = document.querySelector("skyfire-player");
@@ -47,6 +53,17 @@ el.addEventListener("sf-tracks", (e) => console.log("tracks", e.detail));
 el.addEventListener("sf-error", (e) => console.error(e.detail));
 el.setAttribute("src", "/live/channel2.ts"); // switch channel (clean teardown + reload)
 ```
+
+### Fullscreen
+
+`enterFullscreen()` / `exitFullscreen()` / `toggleFullscreen()` return promises
+and reject if the browser refuses (most browsers require a user gesture). The
+`sf-fullscreenchange` event carries `{ fullscreen, mode }`.
+
+On iPhone Safari there is no `Element.requestFullscreen` — WebKit only promotes
+`<video>` elements, and skyfire renders to a `<canvas>` — so the player falls
+back to a fixed-position overlay and reports `mode: "pseudo"`. It fills the
+viewport but does not hide Safari's own chrome.
 
 Prefer the element for embedding. Use the `SkyfirePlayer` class below when you need to
 drive decode/sync yourself and build your own UI.
@@ -74,9 +91,13 @@ const player = new SkyfirePlayer(canvas, {
 });
 
 // Listen for events before calling init().
-player.on("tracks", (trackList) => {
+player.on("tracks", (trackList, diff) => {
   // trackList: { videoPid, videoCodec, audio: [{pid, kind, language, codec}], subtitles: [...] }
-  console.log("tracks available", trackList);
+  // diff: { added, removed, changed, reselected? } — what changed vs. the previous
+  // track list (a PMT reshuffle can swap a PID or correct a language without
+  // changing the track count). `reselected` is present when the selected audio
+  // PID vanished and the player fell back to another one.
+  console.log("tracks available", trackList, diff);
   // Populate your own UI pickers here, then call player.selectAudio() / selectSubtitle().
 });
 
@@ -126,7 +147,7 @@ await player.init();
 
 | Event | Payload | Description |
 |---|---|---|
-| `"tracks"` | `TrackList` | Fired once when the PAT/PMT is parsed and the track list is available. |
+| `"tracks"` | `(TrackList, diff)` | Fired when the PAT/PMT is parsed and whenever the track set's identity changes; `diff` is `{ added, removed, changed, reselected? }`. |
 | `"stats"` | `object` | Fired on each decoded frame and on status changes. |
 | `"error"` | `{ message, cause }` | Non-recoverable playback error. |
 | `"ended"` | `object` | Stream finished (EOS). |

@@ -6,6 +6,13 @@
 
 import { initSkyfire, SkyfireBridge, PTS_HZ, ticksToMicros } from "@firemedia/skyfire-core";
 import { makeSource } from "./hls-source.js";
+import { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
+
+// index.d.ts declares these as package exports; without re-exporting them
+// here the entry point only ever exposes `SkyfirePlayer`, and a TS consumer
+// following the typings gets a hard ESM link error at import time.
+export { languageName, resolveLocale } from "./lang.js";
+export { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -120,7 +127,7 @@ export class SkyfirePlayer {
 
     // ── track list ────────────────────────────────────────────────────────────
     this._trackList = null;
-    this._trackSig = null;   // "<nAudio>/<nSub>" — re-emit tracks when it changes
+    this._trackSig = null;   // identity of the current track set — re-emit tracks when it changes
 
     // ── MSE drift constants ───────────────────────────────────────────────────
     this._MSE_DRIFT_SEEK_THRESH = 0.25;
@@ -147,8 +154,8 @@ export class SkyfirePlayer {
     (this._listeners[event] ||= []).push(cb);
   }
 
-  _emit(event, data) {
-    (this._listeners[event] || []).forEach((cb) => cb(data));
+  _emit(event, data, extra) {
+    (this._listeners[event] || []).forEach((cb) => cb(data, extra));
   }
 
   // ── public transport ──────────────────────────────────────────────────────
@@ -1002,18 +1009,43 @@ export class SkyfirePlayer {
       this._callBridge(() => {
         this.bridge.feed(value);
 
-        // Refresh the track list whenever it grows. DVB-subtitle (and late audio)
-        // tracks resolve on their first sample — AFTER the initial PAT/PMT/video
-        // snapshot — so a one-shot read misses them. Re-emit when the audio/sub
-        // counts change so hosts (and __sfStats) see every track as discovered.
+        // Refresh the track list whenever it changes. DVB-subtitle (and late
+        // audio) tracks resolve on their first sample — AFTER the initial
+        // PAT/PMT/video snapshot — so a one-shot read misses them, and a PMT
+        // reshuffle can swap a PID or correct a language without changing the
+        // track count. Re-emit whenever any track's identity changes so hosts
+        // (and __sfStats) see every track as discovered or altered.
         const tl = this.bridge.track_list();
         if (tl) {
-          const sig = `${tl.audio.length}/${tl.subtitles.length}`;
+          const sig = trackSignature(tl);
           if (sig !== this._trackSig) {
+            const prev = this._trackList;
             this._trackSig = sig;
             this._trackList = tl;
             this._stats.tracks = { audio: tl.audio ?? [], subtitle: tl.subtitles ?? [] };
-            this._emit("tracks", tl);
+
+            const diff = diffTracks(prev, tl);
+
+            // A PMT reshuffle must never leave audio permanently silent: if the
+            // selected PID is gone, fall back to the lowest surviving track.
+            // `this._stats.selectedAudio` starts null and is only written by an
+            // explicit selectAudio()/opts.audioPid — but the bridge auto-selects
+            // the first audio PID it sees on its own, and in the default embed
+            // (host never opens the picker) the JS never otherwise learns that.
+            // Fall back to the bridge's actual selection so the guard still
+            // fires in that case.
+            const sel = this._stats.selectedAudio ?? this.bridge.selected_audio_pid ?? null;
+            if (sel != null && !(tl.audio ?? []).some((t) => t.pid === sel)) {
+              const next = pickFallbackAudio(tl.audio, sel);
+              if (next != null) {
+                this.bridge.select_audio(next);
+                this._stats.selectedAudio = next;
+                diff.reselected = { from: sel, to: next };
+                this._status(`audio pid ${sel} vanished → pid ${next}`);
+              }
+            }
+
+            this._emit("tracks", tl, diff);
             if (!trackLogged) {
               trackLogged = true;
               this._status(

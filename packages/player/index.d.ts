@@ -54,8 +54,18 @@ export interface SkyfireStats {
   tracks: SkyfireStatsTracks;
   /** PID requested via `selectAudio`, or `null` before any selection. */
   selectedAudio: number | null;
-  /** PID the bridge is actually decoding, or `null`. */
+  /**
+   * PID whose audio is genuinely being decoded, or `null` before any audio has
+   * decoded. Distinct from `selectedAudio`, which is only the request — see
+   * issue #89, where reporting the request made a broken track switch look
+   * successful.
+   */
   decodedAudioPid: number | null;
+  /**
+   * Channel count of the decoded audio before downmix, from the decoder itself.
+   * Changes when a track switch lands on a different layout.
+   */
+  nativeChannels?: number;
   subCues: number;
   /** AudioWorklet output-buffer underruns (absent until audio starts). */
   audioUnderruns?: number;
@@ -81,6 +91,25 @@ export interface SkyfireErrorEvent {
   cause?: unknown;
 }
 
+/** What changed between two track lists, delivered alongside `tracks`. */
+export interface SkyfireTrackDiff {
+  added: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  removed: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  changed: Array<WasmAudioTrack | WasmSubtitleTrack>;
+  /** Present when the selected audio PID vanished and a fallback was chosen. */
+  reselected?: { from: number; to: number };
+}
+
+export function trackSignature(tl: TrackList | null | undefined): string;
+export function diffTracks(
+  prev: TrackList | null | undefined,
+  next: TrackList | null | undefined,
+): SkyfireTrackDiff;
+export function pickFallbackAudio(
+  audio: WasmAudioTrack[] | null | undefined,
+  lostPid: number,
+): number | null;
+
 /** Event name → payload type. Exposed so consumers can type shared handlers. */
 export interface SkyfireEventMap {
   tracks: TrackList;
@@ -97,7 +126,7 @@ export class SkyfirePlayer {
   selectAudio(pid: number): void;
   selectSubtitle(pid: number | null): void;
   tracks(): TrackList | null;
-  on(event: "tracks", cb: (tracks: TrackList) => void): void;
+  on(event: "tracks", cb: (tracks: TrackList, diff: SkyfireTrackDiff) => void): void;
   on(event: "stats", cb: (stats: SkyfireStats) => void): void;
   on(event: "error", cb: (err: SkyfireErrorEvent) => void): void;
   on(event: "ended", cb: (stats: SkyfireEndedStats) => void): void;
@@ -106,4 +135,35 @@ export class SkyfirePlayer {
     cb: (data: SkyfireEventMap[E]) => void,
   ): void;
   destroy(): void;
+}
+
+export function languageName(
+  code: string | null | undefined,
+  locale?: string,
+  overrides?: Record<string, string>,
+): string | null;
+
+export function resolveLocale(el: Element | null | undefined): string;
+
+export interface SkyfireFullscreenChangeDetail {
+  fullscreen: boolean;
+  mode: "native" | "pseudo";
+}
+
+/** The `<skyfire-player>` custom element. */
+export interface SkyfirePlayerElement extends HTMLElement {
+  readonly isFullscreen: boolean;
+  enterFullscreen(): Promise<void>;
+  exitFullscreen(): Promise<void>;
+  toggleFullscreen(): Promise<void>;
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "skyfire-player": SkyfirePlayerElement;
+  }
+  interface HTMLElementEventMap {
+    "sf-fullscreenchange": CustomEvent<SkyfireFullscreenChangeDetail>;
+    "sf-tracks-changed": CustomEvent<SkyfireTrackDiff>;
+  }
 }

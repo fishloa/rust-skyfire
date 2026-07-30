@@ -6,6 +6,7 @@
 //! what transmux is architecturally not: a DVB-subtitle renderer, the sync +
 //! browser layer, and descriptor-based track metadata.
 
+pub mod mp2_header;
 pub mod subtitle_compositor;
 
 pub use transmux::avc_config::AVCDecoderConfigurationRecord;

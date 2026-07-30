@@ -30,6 +30,10 @@ pub struct WasmAudioTrack {
     /// ISO 639-2 language (3 chars), or `None`.
     #[wasm_bindgen(getter_with_clone)]
     pub language: Option<String>,
+    /// Channel count, read from the first frame header seen on this PID, or
+    /// `None` when no frame has been observed yet. Never a guess — the UI
+    /// must degrade rather than invent a value.
+    pub channels: Option<u8>,
 }
 
 /// One subtitle / teletext elementary stream.

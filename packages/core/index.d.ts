@@ -10,6 +10,8 @@ export interface WasmAudioTrack {
   pid: number;
   codec: "AC3" | "EAC3" | "MP2";
   language?: string;
+  /** Channel count from a frame-header probe; absent until a frame is seen. */
+  channels?: number;
 }
 
 export interface WasmSubtitleTrack {
@@ -69,6 +71,8 @@ export class SkyfireBridge {
   set_audio_downmix(enabled: boolean): void;
   set_playing(playing: boolean): void;
   audio_native_channels(): number;
+  /** The currently selected audio PID, or `undefined` before any selection (initial auto-select included). */
+  readonly selected_audio_pid: number | undefined;
   take_video_aus(): VideoAu[];
   video_codec(): string | undefined;
   video_config_description(): Uint8Array;

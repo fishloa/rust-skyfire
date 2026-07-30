@@ -2,6 +2,7 @@
 // All UI lives in a Shadow DOM (scoped styles); the engine draws into the shadow
 // canvas and the element owns controls, menus, state overlays, PiP + fullscreen.
 import { SkyfirePlayer } from "./skyfire-player.js";
+import { languageName, resolveLocale } from "./lang.js";
 
 const TEMPLATE = `
 <div class="stage">
@@ -47,6 +48,16 @@ canvas.video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .diag { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.75); padding: 8px 10px;
         border-radius: 6px; font-variant-numeric: tabular-nums; white-space: pre; font-size: 12px; }
 .diag[hidden] { display: none; }
+:host(:fullscreen) { width: 100vw; height: 100vh; background: #000; }
+/* !important: per CSS Scoping, ordinary declarations in the outer tree beat
+   :host — a routine embed rule like
+   "skyfire-player { width: 100%; aspect-ratio: 16/9; position: relative }"
+   would otherwise override this and defeat the only fullscreen fallback iOS
+   Safari has (no Element.requestFullscreen there). */
+:host(.sf-pseudo-fullscreen) {
+  position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+  z-index: 2147483647 !important; background: #000 !important;
+}
 `;
 
 export class SkyfirePlayerElement extends HTMLElement {
@@ -70,6 +81,9 @@ export class SkyfirePlayerElement extends HTMLElement {
     this._muted2 = this.hasAttribute("muted");
     this._selAudio = null;
     this._selSub = null;
+    // Last fullscreen state this element itself emitted sf-fullscreenchange
+    // for — lets the document-wide fullscreenchange listener dedupe/skip.
+    this._lastFsState = false;
 
     this._videoCanvas = root.querySelector("canvas.video");
     this._subsCanvas = root.querySelector(".subs canvas");
@@ -105,8 +119,35 @@ export class SkyfirePlayerElement extends HTMLElement {
   connectedCallback() {
     this._buildControls();
     if (this.hasAttribute("autoplay") || this.getAttribute("src")) this._start();
+    // The listener is document-wide (fullscreenchange only fires there), so
+    // ANY element on the page entering/leaving fullscreen would otherwise make
+    // every <skyfire-player> emit. Guard against both false positives:
+    //  - this element is in *pseudo*-fullscreen and some other element went
+    //    native — that is not a change to THIS element's fullscreen state.
+    //  - the computed state hasn't actually changed since we last emitted it
+    //    (e.g. two elements on the page both got a fullscreenchange callback
+    //    for the same event, or repeated events for an already-reported state).
+    this._onFsChange = () => {
+      if (this._pseudoFs) return;
+      const fs = this.ownerDocument.fullscreenElement === this;
+      if (fs === this._lastFsState) return;
+      this._emitFullscreen(fs, "native");
+    };
+    this.ownerDocument.addEventListener("fullscreenchange", this._onFsChange);
   }
-  disconnectedCallback() { this._teardown(); }
+  disconnectedCallback() {
+    this._teardown();
+    this.ownerDocument.removeEventListener("fullscreenchange", this._onFsChange);
+    // Reverse an in-progress pseudo-fullscreen so the host page's scroll lock
+    // isn't leaked forever. No sf-fullscreenchange here — the element is being
+    // torn down, and dispatching events from a detached element is worse than
+    // staying silent.
+    if (this._pseudoFs) {
+      this.classList.remove("sf-pseudo-fullscreen");
+      this._pseudoFs = false;
+      this.ownerDocument.body.style.overflow = this._prevOverflow ?? "";
+    }
+  }
   attributeChangedCallback(name, oldV, newV) {
     if (!this.isConnected || oldV === newV) return;
     switch (name) {
@@ -145,7 +186,15 @@ export class SkyfirePlayerElement extends HTMLElement {
 
     const engine = new SkyfirePlayer(this._videoCanvas, opts);
     this._engine = engine;
-    engine.on("tracks", (tl) => { if (seq === this._switchSeq) this._applyTracks(tl); });
+    engine.on("tracks", (tl, diff) => {
+      if (seq !== this._switchSeq) return;
+      this._applyTracks(tl);
+      if (diff) {
+        this.dispatchEvent(new CustomEvent("sf-tracks-changed", {
+          detail: diff, bubbles: true, composed: true,
+        }));
+      }
+    });
     engine.on("stats", (s) => {
       if (seq !== this._switchSeq) return;
       window.__sfStats = s;
@@ -253,11 +302,11 @@ export class SkyfirePlayerElement extends HTMLElement {
       btn("subs-btn", "Subtitles ▾", () => this._toggleMenu("subtitle"));
       this._pipBtn = btn("pip-btn", "⧉", () => this._togglePip());
       if (this._pipBtn && !this._pipSupported()) this._pipBtn.hidden = true;
-      btn("fs-btn", "⛶", () => this._toggleFullscreen());
+      btn("fs-btn", "⛶", () => this._onFsButtonClick()).setAttribute("aria-pressed", "false");
       btn("diag-btn", "ⓘ", () => this._toggleDiag());
     } else if (preset === "minimal") {
       const spacer = document.createElement("span"); spacer.className = "spacer"; bar.appendChild(spacer);
-      btn("fs-btn", "⛶", () => this._toggleFullscreen());
+      btn("fs-btn", "⛶", () => this._onFsButtonClick()).setAttribute("aria-pressed", "false");
     }
   }
 
@@ -286,17 +335,37 @@ export class SkyfirePlayerElement extends HTMLElement {
       r.addEventListener("click", on); m.appendChild(r); return r;
     };
 
+    const locale = resolveLocale(this);
+
+    // Broadcasters routinely ship two tracks in the same language (arte pid
+    // 257 and 258 are both fra). Where a name repeats, number the repeats so
+    // the rows stay distinguishable; unique names stay bare.
+    const nameFor = (t, i, fallback) => languageName(t.language, locale) || `${fallback} ${i + 1}`;
+    const audioNames = (tl.audio || []).map((a, i) => nameFor(a, i, "Track"));
+    const seen = new Map();
+    const audioLabels = audioNames.map((n, i) => {
+      const a = tl.audio[i];
+      const dup = audioNames.filter((x) => x === n).length > 1;
+      const chan = a.channels === 6 ? " 5.1" : a.channels === 1 ? " mono" : "";
+      let label = `${n} · ${a.codec}${chan}`;
+      if (dup) {
+        const nth = (seen.get(label) ?? 0) + 1;
+        seen.set(label, nth);
+        if (nth > 1) label = `${label} (${nth})`;
+      }
+      return label;
+    });
+
     const am = menu("audio");
     (tl.audio || []).forEach((a, i) => {
-      const label = `${a.language || `Track ${i + 1}`} · ${a.codec}`;
-      row(am, label, this._selAudio === a.pid || (this._selAudio == null && i === 0),
+      row(am, audioLabels[i], this._selAudio === a.pid || (this._selAudio == null && i === 0),
         () => { this._selAudio = a.pid; this.selectAudio(a.pid); this._buildMenus(); am.classList.add("open"); });
     });
 
     const sm = menu("subtitle");
     row(sm, "Off", this._selSub == null, () => { this._selSub = null; this.selectSubtitle(null); this._buildMenus(); sm.classList.add("open"); });
     (tl.subtitles || []).forEach((s, i) => {
-      const label = s.language || `Subtitle ${i + 1}`;
+      const label = nameFor(s, i, "Subtitle");
       row(sm, label, this._selSub === s.pid, () => { this._selSub = s.pid; this.selectSubtitle(s.pid); this._buildMenus(); sm.classList.add("open"); });
     });
   }
@@ -310,9 +379,71 @@ export class SkyfirePlayerElement extends HTMLElement {
   }
 
   // ── fullscreen + PiP ──
-  _toggleFullscreen() {
-    if (this.ownerDocument.fullscreenElement === this) this.ownerDocument.exitFullscreen?.();
-    else this.requestFullscreen?.().catch(() => {});
+  get isFullscreen() {
+    return this.ownerDocument.fullscreenElement === this ||
+      this.classList.contains("sf-pseudo-fullscreen");
+  }
+
+  /**
+   * Enter fullscreen. Resolves once the transition is requested; rejects with
+   * the underlying reason if the browser refuses — the caller is told, rather
+   * than the failure being discarded.
+   *
+   * Where Element.requestFullscreen does not exist (iPhone Safari, which only
+   * promotes <video> elements, and skyfire paints to a <canvas>) this falls
+   * back to a fixed-position overlay and reports mode "pseudo".
+   */
+  async enterFullscreen() {
+    if (this.isFullscreen) return;
+    if (typeof this.requestFullscreen === "function") {
+      await this.requestFullscreen();
+      return; // fullscreenchange fires the event
+    }
+    this.classList.add("sf-pseudo-fullscreen");
+    this._pseudoFs = true;
+    this._prevOverflow = this.ownerDocument.body.style.overflow;
+    this.ownerDocument.body.style.overflow = "hidden";
+    this._emitFullscreen(true, "pseudo");
+  }
+
+  async exitFullscreen() {
+    if (this._pseudoFs) {
+      this.classList.remove("sf-pseudo-fullscreen");
+      this._pseudoFs = false;
+      this.ownerDocument.body.style.overflow = this._prevOverflow ?? "";
+      this._emitFullscreen(false, "pseudo");
+      return;
+    }
+    if (this.ownerDocument.fullscreenElement === this) {
+      await this.ownerDocument.exitFullscreen();
+    }
+  }
+
+  toggleFullscreen() {
+    return this.isFullscreen ? this.exitFullscreen() : this.enterFullscreen();
+  }
+
+  /**
+   * Click handler for the built-in ⛶ button only. The public API
+   * (toggleFullscreen/enterFullscreen/exitFullscreen) must keep rejecting so
+   * callers can react to a refusal — do not add a catch inside those. But an
+   * ordinary UI click that gets refused (e.g. cross-origin iframe without
+   * `allow="fullscreen"`) must not surface as an "Uncaught (in promise)" on
+   * every click, so this path alone logs instead of discarding.
+   */
+  _onFsButtonClick() {
+    this.toggleFullscreen().catch((err) => {
+      console.warn("[skyfire] fullscreen refused", err);
+    });
+  }
+
+  _emitFullscreen(fullscreen, mode) {
+    this._lastFsState = fullscreen;
+    const fsBtn = this._controlsEl?.querySelector(".fs-btn");
+    if (fsBtn) fsBtn.setAttribute("aria-pressed", fullscreen ? "true" : "false");
+    this.dispatchEvent(new CustomEvent("sf-fullscreenchange", {
+      detail: { fullscreen, mode }, bubbles: true, composed: true,
+    }));
   }
 
   _pipSupported() {

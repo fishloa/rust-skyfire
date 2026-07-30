@@ -216,3 +216,161 @@ test("integration: element plays a stream, menu switches audio, subtitle cues re
   expect(r.switched).toBe(true);
   if (r.audioRows > 1) expect(r.cues).toBe(true);
 });
+
+// ── Task: rendered audio-menu labels are human-readable, not bare codes ──
+// The picker label is the epic's only user-visible deliverable, and the
+// unguarded Intl.DisplayNames#of() crash (lang.js item 1) sits on exactly
+// this line, yet nothing asserted a rendered label before this test.
+test("audio menu renders human-readable labels, not bare ISO 639-2 codes", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const labels = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    el.setAttribute("controls", "full");
+    el.setAttribute("muted", "");
+    el.setAttribute("src", "http://localhost:8090/stream/hls/skyfire/france-2/index.m3u8");
+    document.body.appendChild(el);
+    document.body.click();
+    const rows = () => [...el.shadowRoot.querySelectorAll(".menu.audio .row")];
+    const wait = (pred, ms) => new Promise((res) => {
+      const t0 = Date.now();
+      const t = () => (pred() || Date.now() - t0 > ms) ? res(pred()) : setTimeout(t, 200);
+      t();
+    });
+    // Audio/subtitle tracks resolve their `language` on their first ES
+    // sample — AFTER the initial PAT/PMT/video snapshot (see the comment in
+    // skyfire-player.js's _consumeStream) — so waiting only for rows to
+    // exist can catch the picker mid-population, before languages are known
+    // and rows still read as positional "Track N" fallbacks. Wait for actual
+    // decoded frames (as the existing audio-switch integration test above
+    // does) so the track list has settled.
+    await wait(() => (window.__sfStats?.drawn ?? 0) > 5, 15000);
+    await wait(() => rows().length > 0, 5000);
+    return rows().map((r) => r.textContent);
+  });
+  expect(labels.length).toBeGreaterThan(0);
+  for (const label of labels) {
+    expect(label).toMatch(/^.+ · (AC3|EAC3|MP2)( 5\.1| mono)?( \(\d+\))?$/);
+    expect(label).not.toMatch(/^(fra|fre|deu|ita|eng|qaa|mis|oth)\b/);
+  }
+});
+
+// ── Task 4 (issue #97): programmatic fullscreen API ──
+test("fullscreen: exposes a programmatic API and reports state changes", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const api = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    return {
+      enter: typeof el.enterFullscreen,
+      exit: typeof el.exitFullscreen,
+      toggle: typeof el.toggleFullscreen,
+      state: typeof el.isFullscreen,
+    };
+  });
+  expect(api).toEqual({ enter: "function", exit: "function", toggle: "function", state: "boolean" });
+});
+
+test("fullscreen: enterFullscreen returns a thenable", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const isThenable = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = () => Promise.resolve();
+    const p = el.enterFullscreen();
+    return typeof p?.then === "function";
+  });
+  expect(isThenable).toBe(true);
+});
+
+test("fullscreen: rejection from requestFullscreen reaches the caller, not swallowed", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // Stub the underlying browser call directly so the outcome is deterministic
+  // rather than at the mercy of headless gesture policy. A regression that
+  // wraps the internal await in a try/catch-and-return would turn this
+  // rejection into a silent resolve — this must fail if that happens.
+  const outcome = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = () => Promise.reject(new Error("denied"));
+    try {
+      await el.enterFullscreen();
+      return { rejected: false };
+    } catch (e) {
+      return { rejected: true, message: e?.message };
+    }
+  });
+  expect(outcome.rejected).toBe(true);
+  expect(outcome.message).toBe("denied");
+});
+
+test("fullscreen: resolves when requestFullscreen resolves", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  const outcome = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = () => Promise.resolve();
+    try {
+      await el.enterFullscreen();
+      return { resolved: true };
+    } catch (e) {
+      return { resolved: false, message: e?.message };
+    }
+  });
+  expect(outcome.resolved).toBe(true);
+});
+
+test("fullscreen: falls back to pseudo-fullscreen when the API is absent", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // iPhone Safari has no Element.requestFullscreen and skyfire paints to a
+  // canvas, so there is no video element to promote. Simulate that.
+  const res = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = undefined;
+    document.body.style.overflow = "scroll"; // non-empty prior value the restore must not clobber
+    const seen = [];
+    el.addEventListener("sf-fullscreenchange", (e) => seen.push(e.detail));
+    await el.enterFullscreen();
+    const cls = el.classList.contains("sf-pseudo-fullscreen");
+    const state = el.isFullscreen;
+    const overflowDuring = document.body.style.overflow;
+    await el.exitFullscreen();
+    const clsAfterExit = el.classList.contains("sf-pseudo-fullscreen");
+    const overflowAfter = document.body.style.overflow;
+    return { seen, cls, state, after: el.isFullscreen, overflowDuring, clsAfterExit, overflowAfter };
+  });
+  expect(res.cls).toBe(true);
+  expect(res.state).toBe(true);
+  expect(res.after).toBe(false);
+  expect(res.overflowDuring).toBe("hidden");
+  expect(res.clsAfterExit).toBe(false);
+  expect(res.overflowAfter).toBe("scroll");
+  expect(res.seen[0]).toEqual({ fullscreen: true, mode: "pseudo" });
+  expect(res.seen[1]).toEqual({ fullscreen: false, mode: "pseudo" });
+});
+
+test("fullscreen: disconnecting the element while pseudo-fullscreen is active releases the scroll lock", async ({ page }) => {
+  await page.goto(`${WEB}/element-test.html`);
+  // If disconnectedCallback doesn't reverse an in-progress pseudo-fullscreen,
+  // document.body.style.overflow stays "hidden" forever on the host page.
+  const res = await page.evaluate(async () => {
+    await customElements.whenDefined("skyfire-player");
+    const el = document.createElement("skyfire-player");
+    document.body.appendChild(el);
+    el.requestFullscreen = undefined;
+    document.body.style.overflow = "scroll";
+    await el.enterFullscreen();
+    const overflowDuring = document.body.style.overflow;
+    el.remove(); // disconnected without a prior exitFullscreen()
+    const overflowAfter = document.body.style.overflow;
+    return { overflowDuring, overflowAfter };
+  });
+  expect(res.overflowDuring).toBe("hidden");
+  expect(res.overflowAfter).toBe("scroll");
+});

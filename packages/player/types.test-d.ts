@@ -13,6 +13,7 @@ import {
   type SkyfireEvent,
   type SkyfireEventMap,
   type SkyfireStats,
+  type SkyfireTrackDiff,
 } from "./index.js";
 
 declare const player: SkyfirePlayer;
@@ -53,3 +54,14 @@ function subscribe<E extends SkyfireEvent>(
 }
 subscribe("tracks", onTracks);
 subscribe("error", onError);
+
+// ── rust-skyfire#96: `tracks` carries a diff as its second argument ─────────
+// The diff could not be covered when #96 landed, because this file lived on the
+// then-unmerged #87 branch. Added when the two met at the merge.
+player.on("tracks", (t, d: SkyfireTrackDiff) =>
+  t.audio.length + d.added.length + d.removed.length + d.changed.length +
+  (d.reselected?.to ?? 0));
+
+// A single-argument handler must still compile — the diff is additive, so
+// existing consumers are unaffected.
+player.on("tracks", (t) => t.audio.length);
