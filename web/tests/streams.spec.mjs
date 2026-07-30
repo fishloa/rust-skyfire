@@ -123,3 +123,32 @@ for (const stream of registry) {
     });
   }
 }
+
+// ── cross-layout audio switch regression (issue #89) ─────────────────────
+//
+// orf1 has pid 257 (AC-3, likely 5.1) and pid 258 (MP2, stereo). Switching
+// from 257→258 must reconfigure the audio graph for a different channel count.
+// Audio must keep flowing AND the reported native/source channels must change.
+test(`stream orf1: cross-layout audio switch keeps flowing and reports new channels`, async ({ page }) => {
+  test.setTimeout(30_000);
+  const src = `${SF}/stream/hls/skyfire/orf1/index.m3u8`;
+  await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
+  await page.evaluate(() => { document.body.click(); window.sfStartAudio?.(); });
+  // Wait for initial audio (pid 257, AC-3 5.1).
+  await page.waitForFunction(
+    () => (window.__sfStats?.decodedAudioPid === 257), { timeout: 15_000 });
+  // Sample before switch.
+  const beforeSamples = await page.evaluate(() => window.__sfStats.audioSamples);
+  // Switch to pid 258 (MP2, stereo).
+  await page.evaluate(() => window.__sfPlayer.selectAudio(258));
+  // Wait for decodedAudioPid to reflect the new PID.
+  await page.waitForFunction(
+    () => window.__sfStats?.decodedAudioPid === 258, { timeout: 15_000 });
+  // Audio must keep flowing after the switch.
+  await page.waitForFunction(
+    (b) => window.__sfStats.audioSamples > b + 5000, beforeSamples, { timeout: 15_000 });
+  // The channel count reported via audio_native_channels must differ
+  // (AC-3 5.1 = 6ch, MP2 = 2ch).
+  const nativeCh = await page.evaluate(() => window.__sfPlayer.bridge.audio_native_channels());
+  expect(nativeCh, "native channels after switch to MP2 stereo").toBe(2);
+});

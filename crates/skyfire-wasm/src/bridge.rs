@@ -65,6 +65,10 @@ pub struct SkyfireBridge {
     ended: bool,
     /// When true (default), downmix multichannel to stereo.
     downmix_audio: bool,
+    /// The audio PID that most recently produced decoded PCM. Updated every time
+    /// `decode_audio` succeeds. Unlike `selected_audio_pid` (always the *requested*
+    /// PID), this reflects what is genuinely being decoded — the test's primary oracle.
+    decoded_audio_pid: Option<u16>,
     /// Native channel count of last decoded audio (before downmix).
     last_audio_channels: u16,
     /// Number of audio decode errors since construction (JS-observable).
@@ -108,6 +112,7 @@ impl SkyfireBridge {
             latest_pcr: None,
             ended: false,
             downmix_audio: true,
+            decoded_audio_pid: None,
             last_audio_channels: 0,
             audio_decode_error_count: 0,
             segmenter_error_count: 0,
@@ -174,6 +179,15 @@ impl SkyfireBridge {
             self.mpa_decoder.reset();
         }
         self.selected_audio_pid = Some(pid);
+    }
+
+    /// The audio PID that most recently produced decoded PCM, or `None`
+    /// before any audio has been decoded. Updated every time `decode_audio`
+    /// succeeds — reflects what is genuinely being decoded, not what was
+    /// requested via `select_audio`.
+    #[wasm_bindgen(getter)]
+    pub fn decoded_audio_pid(&self) -> Option<u16> {
+        self.decoded_audio_pid
     }
 
     /// Select a subtitle PID, or `None` to disable subtitles.
@@ -632,6 +646,13 @@ impl SkyfireBridge {
                 // owning track's TrackSpec::timescale) — must rescale via
                 // `meta.timescale`, the same conversion every track uses.
                 let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
+                // Track which PID produced the decoded audio (issue #89).
+                // Set before decode_audio so that a decode error still records
+                // the previous PID — but the intention is that decoded_audio_pid
+                // reflects whichever PID last produced valid PCM. Set here rather
+                // than inside decode_audio because meta.pid is only available
+                // at the call site; decode_audio has no pid parameter.
+                self.decoded_audio_pid = meta.pid;
                 self.decode_audio(codec, pts_ticks, &sample.data);
             }
             // Unselected audio PIDs are never decoded, but their frame headers
