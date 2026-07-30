@@ -182,11 +182,16 @@ impl SkyfireBridge {
     }
 
     /// The audio PID that most recently produced decoded PCM, or `None`
-    /// before any audio has been decoded. Set inside `on_sample` when the
-    /// selected-audio match arm fires, BEFORE `decode_audio` is called.
-    /// Reflects what is genuinely being decoded, never the request alone.
-    /// Note: `decoded_audio_pid` is written unconditionally on every selected
-    /// sample so a decode failure still reports the correct PID.
+    /// before any audio has been decoded.
+    ///
+    /// Written inside `decode_audio`, in the branch where a decode actually
+    /// succeeded, from the PID passed in by the caller — never in `on_sample`
+    /// and never from `selected_audio_pid`. That distinction is the point of
+    /// the field (issue #89): inside the selected-audio match arm `meta.pid`
+    /// is equal to `selected_audio_pid` by construction, so assigning from
+    /// there would make this a copy of the request and report a switch that
+    /// had not happened. A decode failure therefore leaves the previous value
+    /// in place, which is correct — nothing new has been decoded.
     #[wasm_bindgen]
     pub fn current_decoded_pid(&self) -> Option<u16> {
         self.decoded_audio_pid

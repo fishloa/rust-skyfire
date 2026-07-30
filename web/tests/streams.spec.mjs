@@ -109,23 +109,29 @@ for (const stream of registry) {
       const src = `${SF}/stream/hls/skyfire/${stream.slug}/index.m3u8`;
       await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
       await page.evaluate(() => { document.body.click(); window.sfStartAudio?.(); });
-      // Wait for initial audio, then switch.
-      await page.waitForFunction(() => (window.__sfStats?.audioSamples ?? 0) > 5000, { timeout: 15_000 });
-      const before = await page.evaluate(() => window.__sfStats.audioSamples);
-      await page.evaluate((pid) => window.__sfPlayer.selectAudio(pid), stream.alt_audio_pid);
+      // Switch as soon as ANY audio has decoded, not after 5000 samples.
+      // The bridge decodes as fast as segments arrive, not at playback rate,
+      // so a 20 s clip is fully consumed in a few hundred ms — wait too long
+      // and the stream ends before the switch can be observed, which looks
+      // identical to a broken switch. Flipping at the first decoded chunk
+      // leaves the rest of the clip as headroom.
+      await page.waitForFunction(() => (window.__sfStats?.audioChunks ?? 0) > 0, { timeout: 15_000 });
+      const before = await page.evaluate(() => window.__sfStats.audioChunks);
       const droppedBefore = await page.evaluate(() => window.__sfStats.audioDropped ?? 0);
-      // `decodedAudioPid` must report the PID whose audio is genuinely being
-      // DECODED, not the PID that was requested. Reporting the request makes
-      // this assertion self-fulfilling, so it is not evidence on its own —
-      // the sample-growth check below is what proves audio really moved.
+      await page.evaluate((pid) => window.__sfPlayer.selectAudio(pid), stream.alt_audio_pid);
+      // `decodedAudioPid` must report the PID whose audio genuinely DECODED,
+      // not the PID that was requested — reporting the request would make this
+      // self-fulfilling. The chunk-growth check below is what proves audio
+      // actually moved to the new track.
       await page.waitForFunction(
         (pid) => window.__sfStats?.decodedAudioPid === pid,
         stream.alt_audio_pid, { timeout: 15_000 });
-      // Audio must keep flowing after the switch. No end-of-stream escape
+      // Audio must keep decoding on the NEW track. No end-of-stream escape
       // hatch: a clip that ends without ever decoding the new track has not
-      // switched, it has stopped.
+      // switched, it has stopped. Chunks (decoded frames) rather than samples,
+      // so the threshold does not depend on channel count.
       await page.waitForFunction(
-        (b) => (window.__sfStats?.audioSamples ?? 0) > b + 5000,
+        (b) => (window.__sfStats?.audioChunks ?? 0) > b + 5,
         before, { timeout: 15_000 });
       const pid = await page.evaluate(() => window.__sfStats.decodedAudioPid);
       expect(pid, "decoded pid follows selection").toBe(stream.alt_audio_pid);
