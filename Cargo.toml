@@ -30,4 +30,4 @@ skyfire-mpa = { path = "crates/skyfire-mpa" }
 skyfire-sync = { path = "crates/skyfire-sync" }
 skyfire-core = { path = "crates/skyfire-core" }
 skyfire-hls = { path = "crates/skyfire-hls" }
-transmux = "0.20"
+transmux = "0.21"
