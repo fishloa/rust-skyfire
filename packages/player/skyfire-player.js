@@ -475,9 +475,28 @@ export class SkyfirePlayer {
       s.h = frame.displayHeight;
       this._lastVideoTs = frame.timestamp;
       s.videoCurrentTime = frame.timestamp / 1_000_000;
+      // Refresh decoded-audio stat from the bridge on every frame draw so
+      // the test harness sees the genuinely decoded PID, not just what was
+      // requested. `_pumpAudioInner` also writes these, but it only runs on
+      // feed ticks — a stalled feed (backpressure) produces no ticks, yet
+      // the bridge's internal state (decoded_audio_pid, last_audio_channels)
+      // is always current.
+      this._refreshDecodedPid();
       this._emit("stats", { ...s });
     } finally {
       frame.close();
+    }
+  }
+
+  /** Refresh decodedAudioPid and nativeChannels from the bridge. Called on
+   *  every frame draw so stats stay current even when the feed is stalled. */
+  _refreshDecodedPid() {
+    if (!this.bridge) return;
+    if (typeof this.bridge.current_decoded_pid === "function") {
+      this._stats.decodedAudioPid = this.bridge.current_decoded_pid() ?? null;
+    }
+    if (typeof this.bridge.audio_native_channels === "function") {
+      this._stats.nativeChannels = this.bridge.audio_native_channels();
     }
   }
 
@@ -712,6 +731,31 @@ export class SkyfirePlayer {
         await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
       }
       if (c.channels !== this._outputChannels) {
+        // Audio track switch can change channel layout (e.g. AC-3 5.1 → MP2
+        // stereo on orf1). Tear down and recreate the audio graph.
+        this._status(
+          `audio channel change: ${this._outputChannels} → ${c.channels}; reconfiguring`
+        );
+        this._audioReady = false;
+        this._audioStarting = false;
+        if (this._audioCtx) {
+          try { this._audioCtx.close(); } catch (_) {}
+        }
+        this._audioCtx = null;
+        this._audioNode = null;
+        this._audioGain = null;
+        this._firstAudioPtsUs = null;
+        this._audioFramesPlayed = 0;
+        this._audioSamplesFed = 0;
+        this._lastFp = 0;
+        this._lastFpAdvanceMs = 0;
+        this._lastMediaUs = null;
+      }
+      if (!this._audioReady) {
+        // eslint-disable-next-line no-await-in-loop
+        await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
+      }
+      if (c.channels !== this._outputChannels) {
         this._stats.audioDropped = (this._stats.audioDropped || 0) + 1;
         this._lastDropChannels = c.channels;
         c.free?.();
@@ -723,8 +767,11 @@ export class SkyfirePlayer {
       const samples = c.samples;
       this._stats.audioChunks++;
       this._stats.audioSamples += samples.length;
-      if (this.bridge && typeof this.bridge.selected_audio_pid !== "undefined") {
-        this._stats.decodedAudioPid = this.bridge.selected_audio_pid ?? null;
+      if (this.bridge && typeof this.bridge.current_decoded_pid === "function") {
+        this._stats.decodedAudioPid = this.bridge.current_decoded_pid() ?? null;
+      }
+      if (this.bridge && typeof this.bridge.audio_native_channels === "function") {
+        this._stats.nativeChannels = this.bridge.audio_native_channels();
       }
       this._audioSamplesFed += samples.length;
       this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
@@ -979,6 +1026,7 @@ export class SkyfirePlayer {
       while (
         !this._destroyed &&
         ((this._audioClockLive() && this._audioAheadSeconds() > this._AUDIO_LEAD_S) ||
+          (!this._audioClockLive() && this._presentQueue.length > 10) ||
           this._presentQueue.length > 300)
       ) {
         // eslint-disable-next-line no-await-in-loop
@@ -1073,6 +1121,10 @@ export class SkyfirePlayer {
         pathDecided = true;
         await this._decideVideoPath(this.bridge.video_codec());
       }
+
+      // Yield to the event loop so VideoDecoder output callbacks
+      // populate `_presentQueue` before the next backpressure check.
+      await new Promise((r) => setTimeout(r, 0));
 
     }
   }

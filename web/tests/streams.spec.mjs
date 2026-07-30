@@ -109,17 +109,70 @@ for (const stream of registry) {
       const src = `${SF}/stream/hls/skyfire/${stream.slug}/index.m3u8`;
       await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
       await page.evaluate(() => { document.body.click(); window.sfStartAudio?.(); });
-      // Wait for initial audio, then switch.
-      await page.waitForFunction(() => (window.__sfStats?.audioSamples ?? 0) > 5000, { timeout: 15_000 });
-      const before = await page.evaluate(() => window.__sfStats.audioSamples);
+      // Switch as soon as ANY audio has decoded, not after 5000 samples.
+      // The bridge decodes as fast as segments arrive, not at playback rate,
+      // so a 20 s clip is fully consumed in a few hundred ms — wait too long
+      // and the stream ends before the switch can be observed, which looks
+      // identical to a broken switch. Flipping at the first decoded chunk
+      // leaves the rest of the clip as headroom.
+      await page.waitForFunction(() => (window.__sfStats?.audioChunks ?? 0) > 0, { timeout: 15_000 });
+      const before = await page.evaluate(() => window.__sfStats.audioChunks);
+      const droppedBefore = await page.evaluate(() => window.__sfStats.audioDropped ?? 0);
       await page.evaluate((pid) => window.__sfPlayer.selectAudio(pid), stream.alt_audio_pid);
+      // `decodedAudioPid` must report the PID whose audio genuinely DECODED,
+      // not the PID that was requested — reporting the request would make this
+      // self-fulfilling. The chunk-growth check below is what proves audio
+      // actually moved to the new track.
       await page.waitForFunction(
         (pid) => window.__sfStats?.decodedAudioPid === pid,
         stream.alt_audio_pid, { timeout: 15_000 });
-      // Audio must keep flowing after the switch.
-      await page.waitForFunction((b) => window.__sfStats.audioSamples > b + 5000, before, { timeout: 15_000 });
+      // Audio must keep decoding on the NEW track. No end-of-stream escape
+      // hatch: a clip that ends without ever decoding the new track has not
+      // switched, it has stopped. Chunks (decoded frames) rather than samples,
+      // so the threshold does not depend on channel count.
+      await page.waitForFunction(
+        (b) => (window.__sfStats?.audioChunks ?? 0) > b + 5,
+        before, { timeout: 15_000 });
       const pid = await page.evaluate(() => window.__sfStats.decodedAudioPid);
       expect(pid, "decoded pid follows selection").toBe(stream.alt_audio_pid);
+      // Chunks silently discarded by the output-channel guard are the failure
+      // mode this issue is about, so the count must not climb across a switch.
+      const droppedAfter = await page.evaluate(() => window.__sfStats.audioDropped ?? 0);
+      expect(droppedAfter, "no PCM chunks dropped across the switch")
+        .toBe(droppedBefore);
     });
   }
 }
+
+// ── cross-layout audio switch regression (issue #89) ─────────────────────
+//
+// orf1 pid 257 is AC-3 5.1 (6 channels), pid 258 is MPEG-audio stereo (2), so
+// a real switch CHANGES the decoded channel layout and the audio graph must
+// reconfigure rather than discarding the mismatched PCM.
+//
+// The oracle is `nativeChannels`, which the player must publish from the
+// bridge's decoder-derived count (`audio_native_channels()`, i.e. the bridge's
+// `last_audio_channels`, written only inside `decode_audio` on a successful
+// decode, taken from the decoded frame itself). That number cannot be produced
+// by echoing a requested PID — which is precisely why it is the assertion.
+// 6 → 2 is reachable only if the new track is genuinely being decoded.
+test(`stream orf1: cross-layout audio switch really decodes the new layout`, async ({ page }) => {
+  test.setTimeout(30_000);
+  const src = `${SF}/stream/hls/skyfire/orf1/index.m3u8`;
+  await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
+  await page.evaluate(() => { document.body.click(); window.sfStartAudio?.(); });
+  // Wait until 5.1 audio is genuinely decoding on pid 257.
+  await page.waitForFunction(
+    () => window.__sfStats?.nativeChannels === 6, { timeout: 15_000 });
+  const beforeSamples = await page.evaluate(() => window.__sfStats.audioSamples);
+  await page.evaluate(() => window.__sfPlayer.selectAudio(258));
+  // Decoder-derived proof the switch took effect: it is now producing STEREO.
+  await page.waitForFunction(
+    () => window.__sfStats?.nativeChannels === 2, { timeout: 15_000 });
+  // And audio must keep flowing on the new track.
+  await page.waitForFunction(
+    (b) => (window.__sfStats?.audioSamples ?? 0) > b + 5000,
+    beforeSamples, { timeout: 15_000 });
+  const pid = await page.evaluate(() => window.__sfStats.decodedAudioPid);
+  expect(pid, "decoded pid after switch to MP2 stereo").toBe(258);
+});
