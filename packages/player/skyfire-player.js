@@ -179,7 +179,6 @@ export class SkyfirePlayer {
     if (this._destroyed) return;
     this._callBridge("select_audio", pid);
     this._stats.selectedAudio = pid;
-    this._stats.decodedAudioPid = pid;
     this._status(`audio → pid ${pid}`);
   }
 
@@ -476,9 +475,28 @@ export class SkyfirePlayer {
       s.h = frame.displayHeight;
       this._lastVideoTs = frame.timestamp;
       s.videoCurrentTime = frame.timestamp / 1_000_000;
+      // Refresh decoded-audio stat from the bridge on every frame draw so
+      // the test harness sees the genuinely decoded PID, not just what was
+      // requested. `_pumpAudioInner` also writes these, but it only runs on
+      // feed ticks — a stalled feed (backpressure) produces no ticks, yet
+      // the bridge's internal state (decoded_audio_pid, last_audio_channels)
+      // is always current.
+      this._refreshDecodedPid();
       this._emit("stats", { ...s });
     } finally {
       frame.close();
+    }
+  }
+
+  /** Refresh decodedAudioPid and nativeChannels from the bridge. Called on
+   *  every frame draw so stats stay current even when the feed is stalled. */
+  _refreshDecodedPid() {
+    if (!this.bridge) return;
+    if (typeof this.bridge.current_decoded_pid === "function") {
+      this._stats.decodedAudioPid = this.bridge.current_decoded_pid() ?? null;
+    }
+    if (typeof this.bridge.audio_native_channels === "function") {
+      this._stats.nativeChannels = this.bridge.audio_native_channels();
     }
   }
 
@@ -749,8 +767,11 @@ export class SkyfirePlayer {
       const samples = c.samples;
       this._stats.audioChunks++;
       this._stats.audioSamples += samples.length;
-      if (this.bridge && typeof this.bridge.selected_audio_pid !== "undefined") {
-        this._stats.decodedAudioPid = this.bridge.selected_audio_pid ?? null;
+      if (this.bridge && typeof this.bridge.current_decoded_pid === "function") {
+        this._stats.decodedAudioPid = this.bridge.current_decoded_pid() ?? null;
+      }
+      if (this.bridge && typeof this.bridge.audio_native_channels === "function") {
+        this._stats.nativeChannels = this.bridge.audio_native_channels();
       }
       this._audioSamplesFed += samples.length;
       this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
@@ -1005,6 +1026,7 @@ export class SkyfirePlayer {
       while (
         !this._destroyed &&
         ((this._audioClockLive() && this._audioAheadSeconds() > this._AUDIO_LEAD_S) ||
+          (!this._audioClockLive() && this._presentQueue.length > 10) ||
           this._presentQueue.length > 300)
       ) {
         // eslint-disable-next-line no-await-in-loop
@@ -1099,6 +1121,10 @@ export class SkyfirePlayer {
         pathDecided = true;
         await this._decideVideoPath(this.bridge.video_codec());
       }
+
+      // Yield to the event loop so VideoDecoder output callbacks
+      // populate `_presentQueue` before the next backpressure check.
+      await new Promise((r) => setTimeout(r, 0));
 
     }
   }

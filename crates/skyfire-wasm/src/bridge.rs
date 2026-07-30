@@ -182,12 +182,14 @@ impl SkyfireBridge {
     }
 
     /// The audio PID that most recently produced decoded PCM, or `None`
-    /// before any audio has been decoded. Updated in `on_sample` when the
-    /// selected-audio arm fires. Falls back to `selected_audio_pid` so the
-    /// JS side sees the requested PID even on the very first feed cycle.
+    /// before any audio has been decoded. Set inside `on_sample` when the
+    /// selected-audio match arm fires, BEFORE `decode_audio` is called.
+    /// Reflects what is genuinely being decoded, never the request alone.
+    /// Note: `decoded_audio_pid` is written unconditionally on every selected
+    /// sample so a decode failure still reports the correct PID.
     #[wasm_bindgen]
     pub fn current_decoded_pid(&self) -> Option<u16> {
-        self.decoded_audio_pid.or(self.selected_audio_pid)
+        self.decoded_audio_pid
     }
 
     /// Select a subtitle PID, or `None` to disable subtitles.
@@ -646,9 +648,7 @@ impl SkyfireBridge {
                 // owning track's TrackSpec::timescale) — must rescale via
                 // `meta.timescale`, the same conversion every track uses.
                 let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
-                // Track which PID produced the decoded audio (issue #89).
-                self.decoded_audio_pid = meta.pid;
-                self.decode_audio(codec, pts_ticks, &sample.data);
+                self.decode_audio(codec, pts_ticks, &sample.data, meta.pid);
             }
             // Unselected audio PIDs are never decoded, but their frame headers
             // still tell us the channel layout — which the picker needs in
@@ -692,10 +692,20 @@ impl SkyfireBridge {
         }
     }
 
-    fn decode_audio(&mut self, codec: AudioCodec, pts_ticks: Option<u64>, data: &[u8]) {
+    fn decode_audio(
+        &mut self,
+        codec: AudioCodec,
+        pts_ticks: Option<u64>,
+        data: &[u8],
+        pid: Option<u16>,
+    ) {
         match codec {
             AudioCodec::Mp2 => match self.mpa_decoder.decode_au(data) {
                 Ok(Some(decoded)) if decoded.sample_rate > 0 && decoded.channels > 0 => {
+                    // Record which PID actually produced this decoded PCM
+                    // so the oracle sees a genuinely decoded PID, not the
+                    // request-only echo.
+                    self.decoded_audio_pid = pid;
                     // Mirror the AC-3 path: record the true source channel count and
                     // emit a CONSISTENT channel layout. Previously this passed the
                     // raw per-frame channel count and never set last_audio_channels,
@@ -732,6 +742,7 @@ impl SkyfireBridge {
             },
             _ => match self.audio_decoder.decode_au(data) {
                 Ok(Some(decoded)) if decoded.sample_rate > 0 && decoded.channels > 0 => {
+                    self.decoded_audio_pid = pid;
                     self.last_audio_channels = decoded.channels;
                     let (channels, samples_f32) = if self.downmix_audio || decoded.channels <= 2 {
                         (
