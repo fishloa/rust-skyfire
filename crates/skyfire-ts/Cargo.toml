@@ -7,12 +7,12 @@ repository.workspace = true
 description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extraction. Planned: rust-dvb dvb-si for PSI."
 
 [dependencies]
-broadcast-common = "8"
-dvb-si = "8"
-dvb-subtitle = "0.2"
+broadcast-common = "9"
+dvb-si = "9"
+dvb-subtitle = "0.3"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
-transmux = "0.15"
+transmux = "0.20"
 
 [dev-dependencies]
 skyfire-ac3 = { path = "../../crates/skyfire-ac3" }

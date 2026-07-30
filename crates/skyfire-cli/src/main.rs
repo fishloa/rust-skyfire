@@ -92,7 +92,7 @@ fn probe(data: &[u8]) -> Option<ProbeResult> {
 
     while let Some(ev) = demux.poll_event() {
         if let DemuxEvent::TrackAdded(track) = ev {
-            let meta = track_meta(&track.spec);
+            let meta = track_meta(&track);
             let pid = meta.pid.unwrap_or(0);
             match meta.kind {
                 TrackKind::Video(vc) if video.is_none() => {
@@ -215,11 +215,11 @@ fn probe_full(data: &[u8]) -> ProbeJson {
     let mut default_audio_pid = None;
     while let Some(ev) = demux.poll_event() {
         if let DemuxEvent::TrackAdded(track) = ev {
-            let meta = track_meta(&track.spec);
+            let meta = track_meta(&track);
             let pid = meta.pid.unwrap_or(0);
             match meta.kind {
                 TrackKind::Video(vc) if video.is_none() => {
-                    let (width, height) = match &track.spec.config {
+                    let (width, height) = match &track.config {
                         CodecConfig::Avc { width, height, .. }
                         | CodecConfig::Hevc { width, height, .. } => (*width, *height),
                         _ => (0, 0),
@@ -273,26 +273,29 @@ fn sub_activity(data: &[u8]) -> SubActivityJson {
     let mut demux = TsDemux::new();
     demux.feed(data);
     demux.finish();
-    // Map subtitle track_id → pid.
-    let mut sub_ids: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
+    // Map subtitle track_id → (pid, timescale). Subtitle (Data) tracks
+    // already carry timescale == 90_000, but `checked_ticks_90k` is the one
+    // conversion point in the codebase (issue #101 review) — no site may
+    // convert a raw Sample::pts without supplying its track's real
+    // timescale, even where the rescale is a no-op.
+    let mut sub_ids: std::collections::HashMap<u32, (u16, u32)> = std::collections::HashMap::new();
     let mut activity = Vec::new();
     while let Some(ev) = demux.poll_event() {
         match ev {
             DemuxEvent::TrackAdded(track) => {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(&track);
                 if matches!(meta.kind, TrackKind::Subtitle(_)) {
-                    sub_ids.insert(track.spec.track_id, meta.pid.unwrap_or(0));
+                    sub_ids.insert(track.track_id, (meta.pid.unwrap_or(0), track.timescale));
                 }
             }
-            DemuxEvent::Sample { track_id, sample } => {
-                if let Some(&pid) = sub_ids.get(&track_id)
+            DemuxEvent::Sample {
+                track_id, sample, ..
+            } => {
+                if let Some(&(pid, timescale)) = sub_ids.get(&track_id)
                     && payload_has_page_composition(&sample.data)
-                    && let Some(t) = sample.source_timing.as_ref()
+                    && let Some(pts_ticks) = skyfire_ts::checked_ticks_90k(sample.pts, timescale)
                 {
-                    activity.push(SubActivity {
-                        pid,
-                        pts_ticks: t.pts,
-                    });
+                    activity.push(SubActivity { pid, pts_ticks });
                 }
             }
             _ => {}

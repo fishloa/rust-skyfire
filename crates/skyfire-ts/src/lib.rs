@@ -10,7 +10,7 @@ pub mod mp2_header;
 pub mod subtitle_compositor;
 
 pub use transmux::avc_config::AVCDecoderConfigurationRecord;
-pub use transmux::ts_demux::DemuxEvent;
+pub use transmux::ir::DemuxEvent;
 
 /// MPEG-TS packet size in bytes (ISO/IEC 13818-1 §2.4.3.2).
 pub const TS_PACKET_LEN: usize = 188;
@@ -91,6 +91,86 @@ pub fn build_avcc_config(record: &AVCDecoderConfigurationRecord) -> (String, Vec
     }
 }
 
+/// Convert a transmux absolute PTS/DTS tick value (`Option<i64>`, media plane
+/// step 2c) to the `u64` ticks type Skyfire's sync layer (`skyfire-sync`,
+/// `WasmVideoAu::pts_ticks`, …) carries.
+///
+/// Returns `None` both when transmux reports no timestamp at all (`None` —
+/// e.g. a section-carried sample) **and** when it reports a negative value.
+/// A negative PTS/DTS is not expected from any DVB TS this player demuxes:
+/// wire PTS/DTS are unsigned 33-bit values (ISO/IEC 13818-1 §2.4.3.6) and
+/// transmux only unwraps their rollover at the demux edge — it never
+/// manufactures a negative absolute value from that. But `Sample::pts`/`dts`
+/// are typed `Option<i64>` (container-neutral IR), so a caller casting with
+/// `pts as u64` would silently turn e.g. `-1` into `u64::MAX` and corrupt
+/// every downstream A/V-sync computation without a single visible error.
+/// Treating a negative value the same as "no timestamp" is a defensive
+/// rejection of data this player's own domain says should never occur — it
+/// is deliberately *not* a clamp to `0` (which would misrepresent a bogus
+/// negative value as "the very first tick", asserting a false fact) or a
+/// panic (which would take a whole feed down over one bad sample).
+#[must_use]
+pub fn checked_ticks(ts: Option<i64>) -> Option<u64> {
+    match ts {
+        Some(v) if v >= 0 => Some(v as u64),
+        _ => None,
+    }
+}
+
+/// Convert a transmux absolute PTS/DTS tick value **from the owning track's
+/// own timescale** (`TrackSpec::timescale`) to 90 kHz ticks — the unit
+/// `skyfire-sync`'s `AudioClock` and every WASM DTO (`WasmVideoAu`/
+/// `WasmPcmChunk::pts_ticks`) contractually carry.
+///
+/// transmux 0.20 changed not just the `u64` → `Option<i64>` type of
+/// `Sample::pts`/`dts` but also their **unit**: per `transmux::ts_demux`'s own
+/// docs, "an audio track's IR timescale is its sample rate
+/// (`TrackSpec::timescale`), and since media plane step 2c `Sample::dts`/
+/// `Sample::pts` are defined to be in that track timescale". A video or
+/// `Data` (subtitle) track's timescale is 90 000, so this function treats
+/// every track identically — the same multiply/divide, never a branch on
+/// track kind — rather than assuming any one caller's track is already
+/// 90 kHz. This is the **one** conversion point: no call site may read a raw
+/// `Sample::pts`/`dts` into 90 kHz ticks without going through this function
+/// and supplying that track's real `timescale` (from [`TrackMeta::timescale`]
+/// / `transmux::TrackSpec::timescale`).
+///
+/// Returns `None` when:
+/// - `ts` is `None` or negative (delegates to [`checked_ticks`] for the sign
+///   check — same "never fabricate, never wrap" rule);
+/// - `timescale == 0` — "unknown", never divide by zero, never silently
+///   assume 90 kHz.
+///
+/// The rescale (`ticks * 90_000 / timescale`) runs in a `u128` intermediate,
+/// not `f64` and not a bare `u64` multiply. Not `f64`: a `PTS` can carry up
+/// to 33+ significant bits (`checked_ticks` accepts any non-negative `i64`,
+/// practically up to the low 2^33 range and beyond), which is already past
+/// `f64`'s 53-bit mantissa once multiplied by 90 000 — silent precision loss,
+/// not a rounding nicety. Not a bare `u64` multiply: a 33-bit wire PTS
+/// (`< 2^33`) times 90 000 is only ~2^47, well inside `u64`, but
+/// [`checked_ticks`] accepts any non-negative `i64` up to `i64::MAX` (~2^63),
+/// and `2^63 * 90_000` (~2^80) overflows `u64` — a real, reachable overflow,
+/// not a theoretical one. If the final quotient still doesn't fit `u64`
+/// (only possible for a pathologically tiny `timescale`), this returns
+/// `None` rather than truncating or wrapping.
+///
+/// The integer division (`/timescale`) is not exact in general — e.g.
+/// 48 kHz → 90 kHz is a ×1.875 rescale, so truncation can lose up to 1 tick
+/// (≈11 µs at 90 kHz). That is harmless here: the truncation is monotone
+/// (non-decreasing input ticks never produce a decreasing output), so it can
+/// never invert the order of two PTS/DTS values — only shave sub-tick
+/// precision no downstream consumer (WebCodecs, `AudioClock`, HLS segment
+/// timing) resolves anyway.
+#[must_use]
+pub fn checked_ticks_90k(ts: Option<i64>, timescale: u32) -> Option<u64> {
+    let raw = checked_ticks(ts)?;
+    if timescale == 0 {
+        return None;
+    }
+    let scaled = (u128::from(raw) * 90_000u128) / u128::from(timescale);
+    u64::try_from(scaled).ok()
+}
+
 /// Identifies a subtitle/text stream kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleKind {
@@ -127,6 +207,14 @@ pub struct TrackMeta {
     /// ISO 639-2 three-byte language code from the `iso_639_language_descriptor`
     /// (tag 0x0A), if present.  `None` when no language descriptor is found.
     pub language: Option<[u8; 3]>,
+    /// This track's own media timescale (`TrackSpec::timescale`), ticks per
+    /// second. `Sample::pts`/`dts` for this track are expressed in *this*
+    /// unit, not a fixed 90 kHz — for an audio track it is the sample rate
+    /// (e.g. 48 000); video and subtitle (`Data`) tracks carry 90 000. Every
+    /// PTS/DTS read off a sample belonging to this track must be converted
+    /// via [`checked_ticks_90k`] with this value, never assumed to already be
+    /// 90 kHz ticks.
+    pub timescale: u32,
 }
 
 /// Build [`TrackMeta`] from a `transmux::TrackSpec`.
@@ -168,6 +256,7 @@ pub fn track_meta(spec: &transmux::TrackSpec) -> TrackMeta {
         pid,
         kind,
         language,
+        timescale: spec.timescale,
     }
 }
 
@@ -307,6 +396,185 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // checked_ticks — the i64 -> u64 PTS/DTS conversion (negative rejection)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn checked_ticks_none_stays_none() {
+        assert_eq!(checked_ticks(None), None);
+    }
+
+    #[test]
+    fn checked_ticks_zero_is_some_zero() {
+        assert_eq!(checked_ticks(Some(0)), Some(0));
+    }
+
+    #[test]
+    fn checked_ticks_positive_value_round_trips() {
+        assert_eq!(checked_ticks(Some(900_000)), Some(900_000u64));
+        assert_eq!(checked_ticks(Some(i64::MAX)), Some(i64::MAX as u64));
+    }
+
+    #[test]
+    fn checked_ticks_negative_value_is_rejected_not_wrapped() {
+        // The corruption case the migration brief called out: a naive
+        // `pts as u64` cast turns -1 into u64::MAX. checked_ticks must
+        // reject it as None instead of ever producing that huge value.
+        let converted = checked_ticks(Some(-1));
+        assert_eq!(converted, None, "negative PTS must not silently wrap");
+        assert_ne!(converted, Some(u64::MAX));
+    }
+
+    #[test]
+    fn checked_ticks_i64_min_is_rejected() {
+        assert_eq!(checked_ticks(Some(i64::MIN)), None);
+    }
+
+    // ------------------------------------------------------------------
+    // checked_ticks_90k — the timescale-aware rescale to 90 kHz (#101 review
+    // finding: transmux 0.20 Sample::pts/dts are in the *track's own*
+    // timescale, not always 90 kHz — an audio track's is its sample rate).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn checked_ticks_90k_none_stays_none() {
+        assert_eq!(checked_ticks_90k(None, 48_000), None);
+    }
+
+    #[test]
+    fn checked_ticks_90k_negative_is_rejected() {
+        assert_eq!(checked_ticks_90k(Some(-1), 48_000), None);
+    }
+
+    #[test]
+    fn checked_ticks_90k_zero_timescale_is_unknown_not_div_by_zero() {
+        // timescale == 0 means "unknown" -- must not panic (divide by zero)
+        // and must not silently assume 90 kHz.
+        assert_eq!(checked_ticks_90k(Some(1_000), 0), None);
+    }
+
+    #[test]
+    fn checked_ticks_90k_video_90khz_is_a_true_no_op() {
+        // Video/subtitle tracks already carry timescale == 90_000. The same
+        // multiply/divide code path must reproduce the input exactly, not
+        // via a special case that could drift.
+        assert_eq!(checked_ticks_90k(Some(900_000), 90_000), Some(900_000));
+        assert_eq!(checked_ticks_90k(Some(0), 90_000), Some(0));
+    }
+
+    #[test]
+    fn checked_ticks_90k_audio_48khz_rescales_exactly() {
+        // 48_000 ticks at 48 kHz == exactly 1 second == 90_000 ticks at 90 kHz.
+        assert_eq!(checked_ticks_90k(Some(48_000), 48_000), Some(90_000));
+        // The brief's measured gulli-15s.ts audio span: 718_848 ticks @ 48 kHz
+        // == 14.976 s == 1_347_840 ticks @ 90 kHz (not 718_848, which would be
+        // the pre-fix "misread as 90 kHz" value == 7.987 s).
+        assert_eq!(checked_ticks_90k(Some(718_848), 48_000), Some(1_347_840));
+    }
+
+    #[test]
+    fn checked_ticks_90k_large_value_does_not_overflow_u64() {
+        // i64::MAX (~2^63) * 90_000 (~2^17) is ~2^80: overflows u64 (2^64) if
+        // computed there. Must use a u128 intermediate and, since the
+        // quotient itself doesn't fit u64 for so small a timescale, return
+        // None rather than truncate/wrap.
+        assert_eq!(checked_ticks_90k(Some(i64::MAX), 1), None);
+        // A large-but-still-u64-representable case must still be exact: a
+        // 40-bit value at 90 kHz timescale is a no-op and must fit.
+        let big: i64 = 1i64 << 40;
+        assert_eq!(checked_ticks_90k(Some(big), 90_000), Some(big as u64));
+    }
+
+    // ------------------------------------------------------------------
+    // gulli-15s: audio/video PTS spans must agree once scaled to 90 kHz
+    // (the CRITICAL #101 review finding's discriminating regression test)
+    // ------------------------------------------------------------------
+
+    /// This is the test that proves the fix. Pre-fix, audio ticks were used
+    /// directly as if they were already 90 kHz ticks (audio's real timescale
+    /// is its sample rate, 48 000 for this fixture): a genuine 14.976 s audio
+    /// span reads as 718_848 / 90_000 = 7.987 s, wildly disagreeing with the
+    /// video track's true 90 kHz span. Scaled correctly through
+    /// `checked_ticks_90k` using each track's own `timescale`, both spans
+    /// must land within a few hundred ms of one another (the audio/video
+    /// pre-roll difference in this fixture, not measurement noise).
+    #[test]
+    fn gulli_15s_audio_and_video_pts_spans_agree_once_scaled_to_90khz() {
+        let events = demux_fixture("gulli-15s.ts");
+
+        let mut video_track: Option<(u32, u32)> = None; // (track_id, timescale)
+        let mut audio_track: Option<(u32, u32)> = None;
+        for ev in &events {
+            if let DemuxEvent::TrackAdded(track) = ev {
+                let meta = track_meta(track);
+                match meta.kind {
+                    TrackKind::Video(_) if video_track.is_none() => {
+                        video_track = Some((track.track_id, track.timescale));
+                    }
+                    TrackKind::Audio(_) if audio_track.is_none() => {
+                        audio_track = Some((track.track_id, track.timescale));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (video_id, video_timescale) = video_track.expect("must find a video track");
+        let (audio_id, audio_timescale) = audio_track.expect("must find an audio track");
+
+        // Sanity: this fixture is exactly the case the bug hits — audio's
+        // native timescale is its 48 kHz sample rate, not 90 kHz.
+        assert_eq!(video_timescale, 90_000, "video timescale must be 90 kHz");
+        assert_eq!(
+            audio_timescale, 48_000,
+            "audio timescale must be its sample rate"
+        );
+
+        let mut video_pts_90k: Vec<u64> = Vec::new();
+        let mut audio_pts_90k: Vec<u64> = Vec::new();
+        for ev in &events {
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
+            {
+                if *track_id == video_id {
+                    if let Some(p) = checked_ticks_90k(sample.pts, video_timescale) {
+                        video_pts_90k.push(p);
+                    }
+                } else if *track_id == audio_id
+                    && let Some(p) = checked_ticks_90k(sample.pts, audio_timescale)
+                {
+                    audio_pts_90k.push(p);
+                }
+            }
+        }
+
+        assert!(!video_pts_90k.is_empty(), "must have video samples");
+        assert!(!audio_pts_90k.is_empty(), "must have audio samples");
+
+        let video_span_secs = (*video_pts_90k.iter().max().unwrap()
+            - *video_pts_90k.iter().min().unwrap()) as f64
+            / 90_000.0;
+        let audio_span_secs = (*audio_pts_90k.iter().max().unwrap()
+            - *audio_pts_90k.iter().min().unwrap()) as f64
+            / 90_000.0;
+
+        // Tolerance: wide enough to absorb this fixture's real audio/video
+        // pre-roll difference (~1.4 s), narrow enough to reject the bug's
+        // ~5.5 s "misread as 90 kHz" error (7.987 s vs 13.54 s video span).
+        let diff = (video_span_secs - audio_span_secs).abs();
+        eprintln!(
+            "gulli-15s.ts: video_span={video_span_secs:.3}s audio_span={audio_span_secs:.3}s \
+             diff={diff:.3}s"
+        );
+        assert!(
+            diff < 3.0,
+            "audio and video PTS spans must agree once both are correctly \
+             scaled to 90 kHz ticks: video={video_span_secs:.3}s \
+             audio={audio_span_secs:.3}s diff={diff:.3}s"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // gulli-15s track enumeration
     // ------------------------------------------------------------------
 
@@ -320,16 +588,16 @@ mod tests {
 
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 match meta.kind {
                     TrackKind::Video(_) => {
-                        video_meta = Some((track.spec.track_id, meta));
+                        video_meta = Some((track.track_id, meta));
                     }
                     TrackKind::Audio(_) => {
-                        audio_metas.push((track.spec.track_id, meta));
+                        audio_metas.push((track.track_id, meta));
                     }
                     TrackKind::Subtitle(_) => {
-                        subtitle_metas.push((track.spec.track_id, meta));
+                        subtitle_metas.push((track.track_id, meta));
                     }
                     TrackKind::Other => {}
                 }
@@ -378,9 +646,9 @@ mod tests {
         // Find the video track_id.
         let video_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Video(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -390,7 +658,9 @@ mod tests {
         let video_samples: Vec<_> = events
             .iter()
             .filter_map(|ev| {
-                if let DemuxEvent::Sample { track_id, sample } = ev
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
                     && *track_id == video_track_id
                 {
                     return Some(sample);
@@ -404,15 +674,10 @@ mod tests {
             "must extract video samples from gulli-15s.ts"
         );
 
-        // All video samples must carry source_timing with a finite PTS.
+        // All video samples must carry an absolute, non-negative PTS.
         let pts_vals: Vec<u64> = video_samples
             .iter()
-            .map(|s| {
-                s.source_timing
-                    .as_ref()
-                    .expect("video sample must have source_timing")
-                    .pts
-            })
+            .map(|s| checked_ticks(s.pts).expect("video sample must have a non-negative pts"))
             .collect();
 
         let max_pts = *pts_vals.iter().max().unwrap();
@@ -462,9 +727,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -474,7 +739,9 @@ mod tests {
         let audio_samples: Vec<_> = events
             .iter()
             .filter_map(|ev| {
-                if let DemuxEvent::Sample { track_id, sample } = ev
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
                     && *track_id == audio_track_id
                 {
                     return Some(sample);
@@ -490,11 +757,7 @@ mod tests {
 
         let mut last_pts: Option<u64> = None;
         for s in &audio_samples {
-            let pts = s
-                .source_timing
-                .as_ref()
-                .expect("audio sample must have source_timing")
-                .pts;
+            let pts = checked_ticks(s.pts).expect("audio sample must have a non-negative pts");
             assert!(pts < (1u64 << 33), "PTS must be under 33-bit cap");
             if let Some(last) = last_pts {
                 assert!(
@@ -512,9 +775,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -523,7 +786,9 @@ mod tests {
 
         let mut extracted_audio: Vec<u8> = Vec::new();
         for ev in &events {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && *track_id == audio_track_id
             {
                 extracted_audio.extend_from_slice(&sample.data);
@@ -550,9 +815,9 @@ mod tests {
 
         let audio_track_id = events.iter().find_map(|ev| {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 if matches!(meta.kind, TrackKind::Audio(_)) {
-                    return Some(track.spec.track_id);
+                    return Some(track.track_id);
                 }
             }
             None
@@ -561,7 +826,9 @@ mod tests {
 
         let mut extracted_audio: Vec<u8> = Vec::new();
         for ev in &events {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && *track_id == audio_track_id
             {
                 extracted_audio.extend_from_slice(&sample.data);
@@ -609,7 +876,7 @@ mod tests {
 
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
-                let meta = track_meta(&track.spec);
+                let meta = track_meta(track);
                 match meta.kind {
                     TrackKind::Audio(_) => audio_metas.push(meta),
                     TrackKind::Subtitle(_) => subtitle_metas.push(meta),
@@ -679,9 +946,9 @@ mod tests {
             .iter()
             .find_map(|ev| {
                 if let DemuxEvent::TrackAdded(t) = ev {
-                    let meta = track_meta(&t.spec);
+                    let meta = track_meta(t);
                     if matches!(meta.kind, TrackKind::Video(_)) {
-                        return Some(t.spec.track_id);
+                        return Some(t.track_id);
                     }
                 }
                 None
@@ -690,7 +957,7 @@ mod tests {
         let sync: usize = events
             .iter()
             .filter(|ev| {
-                matches!(ev, DemuxEvent::Sample { track_id, sample } if *track_id == vid_id && sample.is_sync)
+                matches!(ev, DemuxEvent::Sample { track_id, sample, .. } if *track_id == vid_id && sample.flags.is_sync)
             })
             .count();
         let total: usize = events
@@ -703,5 +970,85 @@ mod tests {
             "gulli-15s open-GOP: transmux 0.14 must flag GOP-start RAPs (a subset), \
              not zero and not all — got {sync}/{total}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // audio/video absolute first-PTS offset: the bug's fixture-independent
+    // signature (#101 review, finding 4). The span-agreement test above
+    // discriminates well on gulli-15s.ts (pre-fix span diff ~5.553s) but is
+    // fixture-dependent: on france2-8s.ts the pre-fix span diff is only
+    // ~2.65s and would pass. Pre-fix, audio's raw sample-rate ticks were read
+    // directly as if they were already 90 kHz ticks; for a PCR-anchored DVB
+    // feed that puts the two tracks' absolute PTS bases tens of thousands of
+    // seconds apart — never a plausible live audio/video pre-roll gap (a
+    // couple of seconds at most). Verified pre-fix (rescale temporarily
+    // reverted to a raw `checked_ticks` pass-through for audio): gulli-15s.ts
+    // first_video_pts_90k=285120 first_audio_pts_90k(raw)=67200 (offset
+    // 2.421s — this fixture alone doesn't discriminate either); france2-8s.ts
+    // first_video_pts_90k=4535564304 first_audio_pts_90k(raw)=2418925532, an
+    // offset of ~23518s — the bug's real, fixture-independent signature.
+    // Runs over both fixtures; keeps the existing span check above as-is.
+    #[test]
+    fn audio_video_first_pts_offset_is_small_once_scaled_to_90khz() {
+        for name in ["gulli-15s.ts", "france2-8s.ts"] {
+            let events = demux_fixture(name);
+
+            let mut video_track: Option<(u32, u32)> = None;
+            let mut audio_track: Option<(u32, u32)> = None;
+            for ev in &events {
+                if let DemuxEvent::TrackAdded(track) = ev {
+                    let meta = track_meta(track);
+                    match meta.kind {
+                        TrackKind::Video(_) if video_track.is_none() => {
+                            video_track = Some((track.track_id, track.timescale));
+                        }
+                        TrackKind::Audio(_) if audio_track.is_none() => {
+                            audio_track = Some((track.track_id, track.timescale));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let (video_id, video_timescale) =
+                video_track.unwrap_or_else(|| panic!("{name}: must find a video track"));
+            let (audio_id, audio_timescale) =
+                audio_track.unwrap_or_else(|| panic!("{name}: must find an audio track"));
+
+            let mut first_video_pts_90k: Option<u64> = None;
+            let mut first_audio_pts_90k: Option<u64> = None;
+            for ev in &events {
+                if let DemuxEvent::Sample {
+                    track_id, sample, ..
+                } = ev
+                {
+                    if *track_id == video_id && first_video_pts_90k.is_none() {
+                        first_video_pts_90k = checked_ticks_90k(sample.pts, video_timescale);
+                    } else if *track_id == audio_id && first_audio_pts_90k.is_none() {
+                        first_audio_pts_90k = checked_ticks_90k(sample.pts, audio_timescale);
+                    }
+                }
+            }
+
+            let first_video_pts_90k = first_video_pts_90k
+                .unwrap_or_else(|| panic!("{name}: must have a first video PTS"));
+            let first_audio_pts_90k = first_audio_pts_90k
+                .unwrap_or_else(|| panic!("{name}: must have a first audio PTS"));
+
+            let offset_secs =
+                (first_video_pts_90k as f64 - first_audio_pts_90k as f64).abs() / 90_000.0;
+            eprintln!(
+                "{name}: first_video_pts_90k={first_video_pts_90k} \
+                 first_audio_pts_90k={first_audio_pts_90k} offset={offset_secs:.3}s"
+            );
+            assert!(
+                offset_secs < 3.0,
+                "{name}: audio/video first-PTS offset must be a couple of \
+                 seconds once both are correctly scaled to 90 kHz ticks (a \
+                 live pre-roll gap), not tens of thousands of seconds (the \
+                 bug's fixture-independent signature): \
+                 first_video_pts_90k={first_video_pts_90k} \
+                 first_audio_pts_90k={first_audio_pts_90k} offset={offset_secs:.3}s"
+            );
+        }
     }
 }

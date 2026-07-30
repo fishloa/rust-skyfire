@@ -210,6 +210,76 @@ fn bridge_streaming_gulli_15s() {
     );
 }
 
+/// CRITICAL regression test (issue #101 review): audio and video PTS spans,
+/// once expressed at 90 kHz, must agree.
+///
+/// transmux 0.20's `Sample::pts`/`dts` are absolute in the *owning track's
+/// own* `TrackSpec::timescale` — an audio track's is its sample rate (48 kHz
+/// for gulli-15s.ts's E-AC-3 track), not a fixed 90 kHz like video. Pre-fix,
+/// `SkyfireBridge::on_sample` read every track's raw ticks straight into
+/// `WasmVideoAu`/`WasmPcmChunk::pts_ticks` with no rescale, so a genuine
+/// ~15 s audio span read back as roughly half that (48 kHz ticks divided by
+/// 90 kHz instead of 48 kHz) — silently desyncing audio from video by
+/// whatever the video/audio anchor difference happens to be, thousands of
+/// seconds on a stream with a large real PTS base (see the migration
+/// report). This exercises the actual production `SkyfireBridge` path (not
+/// just the `checked_ticks_90k` unit), so it proves the fix is wired in,
+/// not just implemented.
+#[test]
+fn bridge_streaming_gulli_15s_audio_video_pts_spans_agree_at_90khz() {
+    let data = load_fixture("gulli-15s.ts");
+    let mut bridge = SkyfireBridge::new();
+
+    let mut video_pts: Vec<u64> = Vec::new();
+    let mut audio_pts: Vec<u64> = Vec::new();
+    for chunk in data.chunks(4096) {
+        bridge.feed(chunk);
+        video_pts.extend(
+            bridge
+                .take_video_aus()
+                .iter()
+                .filter_map(|au| au.pts_ticks()),
+        );
+        audio_pts.extend(bridge.take_audio_pcm().iter().filter_map(|c| c.pts_ticks()));
+    }
+    bridge.flush();
+    video_pts.extend(
+        bridge
+            .take_video_aus()
+            .iter()
+            .filter_map(|au| au.pts_ticks()),
+    );
+    audio_pts.extend(bridge.take_audio_pcm().iter().filter_map(|c| c.pts_ticks()));
+
+    assert!(!video_pts.is_empty(), "must have video AUs with a pts");
+    assert!(
+        !audio_pts.is_empty(),
+        "must have audio PCM chunks with a pts"
+    );
+
+    let video_span_secs =
+        (*video_pts.iter().max().unwrap() - *video_pts.iter().min().unwrap()) as f64 / 90_000.0;
+    let audio_span_secs =
+        (*audio_pts.iter().max().unwrap() - *audio_pts.iter().min().unwrap()) as f64 / 90_000.0;
+
+    let diff = (video_span_secs - audio_span_secs).abs();
+    eprintln!(
+        "bridge gulli-15s.ts: video_span={video_span_secs:.3}s audio_span={audio_span_secs:.3}s \
+         diff={diff:.3}s"
+    );
+
+    // Tolerance: wide enough for this fixture's real audio/video pre-roll
+    // difference (~1.4 s, matching skyfire-ts's equivalent demux-level
+    // test), narrow enough to reject the bug's ~5.5 s "misread as 90 kHz"
+    // error.
+    assert!(
+        diff < 3.0,
+        "audio and video PTS spans (as emitted by SkyfireBridge) must agree \
+         once both are correctly scaled to 90 kHz ticks: \
+         video={video_span_secs:.3}s audio={audio_span_secs:.3}s diff={diff:.3}s"
+    );
+}
+
 /// Streaming bridge: feed france2-8s.ts in 4096-byte chunks.
 ///
 /// Verifies the streaming path detects video and produces a valid

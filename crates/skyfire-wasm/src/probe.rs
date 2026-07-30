@@ -233,7 +233,7 @@ impl WasmEngine {
         let au = units.get(index)?;
         Some(WasmVideoUnit {
             bytes: au.data.clone(),
-            pts_ticks: Some(au.pts),
+            pts_ticks: au.pts,
         })
     }
 

@@ -18,7 +18,7 @@ pub use skyfire_sync as sync;
 pub use skyfire_ts as ts;
 
 use skyfire_sync::{AudioClock, VideoFrameQueue};
-use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, track_meta};
+use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, checked_ticks_90k, track_meta};
 use transmux::pipeline::CodecConfig;
 
 /// Engine build identifier (crate version).
@@ -36,8 +36,12 @@ pub const fn version() -> &'static str {
 /// `data` contains length-prefixed NAL data (as produced by transmux).
 #[derive(Debug, Clone)]
 pub struct VideoUnit {
-    /// Presentation timestamp in 90 kHz ticks.
-    pub pts: u64,
+    /// Presentation timestamp in 90 kHz ticks, or `None` when transmux
+    /// reported no timestamp, a negative one, or an unknown track timescale
+    /// (see [`skyfire_ts::checked_ticks_90k`]; never fabricated, never
+    /// silently wrapped from a negative `i64`, never assumed to already be
+    /// 90 kHz).
+    pub pts: Option<u64>,
     /// Whether this access unit is a sync/keyframe (IDR).
     pub is_sync: bool,
     /// Length-prefixed NAL data bytes.
@@ -105,6 +109,14 @@ pub struct Engine {
     audio_track_id: Option<u32>,
     /// `CodecConfig` for the video track (held to build `video_config()`).
     video_codec_config: Option<CodecConfig>,
+    /// The video track's own media timescale (`TrackSpec::timescale`), used
+    /// to rescale its samples' pts/dts to 90 kHz ticks. Always 90 000 in
+    /// practice, but read off the track rather than assumed — see
+    /// [`skyfire_ts::checked_ticks_90k`].
+    video_timescale: Option<u32>,
+    /// The audio track's own media timescale (its sample rate, e.g.
+    /// 48 000) — **not** 90 kHz. See [`skyfire_ts::checked_ticks_90k`].
+    audio_timescale: Option<u32>,
 
     // ── audio ──────────────────────────────────────────────────────
     /// Accumulated raw E-AC-3 ES bytes (before batch decode).
@@ -134,6 +146,8 @@ impl Engine {
             video_track_id: None,
             audio_track_id: None,
             video_codec_config: None,
+            video_timescale: None,
+            audio_timescale: None,
             audio_es_buf: Vec::new(),
             pcm_output: Vec::new(),
             audio_sample_rate: 0,
@@ -272,9 +286,9 @@ impl Engine {
         while let Some(event) = self.demux.poll_event() {
             match event {
                 DemuxEvent::TrackAdded(track) => {
-                    let meta: TrackMeta = track_meta(&track.spec);
+                    let meta: TrackMeta = track_meta(&track);
                     let info = TrackInfo {
-                        track_id: track.spec.track_id,
+                        track_id: track.track_id,
                         pid: meta.pid,
                         kind: meta.kind,
                         language: meta.language,
@@ -282,11 +296,13 @@ impl Engine {
                     // Record the first video and first audio track_ids.
                     match meta.kind {
                         TrackKind::Video(_) if self.video_track_id.is_none() => {
-                            self.video_track_id = Some(track.spec.track_id);
-                            self.video_codec_config = Some(track.spec.config.clone());
+                            self.video_track_id = Some(track.track_id);
+                            self.video_codec_config = Some(track.config.clone());
+                            self.video_timescale = Some(track.timescale);
                         }
                         TrackKind::Audio(_) if self.audio_track_id.is_none() => {
-                            self.audio_track_id = Some(track.spec.track_id);
+                            self.audio_track_id = Some(track.track_id);
+                            self.audio_timescale = Some(track.timescale);
                         }
                         _ => {}
                     }
@@ -294,40 +310,63 @@ impl Engine {
                 }
                 DemuxEvent::TrackUpdated(track) => {
                     // Update video codec config if it has changed (e.g. SPS update).
-                    if Some(track.spec.track_id) == self.video_track_id {
-                        self.video_codec_config = Some(track.spec.config.clone());
+                    if Some(track.track_id) == self.video_track_id {
+                        self.video_codec_config = Some(track.config.clone());
+                        self.video_timescale = Some(track.timescale);
+                    }
+                    // #101 review, finding 3: `video_timescale`/`audio_timescale`
+                    // were only ever set on `TrackAdded`, so a `TrackUpdated`
+                    // that changes a track's timescale (transmux may reopen a
+                    // track with a corrected sample rate after an initial
+                    // misdetect) would silently keep rescaling with the stale
+                    // value — `skyfire-wasm`'s bridge already avoids this by
+                    // re-reading `TrackMeta::timescale` from its per-track map
+                    // on every sample; mirror that freshness here.
+                    if Some(track.track_id) == self.audio_track_id {
+                        self.audio_timescale = Some(track.timescale);
                     }
                     // Update entry in track list.
                     if let Some(entry) = self
                         .tracks
                         .iter_mut()
-                        .find(|t| t.track_id == track.spec.track_id)
+                        .find(|t| t.track_id == track.track_id)
                     {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         entry.pid = meta.pid;
                         entry.kind = meta.kind;
                         entry.language = meta.language;
                     }
                 }
-                DemuxEvent::Sample { track_id, sample } => {
+                DemuxEvent::Sample {
+                    track_id, sample, ..
+                } => {
                     if Some(track_id) == self.video_track_id {
-                        let pts = sample.source_timing.map(|t| t.pts).unwrap_or(0);
+                        // Rescale via the video track's own timescale (always
+                        // 90_000 in practice) rather than assuming it — same
+                        // conversion function, same code path as audio, no
+                        // special case that could drift (see
+                        // `checked_ticks_90k`'s docs).
+                        let pts = checked_ticks_90k(sample.pts, self.video_timescale.unwrap_or(0));
                         self.video_units.push(VideoUnit {
                             pts,
-                            is_sync: sample.is_sync,
-                            data: sample.data,
+                            is_sync: sample.flags.is_sync,
+                            data: sample.data.to_vec(),
                         });
                     } else if Some(track_id) == self.audio_track_id {
                         // Capture the first audio PTS for clock anchoring.
+                        // The audio track's timescale is its sample rate
+                        // (e.g. 48_000), not 90 kHz (transmux 0.20) — must be
+                        // rescaled before it becomes AudioClock's anchor.
                         if self.first_audio_pts.is_none()
-                            && let Some(t) = sample.source_timing
+                            && let Some(pts) =
+                                checked_ticks_90k(sample.pts, self.audio_timescale.unwrap_or(0))
                         {
-                            self.first_audio_pts = Some(t.pts);
+                            self.first_audio_pts = Some(pts);
                         }
                         self.audio_es_buf.extend_from_slice(&sample.data);
                     }
                 }
-                DemuxEvent::Pcr(_) | DemuxEvent::Discontinuity { .. } => {
+                DemuxEvent::ClockReference { .. } | DemuxEvent::Discontinuity { .. } => {
                     // Not used by the core engine; consumed by skyfire-wasm.
                 }
                 _ => {}
@@ -465,12 +504,14 @@ mod tests {
             while let Some(ev) = demux2.poll_event() {
                 match ev {
                     DemuxEvent::TrackAdded(track) => {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id2.is_none() {
-                            audio_track_id2 = Some(track.spec.track_id);
+                            audio_track_id2 = Some(track.track_id);
                         }
                     }
-                    DemuxEvent::Sample { track_id, sample } => {
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
                         if Some(track_id) == audio_track_id2 {
                             expected_audio_es.extend_from_slice(&sample.data);
                         }
@@ -481,7 +522,9 @@ mod tests {
         }
         demux2.finish();
         while let Some(ev) = demux2.poll_event() {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && Some(track_id) == audio_track_id2
             {
                 expected_audio_es.extend_from_slice(&sample.data);
@@ -507,8 +550,13 @@ mod tests {
         let video_units = engine.video_units();
         assert!(!video_units.is_empty());
 
-        // Every video AU must have a finite PTS under the 33-bit cap.
-        let pts_vals: Vec<u64> = video_units.iter().map(|au| au.pts).collect();
+        // Every video AU must have a finite, non-negative PTS under the
+        // 33-bit cap — real video access units always carry a pts (only
+        // section-carried tracks legitimately have none).
+        let pts_vals: Vec<u64> = video_units
+            .iter()
+            .map(|au| au.pts.expect("video AU must have a pts"))
+            .collect();
 
         let max_pts = pts_vals.iter().max().copied().unwrap();
         let min_pts = pts_vals.iter().min().copied().unwrap();
@@ -596,14 +644,74 @@ mod tests {
         let engine = engine_for_fixture("gulli-15s.ts");
 
         let clock = engine.clock();
-        assert!(
-            clock.anchor_pts_raw > 0,
-            "clock must be anchored on first audio PTS"
-        );
         assert_eq!(clock.sample_rate, 48_000);
         assert!(
             clock.samples_played > 0,
             "clock must have advanced with decoded samples"
+        );
+
+        // Strengthened per #101 review: `anchor_pts_raw > 0` alone passes
+        // with the timescale bug too (a raw 48 kHz tick value is also `> 0`,
+        // just the wrong magnitude — 48_000 raw ticks misread as 90 kHz reads
+        // as ~0.53 s instead of the true 1 s). Independently recover the
+        // first audio sample's *raw* pts (in the audio track's own 48 kHz
+        // timescale) and assert the clock's anchor equals that value
+        // correctly rescaled to 90 kHz — not merely non-zero.
+        let data = load_fixture("gulli-15s.ts");
+        let mut demux = TsDemux::new();
+        let mut audio_track: Option<(u32, u32)> = None; // (track_id, timescale)
+        let mut first_raw_pts: Option<i64> = None;
+        for chunk in data.chunks(4096) {
+            demux.feed(chunk);
+            while let Some(ev) = demux.poll_event() {
+                match ev {
+                    DemuxEvent::TrackAdded(track) => {
+                        let meta = track_meta(&track);
+                        if matches!(meta.kind, TrackKind::Audio(_)) && audio_track.is_none() {
+                            audio_track = Some((track.track_id, track.timescale));
+                        }
+                    }
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
+                        if audio_track.is_some_and(|(id, _)| id == track_id)
+                            && first_raw_pts.is_none()
+                        {
+                            first_raw_pts = sample.pts;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (_, audio_timescale) = audio_track.expect("must find an audio track");
+        assert_eq!(
+            audio_timescale, 48_000,
+            "gulli-15s.ts audio timescale must be its 48 kHz sample rate, not 90 kHz"
+        );
+        assert_eq!(
+            first_raw_pts,
+            Some(67_200),
+            "gulli-15s.ts first audio sample's raw pts (48 kHz track units) \
+             must be the measured literal 67_200 — verified 2026-07-29"
+        );
+
+        // #101 review, finding 5: the previous version of this assertion
+        // computed `expected_anchor` by calling `checked_ticks_90k` — the
+        // very function under test — so the assertion would pass even if
+        // that function's rescale formula were wrong. Use the independently
+        // measured literal instead: 126_000 == 67_200 raw @ 48 kHz rescaled
+        // to 90 kHz (67_200 * 90_000 / 48_000 = 126_000), verified 2026-07-29.
+        const EXPECTED_ANCHOR_90K: u64 = 126_000;
+        assert_eq!(
+            clock.anchor_pts_raw, EXPECTED_ANCHOR_90K,
+            "clock anchor must equal the first audio pts correctly rescaled \
+             from its 48 kHz track timescale to 90 kHz ticks, not the raw \
+             48 kHz wire value"
+        );
+        assert!(
+            clock.anchor_pts_raw > 0,
+            "clock must be anchored on first audio PTS"
         );
     }
 
@@ -630,12 +738,14 @@ mod tests {
             while let Some(ev) = demux.poll_event() {
                 match ev {
                     DemuxEvent::TrackAdded(track) => {
-                        let meta = track_meta(&track.spec);
+                        let meta = track_meta(&track);
                         if matches!(meta.kind, TrackKind::Audio(_)) && audio_track_id.is_none() {
-                            audio_track_id = Some(track.spec.track_id);
+                            audio_track_id = Some(track.track_id);
                         }
                     }
-                    DemuxEvent::Sample { track_id, sample } => {
+                    DemuxEvent::Sample {
+                        track_id, sample, ..
+                    } => {
                         if Some(track_id) == audio_track_id {
                             es.extend_from_slice(&sample.data);
                         }
@@ -646,7 +756,9 @@ mod tests {
         }
         demux.finish();
         while let Some(ev) = demux.poll_event() {
-            if let DemuxEvent::Sample { track_id, sample } = ev
+            if let DemuxEvent::Sample {
+                track_id, sample, ..
+            } = ev
                 && Some(track_id) == audio_track_id
             {
                 es.extend_from_slice(&sample.data);

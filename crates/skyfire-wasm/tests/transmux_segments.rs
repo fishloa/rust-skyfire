@@ -88,9 +88,9 @@ fn init_and_media_reparse_and_account_all_aus() {
         }
         for ev in &all_events {
             if let skyfire_ts::DemuxEvent::TrackAdded(t) = ev {
-                let meta = skyfire_ts::track_meta(&t.spec);
+                let meta = skyfire_ts::track_meta(t);
                 if matches!(meta.kind, skyfire_ts::TrackKind::Video(_)) {
-                    video_track_ids.insert(t.spec.track_id);
+                    video_track_ids.insert(t.track_id);
                 }
             }
         }
