@@ -46,3 +46,4 @@ crates/skyfire-wasm/web/
 /.ts-captures/progressive/
 packages/*/node_modules/
 packages/*/bun.lock
+.worktree/
