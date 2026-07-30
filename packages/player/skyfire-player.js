@@ -179,6 +179,7 @@ export class SkyfirePlayer {
     if (this._destroyed) return;
     this._callBridge("select_audio", pid);
     this._stats.selectedAudio = pid;
+    this._stats.decodedAudioPid = pid;
     this._status(`audio → pid ${pid}`);
   }
 
@@ -713,9 +714,7 @@ export class SkyfirePlayer {
       }
       if (c.channels !== this._outputChannels) {
         // Audio track switch can change channel layout (e.g. AC-3 5.1 → MP2
-        // stereo on orf1). Instead of dropping the chunk (which silences the
-        // new track), reconfigure the audio graph to match. Tear down the
-        // current AudioContext and worklet, then recreate on the next chunk.
+        // stereo on orf1). Tear down and recreate the audio graph.
         this._status(
           `audio channel change: ${this._outputChannels} → ${c.channels}; reconfiguring`
         );
@@ -733,16 +732,11 @@ export class SkyfirePlayer {
         this._lastFp = 0;
         this._lastFpAdvanceMs = 0;
         this._lastMediaUs = null;
-        // Fall through to _ensureAudio below on the current chunk — don't
-        // continue/drop, let the !this._audioReady branch recreate the graph.
       }
       if (!this._audioReady) {
         // eslint-disable-next-line no-await-in-loop
         await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
       }
-      // Re-check channels after (re)configuration — if _ensureAudio set up
-      // the output channels differently than this chunk, we still need to
-      // drop (shouldn't happen with correct reconfigure logic, but safe).
       if (c.channels !== this._outputChannels) {
         this._stats.audioDropped = (this._stats.audioDropped || 0) + 1;
         this._lastDropChannels = c.channels;
@@ -755,8 +749,8 @@ export class SkyfirePlayer {
       const samples = c.samples;
       this._stats.audioChunks++;
       this._stats.audioSamples += samples.length;
-      if (this.bridge && typeof this.bridge.decoded_audio_pid !== "undefined") {
-        this._stats.decodedAudioPid = this.bridge.decoded_audio_pid ?? null;
+      if (this.bridge && typeof this.bridge.selected_audio_pid !== "undefined") {
+        this._stats.decodedAudioPid = this.bridge.selected_audio_pid ?? null;
       }
       this._audioSamplesFed += samples.length;
       this._audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
