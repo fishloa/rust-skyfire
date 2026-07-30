@@ -113,6 +113,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun test packages/player/hls-source.test.js
       - run: npx -y -p typescript@5 tsc --noEmit packages/core/index.d.ts
+      # Typings test: proves `on()` discriminates its payload per event (#87).
+      # types.test-d.ts is compile-time only — @ts-expect-error lines fail the
+      # build if the overloads stop narrowing.
+      - run: npx -y -p typescript@5 tsc --noEmit -p packages/player
 
 
   stream-e2e:
