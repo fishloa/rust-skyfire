@@ -991,7 +991,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skyfire-ac3"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "oxideav-ac3",
  "oxideav-core",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "broadcast-common",
  "skyfire-ac3",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-hls"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "skyfire-ts",
  "transmux",
@@ -1030,14 +1030,14 @@ dependencies = [
 
 [[package]]
 name = "skyfire-mpa"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "symphonia",
 ]
 
 [[package]]
 name = "skyfire-server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "clap",
@@ -1049,11 +1049,11 @@ dependencies = [
 
 [[package]]
 name = "skyfire-sync"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "skyfire-ts"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "broadcast-common",
  "dvb-si",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "skyfire-wasm"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "broadcast-common",
  "dvb-subtitle",
