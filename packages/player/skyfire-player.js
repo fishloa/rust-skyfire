@@ -17,6 +17,29 @@ export { trackSignature, diffTracks, pickFallbackAudio } from "./tracks.js";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Decide whether to reconnect a dropped live stream, and how long to wait.
+ *
+ * The budget counts **consecutive** failures. Any progress since the last
+ * failure resets it, so a long session punctuated by occasional transient
+ * drops never exhausts it — only a stream that is genuinely not recovering
+ * does. Previously the counter lived outside the retry loop and was never
+ * reset, so five transient drops spread over an entire session ended playback
+ * with "stream failed"; against a live packager that races its own playlist
+ * (zenith#1205) that budget was gone within minutes.
+ *
+ * @param {{attempt: number, max: number, progressed: boolean}} state
+ *   `attempt` consecutive failures so far, `max` the budget, `progressed`
+ *   whether any media was consumed since the previous failure.
+ * @returns {{reconnect: boolean, attempt: number, delayMs: number}}
+ */
+export function reconnectDecision({ attempt, max, progressed }) {
+  const base = progressed ? 0 : attempt;
+  if (base >= max) return { reconnect: false, attempt: base, delayMs: 0 };
+  const next = base + 1;
+  return { reconnect: true, attempt: next, delayMs: Math.min(1500 * next, 8000) };
+}
+
+/**
  * Turnkey in-browser DVB player.
  *
  * @example
@@ -255,25 +278,45 @@ export class SkyfirePlayer {
     let attempt = 0;
 
     for (;;) {
+      // Progress marker: any video AU consumed during this attempt means the
+      // stream was alive, so the next failure starts a fresh budget rather than
+      // inheriting one spent hours ago. See reconnectDecision.
+      const ausBefore = this._stats.aus;
       try {
         await this._consumeStream(src);
       } catch (e) {
-        if (this._isLive && attempt < MAX_RECONNECT) {
-          attempt++;
+        const d = this._isLive
+          ? reconnectDecision({
+              attempt,
+              max: MAX_RECONNECT,
+              progressed: this._stats.aus > ausBefore,
+            })
+          : { reconnect: false };
+        if (d.reconnect) {
+          attempt = d.attempt;
           this._status(`stream dropped — reconnecting (${attempt}/${MAX_RECONNECT})…`);
           this._sawKeyframe = false;
-          await sleep(Math.min(1500 * attempt, 8000));
+          await sleep(d.delayMs);
           continue;
         }
         this._fatal("stream failed", e);
         return;
       }
-      if (this._isLive && attempt < MAX_RECONNECT) {
-        attempt++;
-        this._status(`stream ended — reconnecting (${attempt}/${MAX_RECONNECT})…`);
-        this._sawKeyframe = false;
-        await sleep(1000);
-        continue;
+      {
+        const d = this._isLive
+          ? reconnectDecision({
+              attempt,
+              max: MAX_RECONNECT,
+              progressed: this._stats.aus > ausBefore,
+            })
+          : { reconnect: false };
+        if (d.reconnect) {
+          attempt = d.attempt;
+          this._status(`stream ended — reconnecting (${attempt}/${MAX_RECONNECT})…`);
+          this._sawKeyframe = false;
+          await sleep(1000);
+          continue;
+        }
       }
       break;
     }
