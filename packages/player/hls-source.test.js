@@ -320,3 +320,54 @@ test("live: a non-availability error still surfaces", async () => {
   });
   await expect(src.read()).rejects.toThrow(/403/);
 });
+
+// ── Playlist restart: MEDIA-SEQUENCE going backwards must resync ────────────
+//
+// Observed on tv.icomb.place 2026-08-01: MEDIA-SEQUENCE ran 195, then reset to
+// 0 and climbed again — the origin restarted the session. The old refresh kept
+// a monotonic `_lastSeq`, so after such a reset every incoming segment failed
+// `seq > _lastSeq` forever: nothing queued, nothing played, no error raised.
+// A silent permanent stall is the worst possible failure mode, so this is
+// asserted explicitly.
+
+function seqPlaylist(mediaSeq, names) {
+  return [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-TARGETDURATION:4",
+    `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`,
+    ...names.flatMap((n) => ["#EXTINF:4.000,", n]),
+  ].join("\n");
+}
+
+test("live: a MEDIA-SEQUENCE reset resyncs instead of wedging forever", async () => {
+  let phase = 0;
+  const fetchImpl = (u) => {
+    const name = new URL(u, "http://x/").pathname.split("/").pop();
+    if (name.endsWith(".m3u8")) {
+      // First the session is at 195; then it restarts at 0.
+      const body = phase === 0 ? seqPlaylist(195, ["seg195.ts"]) : seqPlaylist(0, ["seg0.ts"]);
+      return Promise.resolve({
+        ok: true, status: 200, url: u,
+        text: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      });
+    }
+    return Promise.resolve({
+      ok: true, status: 200, url: u,
+      text: async () => "",
+      arrayBuffer: async () => new TextEncoder().encode(`bytes:${name}`).buffer,
+    });
+  };
+
+  const src = new HlsSource("http://x/index.m3u8", { fetchImpl, segmentRetryDelayMs: 1 });
+  const first = await src.read();
+  expect(new TextDecoder().decode(first.value)).toBe("bytes:seg195.ts");
+
+  // The origin restarts: sequence numbers now go backwards.
+  phase = 1;
+  const after = await src.read();
+  expect(after.done).toBe(false);
+  expect(new TextDecoder().decode(after.value)).toBe("bytes:seg0.ts");
+  expect(src.playlistResets).toBe(1);
+});

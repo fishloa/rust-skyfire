@@ -62,6 +62,10 @@ export class HlsSource {
     this._segmentRetryBudgetMs = segmentRetryBudgetMs;
     /** Segments skipped because they never became available (JS-observable). */
     this.skippedSegments = 0;
+    /** Media sequence of the last playlist parsed; -1 before the first. */
+    this._lastMediaSequence = -1;
+    /** Times the origin restarted its sequence numbering (JS-observable). */
+    this.playlistResets = 0;
     /** @type {boolean} Updated after the first successful playlist fetch. */
     this.isLive = false;
   }
@@ -136,6 +140,29 @@ export class HlsSource {
     this._targetDuration = parsed.targetDuration || 2;
     this._endList = parsed.endList;
     this.isLive = !parsed.endList;
+
+    // An origin that restarts its session renumbers from a lower MEDIA-SEQUENCE
+    // (observed on zenith: 195 -> 0). `_lastSeq` is monotonic, so without this
+    // every later segment fails the `seq > _lastSeq` test below and the source
+    // silently queues nothing for the rest of its life — a permanent stall with
+    // no error raised. Detect the discontinuity and resync onto the new
+    // numbering.
+    const newest = parsed.segments.length
+      ? parsed.segments[parsed.segments.length - 1].seq
+      : -1;
+    if (
+      this._primed &&
+      (parsed.mediaSequence < this._lastMediaSequence || newest < this._lastSeq)
+    ) {
+      this.playlistResets++;
+      console.warn(
+        `[skyfire] playlist restarted (media-sequence ${this._lastMediaSequence} -> ` +
+          `${parsed.mediaSequence}); resyncing`
+      );
+      this._lastSeq = -1;
+      this._pending = [];
+    }
+    this._lastMediaSequence = parsed.mediaSequence;
 
     for (const seg of parsed.segments) {
       if (seg.seq > this._lastSeq) {
