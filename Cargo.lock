@@ -177,12 +177,24 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "broadcast-common"
-version = "9.1.0"
+version = "9.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56cd44549fe3c4a7c5c27c30342a85acffb9f397c0e7f890dcbcc1b74b0cacb2"
+checksum = "e90a9ee84933b45bdce8d09d98759b530b11761ef1cdf2c83590bc2644dc116e"
 dependencies = [
  "chrono",
  "libm",
+ "serde",
+]
+
+[[package]]
+name = "broadcast-hls"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28f3ed803d0e96e904df0d6f64b36ed119a988758a77a2f9ea2e32ec052c2d31"
+dependencies = [
+ "broadcast-common",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -263,9 +275,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.4"
+version = "4.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91e0c145792ef73a6ad36d27c75ac09f1832222a3c209689d90f534685ee5b7"
+checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -273,9 +285,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.2"
+version = "4.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f09628afdcc538b57f3c6341e9c8e9970f18e4a481690a64974d7023bd33548b"
+checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1327,12 +1339,13 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.21.1"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5b6534c101043daa0796fd5b08d579ff795e9b735885f05ae41b583698297d9"
+checksum = "1efc15ac88935aba70bc92edf9b1858184ede83dbd57b0ffea34c0c1326d66bd"
 dependencies = [
  "aes",
  "broadcast-common",
+ "broadcast-hls",
  "bytes",
  "cbc",
  "ctr",
