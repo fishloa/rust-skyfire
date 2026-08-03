@@ -61,7 +61,7 @@ canvas.video { max-width: 100%; max-height: 100%; object-fit: contain; }
 `;
 
 export class SkyfirePlayerElement extends HTMLElement {
-  static get observedAttributes() { return ["src", "controls", "muted", "autoplay", "audio-lead"]; }
+  static get observedAttributes() { return ["src", "subtitle-pid", "audio-pid", "controls", "muted", "autoplay", "audio-lead"]; }
 
   constructor() {
     super();
@@ -183,6 +183,17 @@ export class SkyfirePlayerElement extends HTMLElement {
     };
     const lead = parseFloat(this.getAttribute("audio-lead"));
     if (!Number.isNaN(lead)) opts.audioLeadSeconds = lead;
+    // Preselect tracks BEFORE streaming starts. This matters more than it looks:
+    // the bridge discards subtitle PES for a PID that is not selected, and it
+    // consumes a stream far faster than realtime (a 20 s clip in a few hundred
+    // ms), so a host that waits for the track list before enabling subtitles can
+    // miss the entire stream. `audio-pid`/`subtitle-pid` are applied by the
+    // player before the first feed, which is the only way to guarantee coverage
+    // from the first byte (#90).
+    const subPid = parseInt(this.getAttribute("subtitle-pid"), 10);
+    if (!Number.isNaN(subPid)) opts.subtitlePid = subPid;
+    const audPid = parseInt(this.getAttribute("audio-pid"), 10);
+    if (!Number.isNaN(audPid)) opts.audioPid = audPid;
 
     const engine = new SkyfirePlayer(this._videoCanvas, opts);
     this._engine = engine;

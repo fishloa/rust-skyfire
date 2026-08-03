@@ -22,6 +22,11 @@
   const el = document.querySelector("skyfire-player");
   const p = new URLSearchParams(location.search);
   if (p.get("video") === "mse") el.setAttribute("video", "mse");
+  // Preselect tracks before the stream starts (see #90): the bridge drops
+  // subtitle PES for an unselected PID and consumes a clip far faster than
+  // realtime, so selecting after the track list resolves can miss everything.
+  if (p.get("subs")) el.setAttribute("subtitle-pid", p.get("subs"));
+  if (p.get("audio")) el.setAttribute("audio-pid", p.get("audio"));
   el.setAttribute("src", p.get("src") || "/fixtures/h264-25fps.ts");
   // Harness contract: expose the element as __sfPlayer (selectAudio/selectSubtitle
   // delegate to the engine); __sfStats is mirrored by the element on every stats tick.
