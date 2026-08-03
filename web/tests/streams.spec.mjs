@@ -179,3 +179,73 @@ test(`stream orf1: cross-layout audio switch really decodes the new layout`, asy
   const pid = await page.evaluate(() => window.__sfStats.decodedAudioPid);
   expect(pid, "decoded pid after switch to MP2 stereo").toBe(258);
 });
+
+// ── #91: a finite VOD playlist must play ALL of it, then report done/ended ──
+//
+// Two independent oracles:
+//   1. Audio that actually PLAYS OUT reaches within one second of the total
+//      advertised by the playlist (sum of EXTINF). Regression: the player
+//      went `done` a full segment early (~4 s short) because it reported the
+//      stream as ended while a segment of audio was still queued-but-unplayed.
+//   2. Reaching #EXT-X-ENDLIST drains to `stats.done === true` AND emits the
+//      `ended` event exactly once — so a host can tell a finished stream from
+//      a mid-stream freeze.
+async function advertisedExtinfSeconds(slug) {
+  const resp = await fetch(`${SF}/stream/hls/skyfire/${slug}/index.m3u8`);
+  const text = await resp.text();
+  let sum = 0;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("#EXTINF:")) {
+      sum += parseFloat(line.slice("#EXTINF:".length).split(",")[0]);
+    }
+  }
+  return sum;
+}
+
+for (const stream of registry) {
+  test(`stream ${stream.slug}: plays out to the advertised total, then done+ended`, async ({ page }) => {
+    test.setTimeout(90_000);
+    const advertised = await advertisedExtinfSeconds(stream.slug);
+    const src = `${SF}/stream/hls/skyfire/${stream.slug}/index.m3u8`;
+
+    await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
+    // Bind the ended listener BEFORE the player initialises so a fast clip can
+    // never finish before we start counting.
+    await page.evaluate(() => {
+      window.__doneSeen = false;
+      window.__endedCount = 0;
+      document.addEventListener("sf-ended", () => { window.__endedCount++; });
+      document.body.click(); window.sfStartAudio?.();
+    });
+
+    // Wait for `done` to be visible on __sfStats, sampling the audioSec ceiling.
+    await page.waitForFunction(
+      () => window.__sfStats?.done === true, { timeout: 60_000 });
+
+    const final = await page.evaluate(() => {
+      const s = window.__sfStats;
+      // `audioSec` advances as long as frames are played out; the final sample
+      // after `done` is the played-out total.
+      return {
+        audioSec: s.audioSec ?? 0,
+        done: s.done === true,
+        endedCount: window.__endedCount,
+      };
+    });
+
+    // Oracle 1: within one second of the advertised total (short-by-a-segment
+    // was ~4 s short — this is far looser and still catches the regression).
+    expect(
+      final.audioSec,
+      `stream ${stream.slug}: audio played out (${final.audioSec.toFixed(2)}s) `
+        + `within 1s of advertised ${advertised.toFixed(2)}s`
+    ).toBeGreaterThan(advertised - 1.0);
+
+    // Oracle 2: done set, ended fired exactly once.
+    expect(final.done, `stream ${stream.slug}: stats.done true`).toBe(true);
+    expect(
+      final.endedCount,
+      `stream ${stream.slug}: ended emitted exactly once`
+    ).toBe(1);
+  });
+}
