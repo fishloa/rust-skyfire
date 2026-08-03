@@ -8,21 +8,22 @@ const registry = JSON.parse(
 
 // Load a stream in the player and sample __sfStats every 250ms for `durMs`.
 // Returns the series of samples + filtered console errors.
-async function sampleSeries(page, src, { durMs = 12_000 } = {}) {
+async function sampleSeries(page, src, { durMs = 12_000, subs = null } = {}) {
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-  await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}`);
+  // Preselect the subtitle PID via the URL rather than switching it on later.
+  // The bridge DISCARDS subtitle PES for a PID that is not selected, and it
+  // consumes a clip far faster than realtime — a 20 s fixture is gone in a few
+  // hundred ms. Selecting after the track list resolved therefore raced the end
+  // of the stream, which is what made this assertion look load-dependent and
+  // flaky (#90). Preselected, all four subtitle streams produce cues in ~1 s.
+  const q = subs != null ? `&subs=${subs}` : "";
+  await page.goto(`${WEB}/index.html?src=${encodeURIComponent(src)}${q}`);
   await page.evaluate(() => { document.body.click(); window.sfStartAudio?.(); });
   const series = await page.evaluate((dur) => new Promise((res) => {
     const out = []; const t0 = Date.now();
     const tick = () => {
       const s = window.__sfStats;
-      // Enable the first subtitle track as soon as it resolves (subs default off,
-      // like any player) so DVB-sub cue decoding can be verified.
-      if (s && s.tracks?.subtitle?.length && !window.__sfSubSel) {
-        window.__sfSubSel = true;
-        try { window.__sfPlayer?.selectSubtitle(s.tracks.subtitle[0].pid); } catch (_) {}
-      }
       if (s) out.push({ t: Date.now() - t0, decoded: s.decoded, drawn: s.drawn,
                         audioSamples: s.audioSamples, audioFrames: s.audioFrames,
                         avSkewMs: s.avSkewMs,
@@ -57,7 +58,9 @@ function maxStallMs(series, key) {
 for (const stream of registry) {
   test(`stream ${stream.slug}: continuous video + audio`, async ({ page }) => {
     const src = `${SF}/stream/hls/skyfire/${stream.slug}/index.m3u8`;
-    const { series, real } = await sampleSeries(page, src);
+    const { series, real } = await sampleSeries(page, src, {
+      subs: stream.expect_sub_cues ? stream.subtitle[0].pid : null,
+    });
     expect(series.length, "must collect stats samples").toBeGreaterThan(3);
     const last = series[series.length - 1];
 

@@ -122,9 +122,16 @@ jobs:
   stream-e2e:
     name: browser stream gate (per-stream continuity)
     runs-on: ubuntu-latest
-    # RED until Phase 2 fixes the player. Flip to required (remove
-    # continue-on-error) once every committed stream is green.
-    continue-on-error: true
+    # REQUIRED as of #90. Every committed stream is green (14/14, reproduced on
+    # consecutive runs), so this job now blocks a merge instead of reporting
+    # failure and being ignored.
+    #
+    # Do not re-add continue-on-error to silence a failure. While it was set, a
+    # rustup CDN error and a genuine regression were indistinguishable from the
+    # check colour, and a real regression could have merged unnoticed. If this
+    # job proves load-flaky on a CI runner, fix the assertion that is
+    # load-sensitive — the last one was cured at source (#90: preselect the
+    # subtitle PID rather than racing the end of the stream).
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
