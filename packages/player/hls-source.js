@@ -43,7 +43,7 @@ export class DirectSource {
  * non-done read(). Supports both VOD (ENDLIST) and live playlists.
  */
 export class HlsSource {
-  constructor(url, { signal, fetchImpl = fetch, segmentRetryDelayMs = 250, segmentRetryBudgetMs } = {}) {
+  constructor(url, { signal, fetchImpl = fetch, segmentRetryDelayMs = 250, segmentRetryBudgetMs, playlistRetryDelayMs = 250, playlistRetryBudgetMs = 20_000 } = {}) {
     this._url = url;
     this._signal = signal;
     this._fetchImpl = fetchImpl;
@@ -60,6 +60,14 @@ export class HlsSource {
      * writing a segment it has already advertised.
      */
     this._segmentRetryBudgetMs = segmentRetryBudgetMs;
+    /** First retry delay for a playlist that is not ready yet; doubles. */
+    this._playlistRetryDelayMs = playlistRetryDelayMs;
+    /**
+     * How long to keep retrying an unavailable playlist. Generous, because a
+     * live origin legitimately answers 503 while a channel spins up and the
+     * player has no other way to wait for it (#84).
+     */
+    this._playlistRetryBudgetMs = playlistRetryBudgetMs;
     /** Segments skipped because they never became available (JS-observable). */
     this.skippedSegments = 0;
     /** Media sequence of the last playlist parsed; -1 before the first. */
@@ -114,11 +122,37 @@ export class HlsSource {
     }
   }
 
-  async _refreshPlaylist() {
+  /**
+   * Fetch a playlist, tolerating an origin that is not serving it yet.
+   *
+   * A live origin answers 503 (skyfire-server: "not ready") or 404 while a
+   * channel starts up, and the very first playlist fetch happens before
+   * `isLive` is known — so the player's live-reconnect path cannot help, and
+   * throwing here killed the stream before it began. That was the cause of #84
+   * ("playback halts while the backend keeps producing"): the backend was
+   * producing, we had already given up. Retry with a doubling backoff; a status
+   * that cannot be waited out still throws.
+   */
+  async _fetchPlaylist(url) {
     const fetchImpl = this._fetchImpl;
+    let delay = this._playlistRetryDelayMs;
+    let waited = 0;
+    for (;;) {
+      const resp = await fetchImpl(url, { signal: this._signal });
+      if (resp.ok) return resp;
+      const retryable = resp.status === 404 || resp.status >= 500;
+      if (!retryable || waited >= this._playlistRetryBudgetMs) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      await sleep(delay);
+      waited += delay;
+      delay = Math.min(delay * 2, 1000);
+    }
+  }
+
+  async _refreshPlaylist() {
     let playlistUrl = this._url;
-    let resp = await fetchImpl(playlistUrl, { signal: this._signal });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    let resp = await this._fetchPlaylist(playlistUrl);
     let text = await resp.text();
     let parsed = parsePlaylist(text, resp.url || playlistUrl);
 
@@ -127,8 +161,7 @@ export class HlsSource {
         throw new Error("HLS master playlist has no variants");
       }
       playlistUrl = parsed.variants[0].uri;
-      resp = await fetchImpl(playlistUrl, { signal: this._signal });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      resp = await this._fetchPlaylist(playlistUrl);
       text = await resp.text();
       parsed = parsePlaylist(text, resp.url || playlistUrl);
       if (parsed.kind !== "media") {

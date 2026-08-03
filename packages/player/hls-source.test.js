@@ -371,3 +371,43 @@ test("live: a MEDIA-SEQUENCE reset resyncs instead of wedging forever", async ()
   expect(new TextDecoder().decode(after.value)).toBe("bytes:seg0.ts");
   expect(src.playlistResets).toBe(1);
 });
+
+// ── Playlist availability: a live origin that is not ready yet (#84) ────────
+//
+// skyfire-server returns 503 "not ready" for a live stream whose first segments
+// have not been written; a real origin does the same while a channel spins up.
+// _refreshPlaylist threw on any non-OK, so the stream died before it began —
+// and because `isLive` is only known AFTER a successful playlist fetch, the
+// player's live-reconnect path could not even engage. This is the playlist-level
+// twin of the segment 404 handling, and is the reproduction for #84.
+
+test("live: a 503 playlist is retried until the origin is ready", async () => {
+  let attempts = 0;
+  const fetchImpl = (u) => {
+    const name = new URL(u, "http://x/").pathname.split("/").pop();
+    if (name.endsWith(".m3u8")) {
+      attempts++;
+      if (attempts <= 2) {
+        return Promise.resolve({ ok: false, status: 503, url: u, text: async () => "not ready", arrayBuffer: async () => new ArrayBuffer(0) });
+      }
+      return Promise.resolve({
+        ok: true, status: 200, url: u,
+        text: async () => LIVE_PLAYLIST,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      });
+    }
+    return Promise.resolve({ ok: true, status: 200, url: u, text: async () => "", arrayBuffer: async () => new TextEncoder().encode(`bytes:${name}`).buffer });
+  };
+  const src = new HlsSource("http://x/index.m3u8", { fetchImpl, playlistRetryDelayMs: 1 });
+  const r = await src.read();
+  expect(r.done).toBe(false);
+  expect(new TextDecoder().decode(r.value)).toBe("bytes:seg50.ts");
+  expect(attempts).toBeGreaterThan(2);
+});
+
+test("live: a playlist error that cannot be waited out still throws", async () => {
+  const fetchImpl = (u) =>
+    Promise.resolve({ ok: false, status: 403, url: u, text: async () => "nope", arrayBuffer: async () => new ArrayBuffer(0) });
+  const src = new HlsSource("http://x/index.m3u8", { fetchImpl, playlistRetryDelayMs: 1 });
+  await expect(src.read()).rejects.toThrow(/403/);
+});
