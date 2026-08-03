@@ -43,7 +43,7 @@ export class DirectSource {
  * non-done read(). Supports both VOD (ENDLIST) and live playlists.
  */
 export class HlsSource {
-  constructor(url, { signal, fetchImpl = fetch } = {}) {
+  constructor(url, { signal, fetchImpl = fetch, segmentRetryDelayMs = 250, segmentRetryBudgetMs } = {}) {
     this._url = url;
     this._signal = signal;
     this._fetchImpl = fetchImpl;
@@ -52,8 +52,66 @@ export class HlsSource {
     this._endList = false;
     this._targetDuration = 2;
     this._primed = false;
+    /** First retry delay for a not-yet-available segment; doubles each attempt. */
+    this._segmentRetryDelayMs = segmentRetryDelayMs;
+    /**
+     * How long to keep retrying ONE segment before skipping it. Defaults to
+     * roughly a target duration — the time the packager should need to finish
+     * writing a segment it has already advertised.
+     */
+    this._segmentRetryBudgetMs = segmentRetryBudgetMs;
+    /** Segments skipped because they never became available (JS-observable). */
+    this.skippedSegments = 0;
+    /** Media sequence of the last playlist parsed; -1 before the first. */
+    this._lastMediaSequence = -1;
+    /** Times the origin restarted its sequence numbering (JS-observable). */
+    this.playlistResets = 0;
     /** @type {boolean} Updated after the first successful playlist fetch. */
     this.isLive = false;
+  }
+
+  /**
+   * Fetch one segment, tolerating a live packager that publishes a segment URI
+   * slightly before the bytes are readable (zenith#1205 — observed serving
+   * `404 segment 'segNN.ts' not found` for segments its own playlist listed).
+   *
+   * A 404 or 5xx on a listed segment is an availability problem, not a stream
+   * failure: retry with a doubling backoff up to roughly one target duration,
+   * then give up on THAT segment and let the caller move on. Throwing here
+   * would tear down the whole stream for a transient the next request fixes.
+   *
+   * Any other non-OK status (403, 410, …) cannot be waited out, so it still
+   * throws rather than being swallowed into a retry loop.
+   *
+   * @returns {Promise<Uint8Array|null>} bytes, or `null` if the segment was skipped.
+   */
+  async _fetchSegment(seg) {
+    const fetchImpl = this._fetchImpl;
+    const budgetMs =
+      this._segmentRetryBudgetMs ?? Math.max((this._targetDuration || 2) * 1000, 1000);
+    let delay = this._segmentRetryDelayMs;
+    let waited = 0;
+
+    for (;;) {
+      const resp = await fetchImpl(seg.uri, { signal: this._signal });
+      if (resp.ok) {
+        const buf = await resp.arrayBuffer();
+        return new Uint8Array(buf);
+      }
+      const retryable = resp.status === 404 || resp.status >= 500;
+      if (!retryable) throw new Error(`HTTP ${resp.status}`);
+      if (waited >= budgetMs) {
+        this.skippedSegments++;
+        console.warn(
+          `[skyfire] segment never became available, skipping: ${seg.uri} ` +
+            `(HTTP ${resp.status} after ${waited}ms)`
+        );
+        return null;
+      }
+      await sleep(delay);
+      waited += delay;
+      delay = Math.min(delay * 2, 1000);
+    }
   }
 
   async _refreshPlaylist() {
@@ -83,6 +141,29 @@ export class HlsSource {
     this._endList = parsed.endList;
     this.isLive = !parsed.endList;
 
+    // An origin that restarts its session renumbers from a lower MEDIA-SEQUENCE
+    // (observed on zenith: 195 -> 0). `_lastSeq` is monotonic, so without this
+    // every later segment fails the `seq > _lastSeq` test below and the source
+    // silently queues nothing for the rest of its life — a permanent stall with
+    // no error raised. Detect the discontinuity and resync onto the new
+    // numbering.
+    const newest = parsed.segments.length
+      ? parsed.segments[parsed.segments.length - 1].seq
+      : -1;
+    if (
+      this._primed &&
+      (parsed.mediaSequence < this._lastMediaSequence || newest < this._lastSeq)
+    ) {
+      this.playlistResets++;
+      console.warn(
+        `[skyfire] playlist restarted (media-sequence ${this._lastMediaSequence} -> ` +
+          `${parsed.mediaSequence}); resyncing`
+      );
+      this._lastSeq = -1;
+      this._pending = [];
+    }
+    this._lastMediaSequence = parsed.mediaSequence;
+
     for (const seg of parsed.segments) {
       if (seg.seq > this._lastSeq) {
         this._pending.push(seg);
@@ -94,15 +175,15 @@ export class HlsSource {
   }
 
   async read() {
-    const fetchImpl = this._fetchImpl;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       if (this._pending.length > 0) {
         const seg = this._pending.shift();
-        const resp = await fetchImpl(seg.uri, { signal: this._signal });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const buf = await resp.arrayBuffer();
-        return { done: false, value: new Uint8Array(buf) };
+        const bytes = await this._fetchSegment(seg);
+        // `null` means the segment never became available and was skipped;
+        // fall through to the next one rather than ending the stream.
+        if (bytes) return { done: false, value: bytes };
+        continue;
       }
 
       if (this._primed && this._endList) {

@@ -244,3 +244,130 @@ test("A3-5: makeSource returns correct type", () => {
   expect(makeSource("http://x/stream.ts", { hls: true })).toBeInstanceOf(HlsSource);
   expect(makeSource("http://x/index.m3u8", { hls: false })).toBeInstanceOf(DirectSource);
 });
+
+// ── Live segment availability: a 404 must not kill the stream (zenith#1205) ──
+//
+// A live packager can publish a segment URI a moment before the bytes are
+// readable. Observed on tv.icomb.place 2026-08-01: three of six advertised
+// segments returned `404 segment 'segNN.ts' not found` while an earlier one
+// served 3.3 MB. RFC 8216 §6.2.2 says a server must not do that, but a live
+// client has to survive it — a not-yet-written segment is a wait, not a failure.
+
+const LIVE_PLAYLIST = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:50
+#EXTINF:4.000,
+seg50.ts
+#EXTINF:4.000,
+seg51.ts`;
+
+/** Fetch stub: playlist always OK; per-segment status driven by `plan`. */
+function planFetch(plan, log = []) {
+  return (u) => {
+    const name = new URL(u, "http://x/").pathname.split("/").pop();
+    if (name.endsWith(".m3u8")) {
+      return Promise.resolve({
+        ok: true, status: 200, url: u,
+        text: async () => LIVE_PLAYLIST,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      });
+    }
+    log.push(name);
+    const status = typeof plan[name] === "function" ? plan[name]() : (plan[name] ?? 200);
+    const ok = status >= 200 && status < 300;
+    return Promise.resolve({
+      ok, status, url: u,
+      text: async () => (ok ? "" : `segment '${name}' not found`),
+      arrayBuffer: async () => new TextEncoder().encode(`bytes:${name}`).buffer,
+    });
+  };
+}
+
+test("live: a segment that 404s then appears is retried, not fatal", async () => {
+  let calls = 0;
+  const log = [];
+  // seg50 is missing on the first attempt and available on the next.
+  const src = new HlsSource("http://x/index.m3u8", {
+    fetchImpl: planFetch({ "seg50.ts": () => (++calls === 1 ? 404 : 200) }, log),
+    segmentRetryDelayMs: 1,
+  });
+  const r = await src.read();
+  expect(r.done).toBe(false);
+  expect(new TextDecoder().decode(r.value)).toBe("bytes:seg50.ts");
+  // It re-requested the same segment rather than abandoning the stream.
+  expect(log.filter((n) => n === "seg50.ts").length).toBeGreaterThan(1);
+});
+
+test("live: a persistently missing segment is skipped, the stream continues", async () => {
+  const log = [];
+  const src = new HlsSource("http://x/index.m3u8", {
+    fetchImpl: planFetch({ "seg50.ts": 404 }, log),
+    segmentRetryDelayMs: 1, segmentRetryBudgetMs: 5,
+  });
+  const r = await src.read();
+  // Must not throw, and must move on to the next advertised segment.
+  expect(r.done).toBe(false);
+  expect(new TextDecoder().decode(r.value)).toBe("bytes:seg51.ts");
+});
+
+test("live: a non-availability error still surfaces", async () => {
+  // 403 is not "not written yet" — retrying cannot help, so it must not be
+  // swallowed into an indefinite retry loop.
+  const src = new HlsSource("http://x/index.m3u8", {
+    fetchImpl: planFetch({ "seg50.ts": 403 }),
+    segmentRetryDelayMs: 1,
+  });
+  await expect(src.read()).rejects.toThrow(/403/);
+});
+
+// ── Playlist restart: MEDIA-SEQUENCE going backwards must resync ────────────
+//
+// Observed on tv.icomb.place 2026-08-01: MEDIA-SEQUENCE ran 195, then reset to
+// 0 and climbed again — the origin restarted the session. The old refresh kept
+// a monotonic `_lastSeq`, so after such a reset every incoming segment failed
+// `seq > _lastSeq` forever: nothing queued, nothing played, no error raised.
+// A silent permanent stall is the worst possible failure mode, so this is
+// asserted explicitly.
+
+function seqPlaylist(mediaSeq, names) {
+  return [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-TARGETDURATION:4",
+    `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`,
+    ...names.flatMap((n) => ["#EXTINF:4.000,", n]),
+  ].join("\n");
+}
+
+test("live: a MEDIA-SEQUENCE reset resyncs instead of wedging forever", async () => {
+  let phase = 0;
+  const fetchImpl = (u) => {
+    const name = new URL(u, "http://x/").pathname.split("/").pop();
+    if (name.endsWith(".m3u8")) {
+      // First the session is at 195; then it restarts at 0.
+      const body = phase === 0 ? seqPlaylist(195, ["seg195.ts"]) : seqPlaylist(0, ["seg0.ts"]);
+      return Promise.resolve({
+        ok: true, status: 200, url: u,
+        text: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      });
+    }
+    return Promise.resolve({
+      ok: true, status: 200, url: u,
+      text: async () => "",
+      arrayBuffer: async () => new TextEncoder().encode(`bytes:${name}`).buffer,
+    });
+  };
+
+  const src = new HlsSource("http://x/index.m3u8", { fetchImpl, segmentRetryDelayMs: 1 });
+  const first = await src.read();
+  expect(new TextDecoder().decode(first.value)).toBe("bytes:seg195.ts");
+
+  // The origin restarts: sequence numbers now go backwards.
+  phase = 1;
+  const after = await src.read();
+  expect(after.done).toBe(false);
+  expect(new TextDecoder().decode(after.value)).toBe("bytes:seg0.ts");
+  expect(src.playlistResets).toBe(1);
+});
