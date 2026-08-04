@@ -114,6 +114,8 @@ export class SkyfirePlayer {
     this._HOLD_MAX_MS = 1500;        // max initial hold waiting for audio to start
     this._audioSampleRate = 48000;
     this._presentScheduled = false;
+    this._audioPcmQueue = []; // PCM chunks drained from the bridge, paced out to the worklet
+    this._audioDraining = false; // end-of-stream drain in progress
 
     // ── audio ─────────────────────────────────────────────────────────────────
     this._audioCtx = null;
@@ -327,7 +329,11 @@ export class SkyfirePlayer {
       if (this._videoPath === "webcodecs") this._pumpVideoInner();
       this._pumpSubtitlesInner();
     });
-    await this._pumpAudio();
+    // Drain every decoded PCM chunk into the worklet AND wait for it to be
+    // actually played out (play-ahead drops to ~0). Reporting `done` while a
+    // segment of audio was still queued-but-unplayed is the #91 tail-loss; this
+    // is what makes end-of-stream distinguishable from a mid-stream freeze.
+    await this._drainAudioToCompletion();
     if (this._videoPath === "webcodecs" && this._videoDecoder && this._decoderConfigured) {
       try { await this._videoDecoder.flush(); } catch (e) { console.warn("[skyfire] flush", e); }
     }
@@ -339,11 +345,14 @@ export class SkyfirePlayer {
     }
 
     const s = this._stats;
+    // `done` is a persistent field so a later stats emission (drawFrame/status)
+    // can never clear it — a host must be able to read "finished" at any time.
+    this._stats.done = true;
     this._status(
       `done — video ${s.decoded}f/${s.drawn}drawn, audio ${s.audioChunks} chunks / ${s.audioSamples} samples, played ${s.audioSec.toFixed(1)}s`
     );
-    this._emit("stats", { ...s, done: true });
-    this._emit("ended", { ...s, done: true });
+    this._emit("stats", { ...this._stats });
+    this._emit("ended", { ...this._stats });
   }
 
   /**
@@ -399,6 +408,12 @@ export class SkyfirePlayer {
       try { e.frame.close(); } catch (_) {}
     }
     this._presentQueue.length = 0;
+
+    // Free PCM chunks still queued for the worklet (not yet posted).
+    for (const c of this._audioPcmQueue) {
+      try { c.free?.(); } catch (_) {}
+    }
+    this._audioPcmQueue.length = 0;
 
     // Remove subtitle overlay canvas.
     if (this._subsCanvas) {
@@ -767,8 +782,10 @@ export class SkyfirePlayer {
   }
 
   async _pumpAudioInner() {
-    const chunks = this.bridge.take_audio_pcm();
-    for (const c of chunks) {
+    // Drain every decoded chunk out of the bridge and into our JS-side queue
+    // so the bridge never accumulates PCM across ticks. Channel normalisation /
+    // graph (re)creation happens here, once per chunk, at drain time.
+    for (const c of this.bridge.take_audio_pcm()) {
       if (!this._audioReady) {
         // eslint-disable-next-line no-await-in-loop
         await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
@@ -793,6 +810,7 @@ export class SkyfirePlayer {
         this._lastFp = 0;
         this._lastFpAdvanceMs = 0;
         this._lastMediaUs = null;
+        await this._ensureAudio(c.sample_rate, this.bridge.audio_native_channels() || c.channels);
       }
       if (!this._audioReady) {
         // eslint-disable-next-line no-await-in-loop
@@ -804,6 +822,18 @@ export class SkyfirePlayer {
         c.free?.();
         continue;
       }
+      this._audioPcmQueue.push(c);
+    }
+
+    // Post from the queue to the worklet, paced by the play-ahead so we NEVER
+    // overflow the worklet's fixed ring (16 s). Posting everything in one burst
+    // (what the feed did before) overflowed the ring and silently dropped the
+    // oldest audio whenever a clip decoded faster than it played — the #91
+    // tail-loss. Only post while the already-buffered audio stays below the
+    // configured lead; the end-of-stream drain loop tops the queue back up on
+    // later ticks as the playhead catches up.
+    while ((this._audioAheadSeconds() < this._AUDIO_LEAD_S) && this._audioPcmQueue.length) {
+      const c = this._audioPcmQueue.shift();
       if (this._firstAudioPtsUs === null && c.pts_ticks !== undefined) {
         this._firstAudioPtsUs = ticksToMicros(c.pts_ticks);
       }
@@ -824,6 +854,37 @@ export class SkyfirePlayer {
 
   async _pumpAudio() {
     this._callBridge(() => this._pumpAudioInner());
+  }
+
+  /**
+   * At the end of a FINITE stream, wait for every decoded PCM chunk to be both
+   * handed to the worklet AND actually played out (play-ahead drains to ~0),
+   * before the caller reports the stream as ended. Without this the player
+   * declared `done` while roughly a segment of buffered audio was still
+   * queued-but-unplayed — the other half of #91. Bounded by a generous wall
+   * timeout so a genuinely stuck clock cannot hang the caller forever.
+   * Hard ends after `maxMs` and lets the caller proceed regardless.
+   */
+  async _drainAudioToCompletion(maxMs = 60_000) {
+    if (this._audioDraining) return;
+    this._audioDraining = true;
+    const t0 = performance.now();
+    try {
+      for (;;) {
+        if (performance.now() - t0 > maxMs) return;
+        await this._pumpAudio();
+        const allPosted = this._audioPcmQueue.length === 0;
+        const nearZero =
+          this._audioAheadSeconds() != null && this._audioAheadSeconds() <= 0.05;
+        // All chunks handed to the worklet and played out, OR there is no audio
+        // to play at all (video-only / autoplay-blocked) — either way the stream
+        // is consumed, so report the end instead of waiting on a dead clock.
+        if (allPosted && (nearZero || !this._audioStarted())) break;
+        await sleep(40);
+      }
+    } finally {
+      this._audioDraining = false;
+    }
   }
 
   _startAudio() {
