@@ -20,11 +20,12 @@
 /// a deliberate difference in strictness, not a bug — see the matching
 /// cross-reference comment in `lib.rs`.
 ///
-/// For E-AC-3 this only inspects the first (independent, `strmtyp == 0`)
-/// substream's `acmod`/`lfeon`. A genuine 7.1 program carried via a
-/// *dependent* substream's `chanmap` is never read here, so such a stream
-/// reports the independent substream's count (6), not `None` — a wrong
-/// number rather than an honest "unknown".
+/// For E-AC-3 this inspects the first (independent, `strmtyp == 0`)
+/// substream's `acmod`/`lfeon`, and — where a *dependent* substream
+/// (`strmtyp == 1`) follows in `buf` (the carriage form of a genuine 7.1
+/// program, whose `chanmap` describes the extra channels) — extends the
+/// count by the dependent substream's own `nchans` so such a stream reports
+/// its true 8 channels rather than the independent 5.1's 6.
 ///
 /// Returns `None` when the buffer does not start with a sync frame, is too
 /// short, or carries an unrecognised `bsid`. Callers MUST treat `None` as
@@ -38,17 +39,57 @@ pub fn channels_from_syncframe(buf: &[u8]) -> Option<u8> {
     // bsid is at bit offset 40 = byte 5, top 5 bits, in both syntaxes.
     let bsid = buf.get(5)? >> 3;
 
-    let nchans = if bsid <= 8 {
+    if bsid <= 8 {
         // Base AC-3: bsi() begins immediately after the 5-byte syncinfo.
-        oxideav_ac3::bsi::parse(buf.get(5..)?).ok()?.nchans
-    } else if (11..=16).contains(&bsid) {
-        // E-AC-3 (Annex E): bsi() begins immediately after the 16-bit syncword.
-        oxideav_ac3::eac3::bsi::parse(buf.get(2..)?).ok()?.nchans
-    } else {
+        return oxideav_ac3::bsi::parse(buf.get(5..)?)
+            .ok()
+            .map(|b| b.nchans);
+    }
+    if !(11..=16).contains(&bsid) {
+        // Unrecognised bsid 9/10 or else: unknown.
         return None;
-    };
+    }
 
-    Some(nchans)
+    // E-AC-3 (Annex E): bsi() begins immediately after the 16-bit syncword.
+    let first = oxideav_ac3::eac3::bsi::parse(buf.get(2..)?).ok()?;
+
+    // #99 header probe fix (strategy a — report the true count). A genuine
+    // 7.1 E-AC-3 program is carried as TWO syncframes in the elementary
+    // stream: an independent 5.1 substream (strmtyp 0, 6 channels) followed
+    // by a dependent substream (strmtyp 1) whose `chanmap` adds the extra
+    // channels that bring the total to 7.1. Reading only the first frame
+    // returns 6, which the UI renders as '5.1'. When the independent frame
+    // is followed in `buf` by a dependent substream, the true count is the
+    // independent `nchans` plus the dependent substream's `nchans` (its
+    // own coded channels, which the chanmap is required by spec to match).
+    //
+    // `frmsiz` is the frame size in 16-bit words minus one, so the first
+    // frame spans `(frmsiz + 1) * 2` bytes and the dependent substream
+    // begins at the next 0x0B77 syncword after that. We scan forward rather
+    // than trusting the exact boundary, and never read past the end of buf.
+    if first.strmtyp == oxideav_ac3::eac3::bsi::StreamType::Independent {
+        let frame_bytes = (usize::from(first.frmsiz) + 1) * 2;
+        // Walk forward from the first frame's end, looking for a subsequent
+        // dependent-substream syncframe. Never read past the end of `buf`.
+        for scan in frame_bytes..buf.len().saturating_sub(2) {
+            if buf[scan] != 0x0B || buf[scan + 1] != 0x77 {
+                continue;
+            }
+            let Some(tail) = buf.get(scan + 2..) else {
+                continue;
+            };
+            // The dependent substream's `nchans` is the extra channel
+            // count (the spec requires its chanmap to expand to exactly
+            // this many locations).
+            if let Ok(dep) = oxideav_ac3::eac3::bsi::parse(tail)
+                && dep.strmtyp == oxideav_ac3::eac3::bsi::StreamType::Dependent
+            {
+                return first.nchans.checked_add(dep.nchans);
+            }
+        }
+    }
+
+    Some(first.nchans)
 }
 
 #[cfg(test)]
@@ -153,6 +194,71 @@ mod tests {
             .collect()
     }
 
+    /// Build an E-AC-3 *dependent* substream syncframe header that
+    /// carries a `chanmap`.
+    ///
+    /// Layout: syncword(16) strmtyp(2)=1 substreamid(3) frmsiz(11) fscod(2)
+    /// numblkscod(2) acmod(3) lfeon(1) bsid(5) dialnorm(5) compre(1)
+    /// [dual-mono ch2 block] chanmape(1)=1 chanmap(16) mixmdate(1)
+    /// infomdate(1) addbsie(1).
+    ///
+    /// `acmod`/`lfeon` only matter for the substream's *own* `nchans` (used
+    /// to validate the chanmap count); we default to acmod = 2 (two
+    /// full-bandwidth channels, no LFE) so the dependent substream carries
+    /// two channels and `chanmap` must expand to two locations.
+    fn eac3_dependent_header(acmod: u8, lfeon: bool, chanmap: u16) -> Vec<u8> {
+        let mut bits = String::new();
+        bits.push_str("0000101101110111"); // syncword
+        bits.push_str("01"); // strmtyp = 1 (dependent substream)
+        bits.push_str("000"); // substreamid
+        bits.push_str("00000011111"); // frmsiz = 31 -> 64-byte frame
+        bits.push_str("00"); // fscod = 48 kHz (!= 3)
+        bits.push_str("11"); // numblkscod = 6 blocks
+        bits.push_str(&format!("{acmod:03b}"));
+        bits.push(if lfeon { '1' } else { '0' });
+        bits.push_str("10000"); // bsid = 16 -> E-AC-3
+        bits.push_str("00001"); // dialnorm
+        bits.push('0'); // compre = 0
+        if acmod == 0 {
+            bits.push_str("00001"); // dialnorm2
+            bits.push('0'); // compr2e
+        }
+        bits.push('1'); // chanmape = 1 (dependent substream carries chanmap)
+        bits.push_str(&format!("{chanmap:016b}"));
+        bits.push('0'); // mixmdate
+        bits.push('0'); // infomdate
+        bits.push('0'); // addbsie
+        while !bits.len().is_multiple_of(8) {
+            bits.push('0');
+        }
+        bits.as_bytes()
+            .chunks(8)
+            .map(|c| {
+                c.iter()
+                    .fold(0u8, |acc, b| (acc << 1) | u8::from(*b == b'1'))
+            })
+            .collect()
+    }
+
+    /// Chain an independent 5.1 E-AC-3 substream frame followed by a
+    /// dependent substream frame carrying the two back-surround channels
+    /// that bring the stream to 7.1. `chanmap` bit 6 ("Lrs/Rrs" pair)
+    /// expands to two channels, matching the dependent substream's
+    /// `nchans = 2`.
+    ///
+    /// The independent header's `frmsiz = 31` declares a 64-byte frame, so
+    /// the frame is zero-padded to that length — as a real elementary
+    /// stream's frame would be — which places the dependent substream's
+    /// syncword exactly at the byte the header probe's walk computes.
+    fn eac3_71_independent_plus_dependent() -> Vec<u8> {
+        let independent = eac3_header(7, true); // acmod 7 + LFE = 5.1 = 6 ch
+        let mut frame = independent.clone();
+        // frmsiz = 31 -> (31 + 1) * 2 = 64-byte frame.
+        frame.resize(64, 0);
+        let dependent = eac3_dependent_header(2, false, 1u16 << 9); // bit 6
+        frame.into_iter().chain(dependent).collect::<Vec<u8>>()
+    }
+
     #[test]
     fn ac3_acmod_table_matches_spec_table_5_8() {
         // ETSI TS 102 366 Table 5.8: acmod -> channel count, before LFE.
@@ -200,6 +306,28 @@ mod tests {
     #[test]
     fn eac3_acmod_and_lfe_parse_at_annex_e_offsets() {
         assert_eq!(channels_from_syncframe(&eac3_header(2, false)), Some(2));
+        assert_eq!(channels_from_syncframe(&eac3_header(7, true)), Some(6));
+    }
+
+    #[test]
+    fn eac3_71_independent_plus_dependent_is_not_reported_as_six() {
+        // #99: a true 7.1 E-AC-3 program is an independent 5.1 substream
+        // (6 channels) followed by a dependent substream whose chanmap adds
+        // the back-surround pair (2 more). Reporting a plain 6 here would
+        // make the UI mislabel it '5.1'. It must be the true 8 (strategy a)
+        // or None (strategy b) — never a silent 6.
+        let got = channels_from_syncframe(&eac3_71_independent_plus_dependent());
+        assert!(
+            got != Some(6),
+            "7.1 E-AC-3 must not report the independent substream's 5.1 count; got {got:?}"
+        );
+        assert_eq!(got, Some(8), "true 7.1 channel count");
+    }
+
+    #[test]
+    fn eac3_independent_only_still_reports_native_count() {
+        // A buffer containing ONLY an independent 5.1 substream is a normal
+        // 5.1 stream and must keep reporting 6 — no regression to None.
         assert_eq!(channels_from_syncframe(&eac3_header(7, true)), Some(6));
     }
 
