@@ -7,8 +7,16 @@
   "module": "skyfire-player.js",
   "types": "index.d.ts",
   "files": ["skyfire-player.js", "skyfire-element.js", "hls-source.js", "lang.js", "tracks.js", "audio-worklet.js", "index.d.ts", "README.md"],
-  "dependencies": { "@firemedia/skyfire-core": "0.5.0" },
+  "dependencies": {
+    "@firemedia/skyfire-core": "0.5.0"
+  },
   "license": "MIT OR Apache-2.0",
-  "repository": { "type": "git", "url": "https://github.com/fishloa/rust-skyfire" },
-  "keywords": ["dvb", "tv", "player", "webcodecs", "mpeg-ts", "ac-3"]
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fishloa/rust-skyfire"
+  },
+  "keywords": ["dvb", "tv", "player", "webcodecs", "mpeg-ts", "ac-3"],
+  "devDependencies": {
+    "happy-dom": "^20.11.1"
+  }
 }
