@@ -1255,3 +1255,78 @@ fn selected_audio_pid_reflects_selection() {
     b.select_audio(other);
     assert_eq!(b.selected_audio_pid(), Some(other));
 }
+
+// ── pure per-variant decision tests (#103 / #106) ──────────────────────
+//
+// These encode the *deliberate* per-kind decisions baked into
+// `bridge::discontinuity_action` and `bridge::degradation_action`, so a
+// future careless change to an arm (or to this pure source of truth) flips a
+// test. They do not need a fixture that emits the event — the decision is a
+// pure function of the kind value (#103).
+
+const FULL_RESET: bridge::EventAction = bridge::EventAction {
+    reset_decoders: true,
+    mark_segmenter_discontinuity: true,
+};
+const RESET_DECODERS_ONLY: bridge::EventAction = bridge::EventAction {
+    reset_decoders: true,
+    mark_segmenter_discontinuity: false,
+};
+const NONE: bridge::EventAction = bridge::EventAction {
+    reset_decoders: false,
+    mark_segmenter_discontinuity: false,
+};
+
+#[test]
+fn discontinuity_signalled_is_full_reset() {
+    assert_eq!(
+        bridge::discontinuity_action(transmux::DiscontinuityKind::Signalled),
+        FULL_RESET,
+        "a genuinely signalled splice must reset decoders + mark segmenter discontinuous"
+    );
+}
+
+#[test]
+fn discontinuity_timeline_reanchored_is_no_reset() {
+    assert_eq!(
+        bridge::discontinuity_action(transmux::DiscontinuityKind::TimelineReanchored),
+        NONE,
+        "a >20ms timeline re-anchor must NOT reset decoders or mark discontinuous \
+         (accepted risk; resets on every jittery live wobble are a worse regression)"
+    );
+}
+
+#[test]
+fn discontinuity_budget_exceeded_is_full_reset() {
+    assert_eq!(
+        bridge::discontinuity_action(transmux::DiscontinuityKind::BudgetExceeded { bytes: 4096 }),
+        FULL_RESET,
+        "dropped PES-budget payload is real data loss the decoder cannot know \
+         about, so it must reset decoders + mark the segmenter discontinuous"
+    );
+}
+
+#[test]
+fn degradation_transport_error_is_no_reset() {
+    assert_eq!(
+        bridge::degradation_action(transmux::InputDegradation::TransportError),
+        NONE,
+        "a single corrupt packet must NOT reset both decoders' IMDCT state \
+         (too aggressive for one bad packet; broadcast feeds hit occasional \
+         single TEI packets routinely)"
+    );
+}
+
+#[test]
+fn degradation_continuity_gap_resets_decoders_only() {
+    assert_eq!(
+        bridge::degradation_action(transmux::InputDegradation::ContinuityGap {
+            expected: 7,
+            got: 9,
+        }),
+        RESET_DECODERS_ONLY,
+        "a continuity gap means lost payload the decoder cannot know about, so \
+         decoders MUST reset, but the segmenter must NOT be marked discontinuous \
+         (surviving dts/pts are still corrected, absolute values)"
+    );
+}

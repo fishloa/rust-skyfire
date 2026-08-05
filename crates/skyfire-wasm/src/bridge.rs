@@ -1,7 +1,7 @@
 use broadcast_common::traits::Parse;
 use skyfire_ts::{AudioCodec, DemuxEvent, SubtitleKind, TrackKind, TrackMeta};
 use skyfire_ts::{audio_codec_str, video_codec_str};
-use transmux::DiscontinuityKind;
+use transmux::{DiscontinuityKind, InputDegradation};
 use wasm_bindgen::prelude::*;
 
 use crate::bridge_dto::{
@@ -82,6 +82,20 @@ pub struct SkyfireBridge {
     /// for why it deliberately does not reset the audio decoders or mark
     /// the segmenter discontinuous.
     timeline_reanchor_count: u64,
+    /// Number of `DemuxEvent::InputDegraded { kind: TransportError }` events
+    /// observed since construction (JS-observable) — issue #106. A single
+    /// corrupt TS packet (transport_error_indicator set). Counted + logged,
+    /// never a decoder reset (see `degradation_action`).
+    transport_error_count: u64,
+    /// Number of `DemuxEvent::InputDegraded { kind: ContinuityGap { .. } }`
+    /// events observed since construction (JS-observable) — issue #106. Lost
+    /// packets; triggers an audio-decoder reset (see `degradation_action`).
+    continuity_gap_count: u64,
+    /// Number of `DemuxEvent` variants this bridge did not recognise —
+    /// genuinely new `#[non_exhaustive]` variants from a future transmux.
+    /// Counted and logged here (issue #103) instead of silently dropped, so a
+    /// new upstream variant fails loud rather than vanishing.
+    unknown_event_count: u64,
 }
 
 #[wasm_bindgen]
@@ -117,6 +131,9 @@ impl SkyfireBridge {
             audio_decode_error_count: 0,
             segmenter_error_count: 0,
             timeline_reanchor_count: 0,
+            transport_error_count: 0,
+            continuity_gap_count: 0,
+            unknown_event_count: 0,
         }
     }
 
@@ -155,6 +172,35 @@ impl SkyfireBridge {
     #[must_use]
     pub fn timeline_reanchor_count(&self) -> u64 {
         self.timeline_reanchor_count
+    }
+
+    /// Number of `InputDegradation::TransportError` events (single corrupt
+    /// TS packets) observed since construction. These are counted and logged
+    /// but deliberately do not reset the audio decoders (see
+    /// `degradation_action`).
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn transport_error_count(&self) -> u64 {
+        self.transport_error_count
+    }
+
+    /// Number of `InputDegradation::ContinuityGap` events (lost packets)
+    /// observed since construction. Each triggers an audio-decoder reset
+    /// (see `degradation_action`).
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn continuity_gap_count(&self) -> u64 {
+        self.continuity_gap_count
+    }
+
+    /// Number of unrecognised `DemuxEvent` variants (future transmux
+    /// `#[non_exhaustive]` additions) observed since construction. New
+    /// upstream variants are counted and logged here instead of being
+    /// silently dropped (issue #103).
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn unknown_event_count(&self) -> u64 {
+        self.unknown_event_count
     }
 
     /// Push a raw TS chunk into the bridge.
@@ -424,127 +470,143 @@ impl SkyfireBridge {
                     // Rust bridge (the shell owns that clock, per ADR 0008).
                     let _ = discontinuous;
                 }
-                DemuxEvent::Discontinuity { kind, .. } => {
-                    match kind {
-                        DiscontinuityKind::Signalled => {
-                            // Explicit adaptation-field discontinuity_indicator
-                            // (ISO/IEC 13818-1 §2.4.3.5): the source stream
-                            // itself signalled a splice/encoder restart. Keep
-                            // today's full reset — mark the segmenter
-                            // discontinuous (HLS emits EXT-X-DISCONTINUITY)
-                            // and flush the AC-3/E-AC-3 + MP2 decoders' IMDCT
-                            // state, since audio either side of a genuine
-                            // splice is not one coded sequence.
-                            if let Some(ref mut seg) = self.segmenter {
-                                seg.mark_discontinuity();
-                            }
-                            self.audio_decoder.reset();
-                            self.mpa_decoder.reset();
-                        }
-                        DiscontinuityKind::TimelineReanchored => {
-                            // Corrected per #101 review, item 1: upstream
-                            // transmux 0.20 does NOT classify this as
-                            // ordinary drift absorption — it is the opposite.
-                            // `transmux::ir::event::DiscontinuityKind::
-                            // TimelineReanchored`'s own doc: the live audio
-                            // anchor "drifted from the wire PES clock past
-                            // the re-anchor threshold and was re-anchored —
-                            // a genuine gap (splice, encoder restart), not
-                            // the 90 kHz/sample-rate rounding drift ... which
-                            // the anchor absorbs silently". `ts_demux`'s
-                            // `AudioAnchor` re-anchor logic only fires "when
-                            // the wire clock drifts ... by more than
-                            // audio_discontinuity_threshold_90k, a genuine
-                            // gap" — a threshold deliberately set at 20 ms /
-                            // 1800 ticks @ 90 kHz specifically so ordinary
-                            // muxer rounding noise never reaches it (see that
-                            // constant's own derivation doc).
-                            //
-                            // So this event IS upstream's splice/encoder-
-                            // restart/PID-reuse signal, not muxer noise. We
-                            // still choose NOT to reset audio_decoder/
-                            // mpa_decoder or mark_discontinuity() here — an
-                            // accepted risk, not a misreading of the event:
-                            // `DiscontinuityKind` carries no drift magnitude,
-                            // so this call site cannot tell "just over the
-                            // 20 ms line" from "genuinely spliced stream",
-                            // and resetting the AC-3/E-AC-3/MP2 decoders'
-                            // IMDCT overlap-add state plus forcing a CMAF/HLS
-                            // discontinuity signal on every one of these on a
-                            // long-running live feed would itself introduce
-                            // audible clicks / unnecessary client-side resets
-                            // far more often than a genuine splice occurs. A
-                            // muxer restart that *does* set the adaptation-
-                            // field discontinuity_indicator is already
-                            // caught by `Signalled` above with a full reset.
-                            //
-                            // Accepted residual risk: on a live feed whose
-                            // muxer does not set discontinuity_indicator
-                            // across an encoder restart/PID reuse, we keep
-                            // the AC-3/E-AC-3 decoders' IMDCT overlap-add
-                            // window running across that seam (a possible
-                            // audible glitch) and emit no
-                            // #EXT-X-DISCONTINUITY / CMAF discontinuity
-                            // signal for it. We accept that rather than
-                            // reset-on-every-wobble because ordinary jittery
-                            // live muxers cross the 20 ms line routinely,
-                            // and a full reset there is a more frequent,
-                            // certainly-audible regression traded for a rare,
-                            // possibly-inaudible one. Each `Sample`'s dts/pts
-                            // is already the corrected, absolute value
-                            // (transmux's own IR, media plane step 2c) by
-                            // the time it reaches the segmenter regardless.
-                            self.timeline_reanchor_count += 1;
-                            std::eprintln!(
-                                "[skyfire-wasm] discontinuity: TimelineReanchored \
-                                 (audio dts/pts re-anchored, >20ms drift; per \
-                                 accepted risk, decoders not reset, segmenter \
-                                 not marked discontinuous)"
-                            );
-                        }
-                        DiscontinuityKind::BudgetExceeded { bytes } => {
-                            // A per-PID PES buffer cap was tripped and
-                            // in-flight payload was dropped (transmux's
-                            // `MAX_PES_BUFFER_BYTES`) — real data loss, not
-                            // just a timeline correction. The decoder's next
-                            // input is missing bytes it has no way to know
-                            // about, so its IMDCT state cannot be trusted to
-                            // continue cleanly. Treat like `Signalled`: reset
-                            // both audio decoders and mark the segmenter
-                            // discontinuous.
-                            std::eprintln!(
-                                "[skyfire-wasm] discontinuity: PES budget exceeded, \
-                                 {bytes} bytes dropped"
-                            );
-                            if let Some(ref mut seg) = self.segmenter {
-                                seg.mark_discontinuity();
-                            }
-                            self.audio_decoder.reset();
-                            self.mpa_decoder.reset();
-                        }
-                        // `DiscontinuityKind` is `#[non_exhaustive]` (a future
-                        // discontinuity source, e.g. issue #778's
-                        // continuity-counter gap, adds a variant without a
-                        // breaking change). Default to the conservative,
-                        // full-reset behaviour for any kind this bridge
-                        // doesn't recognise yet — the same rationale as
-                        // `Signalled`/`BudgetExceeded` above: an unknown cause
-                        // gets the safe assumption (audio state may not be
-                        // trustworthy), never the `TimelineReanchored`
-                        // no-audible-reset exemption, which is earned per
-                        // known-cause, not a default.
-                        _ => {
-                            if let Some(ref mut seg) = self.segmenter {
-                                seg.mark_discontinuity();
-                            }
-                            self.audio_decoder.reset();
-                            self.mpa_decoder.reset();
-                        }
-                    }
+                DemuxEvent::Discontinuity { kind, .. } => self.apply_discontinuity(kind),
+                DemuxEvent::InputDegraded { kind, .. } => self.apply_input_degraded(kind),
+                DemuxEvent::TrackRemoved { track_id, .. } => {
+                    // Intentionally a no-op, but explicit + logged, not
+                    // silently swallowed (issue #103): this bridge holds a
+                    // *monotonic* record of what was declared and chosen —
+                    // `self.tracks`, `video_track_id`, `selected_audio_pid`,
+                    // `selected_subtitle_pid` — and never re-segments
+                    // arbitrarily (the MSE segmenter is built once per
+                    // track's `TrackSpec` and the browser keeps the
+                    // WebCodecs/WebAudio pipeline alive regardless). A
+                    // removed PMT PID simply stops producing `Sample`s, so no
+                    // stale entry can corrupt behaviour. Logging (not
+                    // silence) makes a PMT churn visible in diagnostics.
+                    std::eprintln!(
+                        "[skyfire-wasm] track removed: track_id={track_id} \
+                         (no-op: bridge tracks are a monotonic declared-set \
+                         record; a removed PID simply stops emitting samples)"
+                    );
                 }
-                _ => {}
+                DemuxEvent::TrackAbandoned {
+                    track_id, reason, ..
+                } => {
+                    // No-op like `TrackRemoved`, made explicit + logged
+                    // (#103): an abandoned track never fired `TrackAdded` and
+                    // never produced a track_id, so nothing in this bridge
+                    // ever referenced it. Logging keeps a config-recovery
+                    // failure diagnosable instead of vanishing.
+                    std::eprintln!(
+                        "[skyfire-wasm] track abandoned: track_id={track_id:?} \
+                         reason={reason} (no-op: never promoted, nothing to tear down)"
+                    );
+                }
+                DemuxEvent::TracksResolved { generation, .. } => {
+                    // No state change needed (#103): `SkyfireBridge` builds
+                    // its segmenter incrementally on each video `TrackAdded`
+                    // and drains `Sample`s as they arrive, so it has no
+                    // track-set gate (`TracksResolved`'s purpose is
+                    // multi-track segmenter construction that waits on a
+                    // stable track set). Logged once for visibility rather
+                    // than silently ignored.
+                    std::eprintln!(
+                        "[skyfire-wasm] tracks resolved: generation={generation} \
+                         (no-op: bridge segments incrementally, no track-set gate \
+                         to clear)"
+                    );
+                }
+                // A genuinely new `#[non_exhaustive]` `DemuxEvent` variant
+                // from a future transmux release. Counted and logged here
+                // (#103) so it fails loud (count + log) rather than vanishing
+                // the way `InputDegraded` used to.
+                _ => {
+                    self.unknown_event_count += 1;
+                    std::eprintln!(
+                        "[skyfire-wasm] unrecognised DemuxEvent variant (future \
+                         transmux #[non_exhaustive] addition), n={}",
+                        self.unknown_event_count
+                    );
+                }
             }
         }
+    }
+
+    // ── pure-decision application (#103 / #106) ──────────────────────────
+
+    /// Apply an [`EventAction`] to the bridge's mutable state. Shared by all
+    /// the pure decision call sites so the event loop never re-decides — it
+    /// only ever applies what [`discontinuity_action`] /
+    /// [`degradation_action`] returned.
+    fn apply_action(&mut self, action: EventAction) {
+        if action.mark_segmenter_discontinuity
+            && let Some(ref mut seg) = self.segmenter
+        {
+            seg.mark_discontinuity();
+        }
+        if action.reset_decoders {
+            self.audio_decoder.reset();
+            self.mpa_decoder.reset();
+        }
+    }
+
+    /// Handle a `DemuxEvent::Discontinuity`. The *decision* is the pure
+    /// [`discontinuity_action`]; this method only adds the non-decision
+    /// side-effects (per-kind logging / counting) and applies the returned
+    /// action.
+    fn apply_discontinuity(&mut self, kind: DiscontinuityKind) {
+        match kind {
+            DiscontinuityKind::Signalled => {}
+            DiscontinuityKind::TimelineReanchored => {
+                self.timeline_reanchor_count += 1;
+                std::eprintln!(
+                    "[skyfire-wasm] discontinuity: TimelineReanchored \
+                     (audio dts/pts re-anchored, >20ms drift; per accepted \
+                     risk, decoders not reset, segmenter not marked discontinuous)"
+                );
+            }
+            DiscontinuityKind::BudgetExceeded { bytes } => {
+                std::eprintln!(
+                    "[skyfire-wasm] discontinuity: PES budget exceeded, \
+                     {bytes} bytes dropped"
+                );
+            }
+            // Unknown future `DiscontinuityKind` (#[non_exhaustive]) —
+            // `discontinuity_action` decides it (conservative full reset);
+            // nothing else to log here.
+            _ => {}
+        }
+        self.apply_action(discontinuity_action(kind));
+    }
+
+    /// Handle a `DemuxEvent::InputDegraded` (#106). Counts and logs each
+    /// degradation, then applies the pure [`degradation_action`] decision.
+    fn apply_input_degraded(&mut self, kind: InputDegradation) {
+        match kind {
+            InputDegradation::TransportError => {
+                self.transport_error_count += 1;
+                std::eprintln!(
+                    "[skyfire-wasm] input degraded: transport error (single \
+                     corrupt packet; counted, decoders not reset)"
+                );
+            }
+            InputDegradation::ContinuityGap { expected, got } => {
+                self.continuity_gap_count += 1;
+                std::eprintln!(
+                    "[skyfire-wasm] input degraded: continuity-counter gap \
+                     (expected CC {expected}, got {got}; resetting audio decoders)"
+                );
+            }
+            _ => {
+                self.unknown_event_count += 1;
+                std::eprintln!(
+                    "[skyfire-wasm] input degraded: unrecognised InputDegradation \
+                     kind (future #[non_exhaustive])"
+                );
+            }
+        }
+        self.apply_action(degradation_action(kind));
     }
 
     fn on_track_added(&mut self, track: transmux::TrackSpec) {
@@ -775,6 +837,106 @@ impl SkyfireBridge {
                 }
             },
         }
+    }
+}
+
+// ── pure per-variant decisions (#103) ───────────────────────────────────
+
+/// What a `DemuxEvent::Discontinuity` kind or `DemuxEvent::InputDegraded`
+/// `kind` should trigger on the bridge's mutable state. Pure: derived from a
+/// `match` on the kind value alone, with no `self`. Kept out of the event
+/// loop so every per-kind decision is unit-testable without a fixture that
+/// emits the event (that is the point of #103 — the decisions were baked
+/// into the match arms and thus untestable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EventAction {
+    /// Reset the AC-3/E-AC-3 + MP2 decoders' IMDCT overlap-add state.
+    pub reset_decoders: bool,
+    /// Mark the MSE segmenter discontinuous (HLS/CMAF `EXT-X-DISCONTINUITY`).
+    pub mark_segmenter_discontinuity: bool,
+}
+
+impl EventAction {
+    const NONE: EventAction = EventAction {
+        reset_decoders: false,
+        mark_segmenter_discontinuity: false,
+    };
+    const FULL_RESET: EventAction = EventAction {
+        reset_decoders: true,
+        mark_segmenter_discontinuity: true,
+    };
+}
+
+/// Pure decision for a `DemuxEvent::Discontinuity` `kind`. The event loop
+/// applies the returned action (via [`SkyfireBridge::apply_action`]); this
+/// function is the single, testable source of truth for *what* a kind
+/// triggers. Reasoning per kind:
+///
+/// - `Signalled` — explicit adaptation-field `discontinuity_indicator`
+///   (ISO/IEC 13818-1 §2.4.3.5): a genuine splice/encoder restart the source
+///   flagged itself. Full reset is correct: audio either side of a genuine
+///   splice is not one coded sequence.
+/// - `TimelineReanchored` — the audio anchor drifted past the 20 ms
+///   re-anchor threshold and was re-anchored. Upstream it is *also* a genuine
+///   gap/splice signal, but `DiscontinuityKind` carries no drift magnitude,
+///   so the call site cannot tell "just over the 20 ms line" from "spliced".
+///   Resetting on every of these on a long-running jittery live feed would
+///   introduce audible clicks / needless client resets far more often than a
+///   real splice occurs, and a muxer restart that does set the
+///   discontinuity_indicator is already caught by `Signalled`. So we
+///   deliberately do **not** reset. (#101 review, item 1.)
+/// - `BudgetExceeded` — a per-PID PES cap tripped and in-flight payload was
+///   dropped (`MAX_PES_BUFFER_BYTES`): real data loss the decoder cannot know
+///   about, so its IMDCT state cannot be trusted. Full reset, same as
+///   `Signalled`.
+/// - Unknown future kind — `#[non_exhaustive]`: conservative full reset. The
+///   safe assumption is "audio state may not be trustworthy", never the
+///   earned-per-known-cause `TimelineReanchored` exemption.
+pub(crate) fn discontinuity_action(kind: DiscontinuityKind) -> EventAction {
+    match kind {
+        DiscontinuityKind::Signalled => EventAction::FULL_RESET,
+        DiscontinuityKind::TimelineReanchored => EventAction::NONE,
+        DiscontinuityKind::BudgetExceeded { .. } => EventAction::FULL_RESET,
+        _ => EventAction::FULL_RESET,
+    }
+}
+
+/// Pure decision for a `DemuxEvent::InputDegraded` `kind` (#106). The event
+/// loop counts/logs the observation and applies the returned action (via
+/// [`SkyfireBridge::apply_action`]). Reasoning per kind:
+///
+/// - `TransportError` — the `transport_error_indicator` bit was set
+///   (ISO/IEC 13818-1 §2.4.3.2): *one* packet the demodulator could not
+///   correct. Deliberately **no reset**: a single corrupt packet can at most
+///   corrupt one frame (the demux drops its payload so no garbage bytes reach
+///   the decoder), and broadcast UDP feeds hit occasional single-TEI packets
+///   routinely. Resetting both decoders' IMDCT overlap-add state on every one
+///   would inject audible clicks far more often than it fixes anything. Count
+///   + log, nothing more.
+/// - `ContinuityGap` — whole packets were lost (a continuity-counter gap,
+///   excluding live duplicates and signalled discontinuities). This is *data
+///   loss the decoder cannot know about*: its next input is missing bytes, so
+///   its IMDCT overlap-add state cannot be trusted to continue cleanly. The
+///   same rationale already applied to `BudgetExceeded` argues for a decoder
+///   reset here, so we reset. We deliberately do **not** also mark the
+///   segmenter discontinuous: surviving `Sample` dts/pts are still the
+///   corrected absolute values (media plane step 2c), so an
+///   `EXT-X-DISCONTINUITY` (which forces every client through a heavy reset
+///   and breaks timeline-joining) is more than the recovery needs.
+/// - Unknown future kind — `#[non_exhaustive]`: a missing-data degradation,
+///   so default to the continuity-gap conservative reset (no segmenter
+///   discontinuity, same reasoning).
+pub(crate) fn degradation_action(kind: InputDegradation) -> EventAction {
+    match kind {
+        InputDegradation::TransportError => EventAction::NONE,
+        InputDegradation::ContinuityGap { .. } => EventAction {
+            reset_decoders: true,
+            mark_segmenter_discontinuity: false,
+        },
+        _ => EventAction {
+            reset_decoders: true,
+            mark_segmenter_discontinuity: false,
+        },
     }
 }
 
