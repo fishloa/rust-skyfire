@@ -305,7 +305,8 @@ export class SkyfirePlayerElement extends HTMLElement {
       vol.className = "vol"; vol.setAttribute("aria-label", "Volume");
       vol.addEventListener("input", () => this._engine?.setVolume(parseFloat(vol.value)));
       bar.appendChild(vol);
-      this._muteBtn = btn("mute-btn", "🔊", () => this._toggleMute());
+      this._muteBtn = btn("mute-btn", this._muted2 ? "🔇" : "🔊", () => this._toggleMute());
+      this._muteBtn.setAttribute("aria-pressed", this._muted2 ? "true" : "false");
 
       const spacer = document.createElement("span"); spacer.className = "spacer"; bar.appendChild(spacer);
 
@@ -330,7 +331,10 @@ export class SkyfirePlayerElement extends HTMLElement {
   _toggleMute() {
     this._muted2 = !this._muted2;
     this._engine?.setMuted(this._muted2);
-    if (this._muteBtn) this._muteBtn.textContent = this._muted2 ? "🔇" : "🔊";
+    if (this._muteBtn) {
+      this._muteBtn.textContent = this._muted2 ? "🔇" : "🔊";
+      this._muteBtn.setAttribute("aria-pressed", this._muted2 ? "true" : "false");
+    }
   }
 
   // ── menus ──
