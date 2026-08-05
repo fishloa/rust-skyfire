@@ -21,9 +21,9 @@ dependencies = [
 
 [[package]]
 name = "android_system_properties"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
@@ -370,9 +370,9 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "dvb-si"
-version = "9.1.1"
+version = "9.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fe6fa3bf80f4d1682836d9236c9ed95dfd810c19318bb30f2daf9ef7136284c"
+checksum = "d657177f87aae7970c0318504e2025600509df75a8dcbbd35a5e65baedc1b57c"
 dependencies = [
  "broadcast-common",
  "bytes",
@@ -886,9 +886,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.16"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 
 [[package]]
 name = "rtcp-packet"
@@ -1339,9 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.22.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1efc15ac88935aba70bc92edf9b1858184ede83dbd57b0ffea34c0c1326d66bd"
+checksum = "a10627c6bc0db92f26bfb08168092806beaaeb3f39912d22d277593b37a1e57b"
 dependencies = [
  "aes",
  "broadcast-common",
