@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.94"
@@ -30,4 +30,4 @@ skyfire-mpa = { path = "crates/skyfire-mpa" }
 skyfire-sync = { path = "crates/skyfire-sync" }
 skyfire-core = { path = "crates/skyfire-core" }
 skyfire-hls = { path = "crates/skyfire-hls" }
-transmux = "0.22"
+transmux = "0.23"
