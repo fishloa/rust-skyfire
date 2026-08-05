@@ -504,8 +504,32 @@ impl CompositorState {
     ///
     /// Segments are accumulated until `EndOfDisplaySet` is seen, which
     /// triggers compositing and produces a [`CompositedCue`].
+    ///
+    /// The PTS is the cue's only anchor on the player's timeline (see
+    /// [`CompositedCue::start_pts`]). A PES with **no usable timestamp** must
+    /// not be surfaced as a cue pinned to tick 0: the demuxer reports
+    /// `Some(0)` for many subtitle access units that actually belong ~14 h
+    /// into the programme clock (empirically confirmed on `france2-8s.ts` —
+    /// video PTS base ≈ 4 535 564 304 ticks), and a naive `unwrap_or(0)` —
+    /// or even trusting a `Some(0)` — would fabricate "the very first tick"
+    /// and anchor the cue a whole programme before the clock, making it
+    /// undisplayable. This compositor owns no clock of its own to re-anchor
+    /// against, so it must not invent one: it **drops** such a cue rather than
+    /// emit something with a false start. A genuinely valid (non-zero)
+    /// timestamp is passed through untouched — we never rewrite real timing.
+    //
+    // Why `Some(0)` counts as "unusable": a subtitle cue anchored at exactly
+    // tick 0 is not a case this DVB player ever needs to display (fixtures
+    // with complete display sets carry real multi-second clocks; a true
+    // first-tick 0 would coincide with stream start, not ~14 h before it).
+    // Treating `0` the same as `None` rejects the plausible corruption the
+    // bug demux reports, while `checked_ticks_90k` upstream already maps any
+    // `None`/negative PTS to `None`. A valid non-zero PTS is kept exactly.
     pub fn feed_pes(&mut self, pid: u16, pts_ticks: Option<u64>, field: &PesDataField) {
-        let start_pts = pts_ticks.unwrap_or(0);
+        // `Some(0)` is the demuxer's corruption signature (or a genuine `None`
+        // for section-carried samples); both are "no usable timestamp", and
+        // both must be dropped, not anchored at 0. `None | Some(0) => None`.
+        let usable_pts = pts_ticks.filter(|&t| t != 0);
         let mut page_time_out: u8 = 0;
         let mut has_end = false;
 
@@ -532,7 +556,12 @@ impl CompositorState {
         }
 
         if has_end {
-            if let Some(cue) = self.composite(pid, start_pts, page_time_out) {
+            // Only emit a cue when the display set carried a usable (non-zero)
+            // PTS; see `feed_pes` — a cue with no real anchor is undisplayable
+            // and dropped rather than pinned to tick 0.
+            if let Some(start_pts) = usable_pts
+                && let Some(cue) = self.composite(pid, start_pts, page_time_out)
+            {
                 self.pending_cues.push(cue);
             }
             // Clear display-set-local state (keep CLUT across display sets per spec)
@@ -830,5 +859,58 @@ mod tests {
         compositor.feed_pes(pid, Some(start_pts), &field);
         // Must not panic — regardless of internal dimension handling.
         let _ = compositor.take_cues();
+    }
+
+    /// Issue #102: a display set whose PTS is unusable must NOT be emitted as a
+    /// cue anchored at tick 0. The demuxer reports `Some(0)` for many subtitle
+    /// access units whose true clock is huge (e.g. ~4 535 564 304 ticks for
+    /// `france2-8s.ts`); a `Some(0)` — like a `None` — is "no usable
+    /// timestamp", so the compositor drops the cue instead of inventing a false
+    /// very-first-tick anchor.
+    #[test]
+    fn unusable_pts_is_dropped_not_anchored_at_zero() {
+        let pid = 0x42;
+        let pes_bytes = build_minimal_display_pes();
+        let field = PesDataField::parse(&pes_bytes).expect("must parse valid PES data field");
+
+        for bad_pts in [None, Some(0u64)] {
+            let mut compositor = CompositorState::new();
+            compositor.feed_pes(pid, bad_pts, &field);
+            assert!(
+                compositor.take_cues().is_empty(),
+                "PES with pts={bad_pts:?} must be dropped, not anchored at 0"
+            );
+        }
+    }
+
+    /// Issue #102: a cue WITH a valid (non-zero) timestamp keeps it EXACTLY.
+    /// The fix must not force every cue onto some external clock, which would
+    /// satisfy the "no cue at 0" property while silently destroying real
+    /// subtitle timing. Feeding a real PTS must round-trip start/end unchanged.
+    #[test]
+    fn valid_pts_is_kept_exactly() {
+        let pid = 0x42;
+        let start_pts = 4_535_564_304u64; // ~14 h into the clock (france2-8s video PTS base)
+        let pes_bytes = build_minimal_display_pes();
+        let field = PesDataField::parse(&pes_bytes).expect("must parse valid PES data field");
+
+        let mut compositor = CompositorState::new();
+        compositor.feed_pes(pid, Some(start_pts), &field);
+        let cues = compositor.take_cues();
+        assert_eq!(
+            cues.len(),
+            1,
+            "must produce exactly one cue for a valid PTS"
+        );
+        let cue = &cues[0];
+        assert_eq!(
+            cue.start_pts, start_pts,
+            "valid start PTS must be preserved exactly"
+        );
+        assert_eq!(
+            cue.end_pts,
+            start_pts.saturating_add(5 * 90_000),
+            "end PTS = start + page_time_out must be preserved exactly"
+        );
     }
 }

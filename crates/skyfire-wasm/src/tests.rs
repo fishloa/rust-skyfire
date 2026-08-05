@@ -804,6 +804,83 @@ fn bridge_composites_real_dvb_subtitles() {
     );
 }
 
+/// Issue #102: a composited cue's display window must be reachable from the
+/// stream's own clock — its start must lie within the programme's actual PTS
+/// range, only a small guard past stream end, and never a whole programme
+/// (≈14 h) before the clock. Feeding `france2-8s.ts` (video PTS base
+/// ≈ 4 535 564 304 ticks ≈ 50 395 s) with the subtitle PID selected, every cue
+/// the demuxer emits must fall inside the video PTS span the same stream
+/// produces — not be anchored at tick 0. A cue anchored at 0 is ~14 h before
+/// the clock and undisplayable.
+#[test]
+fn subtitle_cue_windows_reachable_from_stream_clock() {
+    let data = load_fixture("france2-8s.ts");
+    let mut discover = SkyfireBridge::new();
+    for chunk in data.chunks(4096) {
+        discover.feed(chunk);
+    }
+    let tl = discover.track_list().expect("track list");
+    let sub_pid = tl
+        .subtitles
+        .iter()
+        .find(|s| s.kind == "DvbSubtitles")
+        .map(|s| s.pid)
+        .expect("france2-8s.ts must carry a DVB-subtitle track");
+
+    let mut b = SkyfireBridge::new();
+    b.select_subtitle(Some(sub_pid));
+    let mut cues: Vec<WasmSubtitleCue> = Vec::new();
+    for chunk in data.chunks(4096) {
+        b.feed(chunk);
+        cues.extend(b.take_subtitle_cues());
+    }
+    b.flush();
+    cues.extend(b.take_subtitle_cues());
+
+    // The stream's own clock: min/max video PTS over the whole fixture.
+    let mut video_pts: Vec<u64> = b
+        .take_video_aus()
+        .into_iter()
+        .filter_map(|au| au.pts_ticks())
+        .collect();
+    video_pts.sort_unstable();
+    assert!(
+        video_pts.len() >= 2,
+        "must have at least two video PTS samples to establish the clock"
+    );
+    let (clock_lo, clock_hi) = (video_pts[0], video_pts[video_pts.len() - 1]);
+    assert!(
+        clock_hi > 1_000_000,
+        "the programme clock must be a real, large value (got {clock_hi} ticks) — \
+         not a zero-anchored one"
+    );
+
+    // Every subtitle cue must anchor within the live PTS span, with a small
+    // guard past stream end so a cue whose page_time_out ends just after the
+    // last video frame is still "reachable". A cue starting ~14 h (≥ ~50 000 s
+    // = 4.5e9 ticks) before the clock means it was bogusly anchored at 0.
+    let end_guard: u64 = 5 * 90_000; // 5 s — generous for any trailing cue
+    for cue in &cues {
+        assert!(
+            cue.start_pts() >= clock_lo,
+            "cue start {} must not be before programme start {} (was it zero-anchored?)",
+            cue.start_pts(),
+            clock_lo
+        );
+        assert!(
+            cue.start_pts() <= clock_hi.saturating_add(end_guard),
+            "cue start {} must not be a whole programme after the stream clock {}",
+            cue.start_pts(),
+            clock_hi
+        );
+    }
+
+    assert!(
+        !cues.is_empty(),
+        "must composite at least one cue to have exercised the clock check"
+    );
+}
+
 /// Issue #31: streaming bridge audio PCM decode.
 ///
 /// Feeds gulli-15s.ts (E-AC-3 stereo 48 kHz, audio PID 0x101) in 4096-byte
