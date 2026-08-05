@@ -357,7 +357,40 @@ impl HlsSession {
                     }
                 }
                 DemuxEvent::ClockReference { .. } => {}
-                _ => {}
+                // Explicit, not silently swallowed (#103): these three were
+                // caught by the old `_ => {}` and vanished. `TrackRemoved` and
+                // `TrackAbandoned` need no state change here — the HLS
+                // segmenter holds only per-`TrackSpec` entries it pushes
+                // samples into as they arrive, and a removed/abandoned PID
+                // simply stops producing samples, so no stale reference can
+                // corrupt a future `Sample`. `InputDegraded` (transport-error
+                // / continuity-gap) carries no payload this crate re-muxes —
+                // it is an operational metric, so we log it rather than act
+                // on it (this crate holds no audio/VIS decoders to reset).
+                DemuxEvent::TrackRemoved { track_id, .. } => {
+                    std::eprintln!("[skyfire-hls] track removed: track_id={track_id} (no-op)");
+                }
+                DemuxEvent::TrackAbandoned {
+                    track_id, reason, ..
+                } => {
+                    std::eprintln!(
+                        "[skyfire-hls] track abandoned: track_id={track_id:?} \
+                         reason={reason} (no-op)"
+                    );
+                }
+                DemuxEvent::InputDegraded { kind, .. } => {
+                    std::eprintln!(
+                        "[skyfire-hls] input degraded: {kind} (no-op, operational metric)"
+                    );
+                }
+                // A genuinely new `#[non_exhaustive]` `DemuxEvent` variant from
+                // a future transmux: logged here instead of vanishing (#103).
+                _ => {
+                    std::eprintln!(
+                        "[skyfire-hls] unrecognised DemuxEvent variant (future \
+                         transmux #[non_exhaustive] addition)"
+                    );
+                }
             }
         }
     }
