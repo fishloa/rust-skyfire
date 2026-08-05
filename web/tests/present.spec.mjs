@@ -20,7 +20,10 @@ test("HOLD: audio buffered but not playing → poster once, queue not advanced",
     return { draws: p._draws, qlen: p._presentQueue.length };
   });
   expect(r.draws).toEqual([0]);   // poster drawn exactly once across two calls
-  expect(r.qlen).toBe(3);         // held — nothing advanced
+  // #114: the poster frame is removed from the queue once drawn (it must not be
+  // left at the head for the present loop to re-draw after it was closed), and
+  // the hold does NOT advance pacing into the remaining frames.
+  expect(r.qlen).toBe(2);
 });
 
 test("SYNC: audio started → video drains from start gated by audio clock", async ({ page }) => {
