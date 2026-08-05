@@ -632,7 +632,8 @@ export class SkyfirePlayer {
       // than freeze video forever.
       if (!this._postered && this._presentQueue.length) {
         this._postered = true;
-        this._drawFrame(this._presentQueue[0].frame);
+        const e = this._presentQueue.shift();
+        this._drawFrame(e.frame);
       }
       if (this._presentQueue.length || this._subQueue.length) this._schedulePresent();
       return;
