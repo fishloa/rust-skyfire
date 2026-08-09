@@ -1339,9 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a10627c6bc0db92f26bfb08168092806beaaeb3f39912d22d277593b37a1e57b"
+checksum = "56cd5a4e5e4719ac5619e43753e2122bb5a0e7ee492c078ac9227a7016c6f7ba"
 dependencies = [
  "aes",
  "broadcast-common",
