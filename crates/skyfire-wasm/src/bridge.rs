@@ -406,7 +406,7 @@ impl SkyfireBridge {
             && let Err(e) = seg.flush()
         {
             self.segmenter_error_count += 1;
-            std::eprintln!("[skyfire-wasm] segmenter flush error: {e}");
+            eprintln!("[skyfire-wasm] segmenter flush error: {e}");
         }
         self.ended = true;
     }
@@ -484,7 +484,7 @@ impl SkyfireBridge {
                     // removed PMT PID simply stops producing `Sample`s, so no
                     // stale entry can corrupt behaviour. Logging (not
                     // silence) makes a PMT churn visible in diagnostics.
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-wasm] track removed: track_id={track_id} \
                          (no-op: bridge tracks are a monotonic declared-set \
                          record; a removed PID simply stops emitting samples)"
@@ -498,7 +498,7 @@ impl SkyfireBridge {
                     // never produced a track_id, so nothing in this bridge
                     // ever referenced it. Logging keeps a config-recovery
                     // failure diagnosable instead of vanishing.
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-wasm] track abandoned: track_id={track_id:?} \
                          reason={reason} (no-op: never promoted, nothing to tear down)"
                     );
@@ -511,7 +511,7 @@ impl SkyfireBridge {
                     // multi-track segmenter construction that waits on a
                     // stable track set). Logged once for visibility rather
                     // than silently ignored.
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-wasm] tracks resolved: generation={generation} \
                          (no-op: bridge segments incrementally, no track-set gate \
                          to clear)"
@@ -523,7 +523,7 @@ impl SkyfireBridge {
                 // the way `InputDegraded` used to.
                 _ => {
                     self.unknown_event_count += 1;
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-wasm] unrecognised DemuxEvent variant (future \
                          transmux #[non_exhaustive] addition), n={}",
                         self.unknown_event_count
@@ -560,14 +560,14 @@ impl SkyfireBridge {
             DiscontinuityKind::Signalled => {}
             DiscontinuityKind::TimelineReanchored => {
                 self.timeline_reanchor_count += 1;
-                std::eprintln!(
+                eprintln!(
                     "[skyfire-wasm] discontinuity: TimelineReanchored \
                      (audio dts/pts re-anchored, >20ms drift; per accepted \
                      risk, decoders not reset, segmenter not marked discontinuous)"
                 );
             }
             DiscontinuityKind::BudgetExceeded { bytes } => {
-                std::eprintln!(
+                eprintln!(
                     "[skyfire-wasm] discontinuity: PES budget exceeded, \
                      {bytes} bytes dropped"
                 );
@@ -586,21 +586,21 @@ impl SkyfireBridge {
         match kind {
             InputDegradation::TransportError => {
                 self.transport_error_count += 1;
-                std::eprintln!(
+                eprintln!(
                     "[skyfire-wasm] input degraded: transport error (single \
                      corrupt packet; counted, decoders not reset)"
                 );
             }
             InputDegradation::ContinuityGap { expected, got } => {
                 self.continuity_gap_count += 1;
-                std::eprintln!(
+                eprintln!(
                     "[skyfire-wasm] input degraded: continuity-counter gap \
                      (expected CC {expected}, got {got}; resetting audio decoders)"
                 );
             }
             _ => {
                 self.unknown_event_count += 1;
-                std::eprintln!(
+                eprintln!(
                     "[skyfire-wasm] input degraded: unrecognised InputDegradation \
                      kind (future #[non_exhaustive])"
                 );
@@ -704,7 +704,7 @@ impl SkyfireBridge {
                     && let Err(e) = seg.push(track_id, sample)
                 {
                     self.segmenter_error_count += 1;
-                    std::eprintln!("[skyfire-wasm] segmenter push error: {e}");
+                    eprintln!("[skyfire-wasm] segmenter push error: {e}");
                 }
             }
             TrackKind::Audio(codec) if meta.pid == self.selected_audio_pid => {
@@ -804,7 +804,7 @@ impl SkyfireBridge {
                 Ok(Some(_)) | Ok(None) => {}
                 Err(e) => {
                     self.audio_decode_error_count += 1;
-                    std::eprintln!("[skyfire-wasm] mp2 decode error: {e}");
+                    eprintln!("[skyfire-wasm] mp2 decode error: {e}");
                 }
             },
             _ => match self.audio_decoder.decode_au(data) {
@@ -833,7 +833,7 @@ impl SkyfireBridge {
                 Ok(Some(_)) | Ok(None) => {}
                 Err(e) => {
                     self.audio_decode_error_count += 1;
-                    std::eprintln!("[skyfire-wasm] ac3/eac3 decode error: {e}");
+                    eprintln!("[skyfire-wasm] ac3/eac3 decode error: {e}");
                 }
             },
         }

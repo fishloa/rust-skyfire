@@ -208,13 +208,13 @@ impl WasmEngine {
     /// Whether the engine has produced audio PCM.
     #[wasm_bindgen]
     pub fn has_audio(&self) -> bool {
-        self.engine.as_ref().map(|e| e.has_audio()).unwrap_or(false)
+        self.engine.as_ref().is_some_and(|e| e.has_audio())
     }
 
     /// Whether the engine has collected video access units.
     #[wasm_bindgen]
     pub fn has_video(&self) -> bool {
-        self.engine.as_ref().map(|e| e.has_video()).unwrap_or(false)
+        self.engine.as_ref().is_some_and(|e| e.has_video())
     }
 
     /// Number of video access units collected.

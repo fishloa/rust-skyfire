@@ -160,7 +160,7 @@ impl HlsSession {
         if let Some(seg) = self.seg.as_mut() {
             if let Err(e) = seg.finish() {
                 self.segmenter_error_count += 1;
-                std::eprintln!("[skyfire-hls] segmenter finish error: {e}");
+                eprintln!("[skyfire-hls] segmenter finish error: {e}");
             }
             for ts in seg.take_ready() {
                 Self::store(
@@ -223,7 +223,7 @@ impl HlsSession {
                             && let Err(e) = seg.add_track(track.clone())
                         {
                             self.segmenter_error_count += 1;
-                            std::eprintln!("[skyfire-hls] segmenter add_track error: {e}");
+                            eprintln!("[skyfire-hls] segmenter add_track error: {e}");
                         }
                     }
                 }
@@ -325,7 +325,7 @@ impl HlsSession {
                             // 2c) by the time it reaches the segmenter
                             // regardless.
                             self.timeline_reanchor_count += 1;
-                            std::eprintln!(
+                            eprintln!(
                                 "[skyfire-hls] discontinuity: TimelineReanchored \
                                  (audio dts/pts re-anchored, >20ms drift; per \
                                  accepted risk, segmenter not marked discontinuous)"
@@ -336,7 +336,7 @@ impl HlsSession {
                             // in-flight payload was dropped — real data loss,
                             // not just a timeline correction. Treat like
                             // `Signalled`.
-                            std::eprintln!(
+                            eprintln!(
                                 "[skyfire-hls] discontinuity: PES budget exceeded, \
                                  {bytes} bytes dropped"
                             );
@@ -368,25 +368,23 @@ impl HlsSession {
                 // it is an operational metric, so we log it rather than act
                 // on it (this crate holds no audio/VIS decoders to reset).
                 DemuxEvent::TrackRemoved { track_id, .. } => {
-                    std::eprintln!("[skyfire-hls] track removed: track_id={track_id} (no-op)");
+                    eprintln!("[skyfire-hls] track removed: track_id={track_id} (no-op)");
                 }
                 DemuxEvent::TrackAbandoned {
                     track_id, reason, ..
                 } => {
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-hls] track abandoned: track_id={track_id:?} \
                          reason={reason} (no-op)"
                     );
                 }
                 DemuxEvent::InputDegraded { kind, .. } => {
-                    std::eprintln!(
-                        "[skyfire-hls] input degraded: {kind} (no-op, operational metric)"
-                    );
+                    eprintln!("[skyfire-hls] input degraded: {kind} (no-op, operational metric)");
                 }
                 // A genuinely new `#[non_exhaustive]` `DemuxEvent` variant from
                 // a future transmux: logged here instead of vanishing (#103).
                 _ => {
-                    std::eprintln!(
+                    eprintln!(
                         "[skyfire-hls] unrecognised DemuxEvent variant (future \
                          transmux #[non_exhaustive] addition)"
                     );
@@ -440,7 +438,7 @@ impl HlsSession {
             // is now exclusively via `take_ready()`.
             if let Err(e) = seg.push(track_id, sample) {
                 self.segmenter_error_count += 1;
-                std::eprintln!("[skyfire-hls] segmenter push error: {e}");
+                eprintln!("[skyfire-hls] segmenter push error: {e}");
             }
             for ts in seg.take_ready() {
                 Self::store(
