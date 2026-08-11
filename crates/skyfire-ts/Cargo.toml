@@ -8,11 +8,11 @@ description = "MPEG-TS / HLS demux for Skyfire — elementary streams + PTS extr
 
 [dependencies]
 broadcast-common = "9"
-dvb-si = "9"
-dvb-subtitle = "0.3"
+dvb-si = "10"
+dvb-subtitle = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
-transmux = "0.23"
+transmux = "0.24"
 
 [dev-dependencies]
 skyfire-ac3 = { path = "../../crates/skyfire-ac3" }

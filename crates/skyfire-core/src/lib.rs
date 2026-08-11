@@ -511,10 +511,8 @@ mod tests {
                     }
                     DemuxEvent::Sample {
                         track_id, sample, ..
-                    } => {
-                        if Some(track_id) == audio_track_id2 {
-                            expected_audio_es.extend_from_slice(&sample.data);
-                        }
+                    } if Some(track_id) == audio_track_id2 => {
+                        expected_audio_es.extend_from_slice(&sample.data);
                     }
                     _ => {}
                 }
@@ -673,12 +671,10 @@ mod tests {
                     }
                     DemuxEvent::Sample {
                         track_id, sample, ..
-                    } => {
-                        if audio_track.is_some_and(|(id, _)| id == track_id)
-                            && first_raw_pts.is_none()
-                        {
-                            first_raw_pts = sample.pts;
-                        }
+                    } if audio_track.is_some_and(|(id, _)| id == track_id)
+                        && first_raw_pts.is_none() =>
+                    {
+                        first_raw_pts = sample.pts;
                     }
                     _ => {}
                 }
@@ -745,10 +741,8 @@ mod tests {
                     }
                     DemuxEvent::Sample {
                         track_id, sample, ..
-                    } => {
-                        if Some(track_id) == audio_track_id {
-                            es.extend_from_slice(&sample.data);
-                        }
+                    } if Some(track_id) == audio_track_id => {
+                        es.extend_from_slice(&sample.data);
                     }
                     _ => {}
                 }

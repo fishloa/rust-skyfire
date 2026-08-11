@@ -13,10 +13,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.94"
+rust-version = "1.97"
 repository = "https://github.com/fishloa/rust-skyfire"
 
 # Skyfire — an in-browser DVB TV player: WebCodecs (HW video) + WASM (AC-3 audio).
@@ -30,4 +30,4 @@ skyfire-mpa = { path = "crates/skyfire-mpa" }
 skyfire-sync = { path = "crates/skyfire-sync" }
 skyfire-core = { path = "crates/skyfire-core" }
 skyfire-hls = { path = "crates/skyfire-hls" }
-transmux = "0.23"
+transmux = "0.24"

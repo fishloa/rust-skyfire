@@ -177,9 +177,9 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "broadcast-common"
-version = "9.2.0"
+version = "9.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e90a9ee84933b45bdce8d09d98759b530b11761ef1cdf2c83590bc2644dc116e"
+checksum = "efe6c1fb25508fc1d004ff39882afdfe626fcb294af74cc89378c3613e41db00"
 dependencies = [
  "chrono",
  "libm",
@@ -188,9 +188,9 @@ dependencies = [
 
 [[package]]
 name = "broadcast-hls"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28f3ed803d0e96e904df0d6f64b36ed119a988758a77a2f9ea2e32ec052c2d31"
+checksum = "e5cb5ac6bf0d43d5dcdbdebc5dfd509fa49aa89ef36c3f3be7b15986c95e9678"
 dependencies = [
  "broadcast-common",
  "serde",
@@ -199,9 +199,9 @@ dependencies = [
 
 [[package]]
 name = "bstr"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f7dc094d718f2e1c1559ad110e27eeaae14a5465d3d56dd6dbd793079fbd530"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
 dependencies = [
  "memchr",
  "regex-automata",
@@ -237,9 +237,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.0"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
+checksum = "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277e"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -275,9 +275,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
+checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -285,9 +285,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
+checksum = "7b48fea5a88e9ae728a2dcbedbfc0e730f7d60da42e1cb049a83c9fb8b789889"
 dependencies = [
  "anstream",
  "anstyle",
@@ -370,9 +370,9 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "dvb-si"
-version = "9.2.0"
+version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d657177f87aae7970c0318504e2025600509df75a8dcbbd35a5e65baedc1b57c"
+checksum = "8d2a25bef9868b12d42cd9285f30640f3d216fc8b54b6b813d37ecf79e15bbb0"
 dependencies = [
  "broadcast-common",
  "bytes",
@@ -388,9 +388,9 @@ dependencies = [
 
 [[package]]
 name = "dvb-subtitle"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3852968e1c0d57d3aabb813e649fe76fb83049ba4e49107348bdda3e8caab938"
+checksum = "1b712576cb9f542062b794d1147cdfc8c4f9324d2b2de0c7d4d4941a9e0af944"
 dependencies = [
  "broadcast-common",
  "thiserror",
@@ -424,9 +424,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 
 [[package]]
 name = "flate2"
@@ -639,9 +639,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "js-sys"
-version = "0.3.103"
+version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102"
+checksum = "0e0c1080212aad755ea003d18543e8768dd432c48819efd73a7bf1e39b7a5a3a"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -713,9 +713,9 @@ dependencies = [
 
 [[package]]
 name = "mp4-emsg"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e18d064ea7652ca4c54fc22f1680ef964063611fd9babf978e440cf926fbab49"
+checksum = "138b87f1ec4f563225517347af8714e9b5a630d6bbc8bfe3f8270b65be19140f"
 dependencies = [
  "broadcast-common",
  "thiserror",
@@ -723,9 +723,9 @@ dependencies = [
 
 [[package]]
 name = "mpeg-pes"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e07d47800d9272c745459d399ab83ed7fb35ee25219f8f7ffd3bf709231b84a"
+checksum = "d7b0a14b2fccfe1185e9ac1445c6cc4b03817dc86cb0b5aae77e749f2b85a3f9"
 dependencies = [
  "broadcast-common",
  "serde",
@@ -734,9 +734,9 @@ dependencies = [
 
 [[package]]
 name = "mpeg-ps"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f0927d333ecf1bf375162f2b54c803b005c21ae21f173684e8855d0dc8ec681"
+checksum = "512cb7deb70d98f550ffa3e79cf21e1b9d5a5246ecc5cbaedf496f604230789b"
 dependencies = [
  "broadcast-common",
  "mpeg-pes",
@@ -746,9 +746,9 @@ dependencies = [
 
 [[package]]
 name = "mpeg-ts"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f14760ae4b4dee888f6d3b77eaf20c8265476f7e969bf3b5d66bb29e4a74a0"
+checksum = "111a8b4b152d0140d2dbc7a7f21367b27cc862853220c17476874a4c4da0dbf0"
 dependencies = [
  "broadcast-common",
  "bytes",
@@ -892,9 +892,9 @@ checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 
 [[package]]
 name = "rtcp-packet"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa93fa88cd9b66dafd14f26cc53715ae4f28d0de9e4a6499b34cefbd5babda47"
+checksum = "e814bd1ac50e4abcce4946056b275aa983f49a22be35ab5939e939007b0baec4"
 dependencies = [
  "broadcast-common",
  "serde",
@@ -903,9 +903,9 @@ dependencies = [
 
 [[package]]
 name = "rtp-packet"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c21ebbcf9aa748b23e79cac70c9e4f49de366b43cd33e0961e55343bf778603"
+checksum = "5e90bb0dff7dd49086be03f6c6b90b87c6a8a0457e66b4470a4853e0b2fb7d8a"
 dependencies = [
  "broadcast-common",
  "thiserror",
@@ -1202,18 +1202,18 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "thiserror"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
+checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
+checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1339,9 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a10627c6bc0db92f26bfb08168092806beaaeb3f39912d22d277593b37a1e57b"
+checksum = "00b27e2bf2eaf7e12e70b2b50aaad1b96ba7274ce40618ca117803dffed72465"
 dependencies = [
  "aes",
  "broadcast-common",
@@ -1406,9 +1406,9 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
+checksum = "1b70935747edd64d89de3efa29d73789b806c15798f8e7dca4d8ac356b50ce70"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -1419,9 +1419,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
+checksum = "77775f8f3f7217702089053b94958f8f54061a3f663417df76e19cbdcca29bc1"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -1429,9 +1429,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
+checksum = "e11d33f857dc2fb11b8bc75aee111aa9cbeb12cd9f25efd3d4c2a3dd4e235284"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -1442,9 +1442,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
+checksum = "7ef64dbcc55df09c7e5a46182d181c2cfa3e925f3da937ea764728b4bbb9dcbf"
 dependencies = [
  "unicode-ident",
 ]
