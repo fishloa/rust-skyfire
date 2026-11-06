@@ -226,7 +226,7 @@ pub struct TrackMeta {
 ///   (DVB-subtitling) or `0x56` (teletext) in the same descriptor loop.
 #[must_use]
 pub fn track_meta(spec: &transmux::TrackSpec) -> TrackMeta {
-    let pid = spec.source_pid;
+    let pid = spec.source_pid.map(|p| p.value());
     let descriptors = DescriptorLoop::new(&spec.es_info_descriptors);
 
     let language = language_from_descriptors(&descriptors);
@@ -332,6 +332,17 @@ impl TsDemux {
     pub fn new() -> Self {
         Self {
             inner: StreamingTsDemux::new(),
+        }
+    }
+
+    /// Promote tracks strictly in PMT order: no track is announced until every
+    /// earlier PMT-declared PID has resolved. For callers that build a fixed
+    /// track set on `TracksResolved` (transmux's TS muxer never bumps the PMT
+    /// `version_number` on a late `add_track`, ISO/IEC 13818-1 §2.4.4.9).
+    #[must_use]
+    pub fn with_strict_pmt_order(self) -> Self {
+        Self {
+            inner: self.inner.with_strict_pmt_order(),
         }
     }
 
@@ -502,8 +513,8 @@ mod tests {
     fn gulli_15s_audio_and_video_pts_spans_agree_once_scaled_to_90khz() {
         let events = demux_fixture("gulli-15s.ts");
 
-        let mut video_track: Option<(u32, u32)> = None; // (track_id, timescale)
-        let mut audio_track: Option<(u32, u32)> = None;
+        let mut video_track: Option<(transmux::TrackId, u32)> = None; // (track_id, timescale)
+        let mut audio_track: Option<(transmux::TrackId, u32)> = None;
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
                 let meta = track_meta(track);
@@ -582,9 +593,9 @@ mod tests {
     fn gulli_15s_track_enumeration() {
         let events = demux_fixture("gulli-15s.ts");
 
-        let mut video_meta: Option<(u32, TrackMeta)> = None;
-        let mut audio_metas: Vec<(u32, TrackMeta)> = Vec::new();
-        let mut subtitle_metas: Vec<(u32, TrackMeta)> = Vec::new();
+        let mut video_meta: Option<(transmux::TrackId, TrackMeta)> = None;
+        let mut audio_metas: Vec<(transmux::TrackId, TrackMeta)> = Vec::new();
+        let mut subtitle_metas: Vec<(transmux::TrackId, TrackMeta)> = Vec::new();
 
         for ev in &events {
             if let DemuxEvent::TrackAdded(track) = ev {
@@ -993,8 +1004,8 @@ mod tests {
         for name in ["gulli-15s.ts", "france2-8s.ts"] {
             let events = demux_fixture(name);
 
-            let mut video_track: Option<(u32, u32)> = None;
-            let mut audio_track: Option<(u32, u32)> = None;
+            let mut video_track: Option<(transmux::TrackId, u32)> = None;
+            let mut audio_track: Option<(transmux::TrackId, u32)> = None;
             for ev in &events {
                 if let DemuxEvent::TrackAdded(track) = ev {
                     let meta = track_meta(track);

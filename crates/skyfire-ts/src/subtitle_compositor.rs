@@ -537,16 +537,20 @@ impl CompositorState {
             match seg {
                 AnySegment::PageComposition(pcs) => {
                     page_time_out = pcs.page_time_out;
-                    self.page_bytes = Some(pcs.to_bytes());
+                    self.page_bytes = pcs.try_to_bytes().ok();
                 }
                 AnySegment::RegionComposition(rcs) => {
-                    self.region_bytes.insert(rcs.region_id, rcs.to_bytes());
+                    if let Ok(b) = rcs.try_to_bytes() {
+                        self.region_bytes.insert(rcs.region_id, b);
+                    }
                 }
                 AnySegment::ClutDefinition(clut) => {
-                    self.clut_bytes = Some(clut.to_bytes());
+                    self.clut_bytes = clut.try_to_bytes().ok();
                 }
                 AnySegment::ObjectData(obj) => {
-                    self.object_bytes.insert(obj.object_id, obj.to_bytes());
+                    if let Ok(b) = obj.try_to_bytes() {
+                        self.object_bytes.insert(obj.object_id, b);
+                    }
                 }
                 AnySegment::EndOfDisplaySet(_) => {
                     has_end = true;

@@ -278,7 +278,8 @@ fn sub_activity(data: &[u8]) -> SubActivityJson {
     // conversion point in the codebase (issue #101 review) — no site may
     // convert a raw Sample::pts without supplying its track's real
     // timescale, even where the rescale is a no-op.
-    let mut sub_ids: std::collections::HashMap<u32, (u16, u32)> = std::collections::HashMap::new();
+    let mut sub_ids: std::collections::HashMap<transmux::TrackId, (u16, u32)> =
+        std::collections::HashMap::new();
     let mut activity = Vec::new();
     while let Some(ev) = demux.poll_event() {
         match ev {

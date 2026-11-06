@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use skyfire_ts::{DemuxEvent, TrackKind, TsDemux, track_meta};
+use transmux::TrackId;
 use transmux::ts_hls::StreamingTsHlsSegmenter;
 
 /// How a session segments and windows.
@@ -57,11 +58,11 @@ pub struct HlsSession {
     seg: Option<StreamingTsHlsSegmenter>,
     // Track specs collected from TrackAdded, in arrival order.
     pending_specs: Vec<transmux::TrackSpec>,
-    known_track_ids: Vec<u32>,
-    video_track_id: Option<u32>,
+    known_track_ids: Vec<TrackId>,
+    video_track_id: Option<TrackId>,
     tracks_resolved: bool,
     // Samples buffered before the segmenter is built, in arrival order.
-    buffer: Vec<(u32, transmux::Sample)>,
+    buffer: Vec<(TrackId, transmux::Sample)>,
     buffer_capped: bool,
     // Committed segments (retained fully for VOD; trimmed to window for rolling).
     segments: VecDeque<StoredSegment>,
@@ -98,7 +99,7 @@ impl HlsSession {
         let default_td = cfg.target_secs as u64;
         Self {
             cfg,
-            demux: TsDemux::new(),
+            demux: TsDemux::new().with_strict_pmt_order(),
             seg: None,
             pending_specs: Vec::new(),
             known_track_ids: Vec::new(),
@@ -421,14 +422,14 @@ impl HlsSession {
         };
         self.seg = Some(seg);
 
-        let replay: Vec<(u32, transmux::Sample)> = self.buffer.split_off(rap_idx);
+        let replay: Vec<(TrackId, transmux::Sample)> = self.buffer.split_off(rap_idx);
         self.buffer.clear();
         for (tid, s) in replay {
             self.push_sample(tid, s);
         }
     }
 
-    fn push_sample(&mut self, track_id: u32, sample: transmux::Sample) {
+    fn push_sample(&mut self, track_id: TrackId, sample: transmux::Sample) {
         if let Some(seg) = self.seg.as_mut() {
             // Any segment this push cuts is queued (not returned inline) —
             // transmux 0.20 (issue R2) removed the `Result<Option<TsSegment>>`
@@ -529,6 +530,34 @@ mod tests {
         assert!(
             s.playlist().lines().filter(|l| l.ends_with(".ts")).count() >= 1,
             "playlist must list at least one segment"
+        );
+    }
+
+    #[test]
+    fn late_resolving_pid_is_in_every_pmt() {
+        let data = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/streams/tf-1.ts"),
+        )
+        .unwrap();
+        let mut s = HlsSession::new(HlsConfig::vod());
+        s.feed(&data);
+        s.finish();
+        let mut pmts = std::collections::BTreeSet::new();
+        for line in s.playlist().lines().filter(|l| l.ends_with(".ts")) {
+            let seg = s.segment(line.rsplit('/').next().unwrap()).unwrap();
+            for p in seg.chunks_exact(188) {
+                let pid = (u16::from(p[1] & 0x1f) << 8) | u16::from(p[2]);
+                if pid == 0x1000 && p[1] & 0x40 != 0 {
+                    let len = (usize::from(p[6] & 0x0f) << 8) | usize::from(p[7]);
+                    pmts.insert(p[5..8 + len].to_vec());
+                }
+            }
+        }
+        assert_eq!(pmts.len(), 1, "PMT content changed without a version bump");
+        let pmt = pmts.into_iter().next().unwrap();
+        assert!(
+            pmt.windows(2).any(|w| w == [0xe1, 0x05]),
+            "late-resolving subtitle PID 0x105 missing from PMT"
         );
     }
 }

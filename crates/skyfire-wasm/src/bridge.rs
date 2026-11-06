@@ -26,9 +26,9 @@ use crate::helpers::{
 pub struct SkyfireBridge {
     demux: skyfire_ts::TsDemux,
     /// track_id → TrackMeta
-    tracks: std::collections::HashMap<u32, TrackMeta>,
+    tracks: std::collections::HashMap<transmux::TrackId, TrackMeta>,
     /// Track ID of the first video track seen.
-    video_track_id: Option<u32>,
+    video_track_id: Option<transmux::TrackId>,
     /// Cached WebCodecs video config.
     cached_video_config: Option<CachedVideoConfig>,
     /// Selected audio PID.
@@ -661,7 +661,7 @@ impl SkyfireBridge {
         self.tracks.insert(track.track_id, meta);
     }
 
-    fn on_sample(&mut self, track_id: u32, sample: transmux::Sample) {
+    fn on_sample(&mut self, track_id: transmux::TrackId, sample: transmux::Sample) {
         let meta = match self.tracks.get(&track_id).cloned() {
             Some(m) => m,
             None => return,
@@ -729,7 +729,7 @@ impl SkyfireBridge {
                 // so this is a no-op rescale — but the same conversion
                 // function as video/audio, never a special case.
                 let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
-                if sample.data.first() == Some(&dvb_subtitle::DataIdentifier)
+                if sample.data.first() == Some(&dvb_subtitle::DATA_IDENTIFIER)
                     && let Ok(field) = dvb_subtitle::PesDataField::parse(&sample.data)
                 {
                     self.subtitle_compositor.feed_pes(pid, pts_ticks, &field);

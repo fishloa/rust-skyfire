@@ -19,6 +19,7 @@ pub use skyfire_ts as ts;
 
 use skyfire_sync::{AudioClock, VideoFrameQueue};
 use skyfire_ts::{DemuxEvent, TrackKind, TrackMeta, TsDemux, checked_ticks_90k, track_meta};
+use transmux::TrackId;
 use transmux::pipeline::CodecConfig;
 
 /// Engine build identifier (crate version).
@@ -63,7 +64,7 @@ pub struct VideoConfig {
 #[derive(Debug, Clone)]
 pub struct TrackInfo {
     /// transmux track ID.
-    pub track_id: u32,
+    pub track_id: TrackId,
     /// Source PID from the TS PMT.
     pub pid: Option<u16>,
     /// Track kind (video / audio / subtitle / other).
@@ -104,9 +105,9 @@ pub struct Engine {
     // ── track list ─────────────────────────────────────────────────
     tracks: Vec<TrackInfo>,
     /// transmux track_id for the first video track.
-    video_track_id: Option<u32>,
+    video_track_id: Option<TrackId>,
     /// transmux track_id for the first audio track.
-    audio_track_id: Option<u32>,
+    audio_track_id: Option<TrackId>,
     /// `CodecConfig` for the video track (held to build `video_config()`).
     video_codec_config: Option<CodecConfig>,
     /// The video track's own media timescale (`TrackSpec::timescale`), used
@@ -496,7 +497,7 @@ mod tests {
         // audio ES bytes decoded the same way.
         let data = load_fixture("gulli-15s.ts");
         let mut demux2 = TsDemux::new();
-        let mut audio_track_id2: Option<u32> = None;
+        let mut audio_track_id2: Option<TrackId> = None;
         let mut expected_audio_es: Vec<u8> = Vec::new();
 
         for chunk in data.chunks(4096) {
@@ -657,7 +658,7 @@ mod tests {
         // correctly rescaled to 90 kHz — not merely non-zero.
         let data = load_fixture("gulli-15s.ts");
         let mut demux = TsDemux::new();
-        let mut audio_track: Option<(u32, u32)> = None; // (track_id, timescale)
+        let mut audio_track: Option<(TrackId, u32)> = None; // (track_id, timescale)
         let mut first_raw_pts: Option<i64> = None;
         for chunk in data.chunks(4096) {
             demux.feed(chunk);
@@ -727,7 +728,7 @@ mod tests {
     fn extract_audio_es_ts(name: &str) -> Vec<u8> {
         let data = load_fixture(name);
         let mut demux = TsDemux::new();
-        let mut audio_track_id: Option<u32> = None;
+        let mut audio_track_id: Option<TrackId> = None;
         let mut es: Vec<u8> = Vec::new();
         for chunk in data.chunks(4096) {
             demux.feed(chunk);
