@@ -81,7 +81,7 @@ fn init_and_media_reparse_and_account_all_aus() {
         let mut demux = skyfire_ts::TsDemux::new();
         demux.feed(&data);
         demux.finish();
-        let mut video_track_ids: std::collections::HashSet<u32> = Default::default();
+        let mut video_track_ids: std::collections::HashSet<transmux::TrackId> = Default::default();
         let mut all_events: Vec<skyfire_ts::DemuxEvent> = Vec::new();
         while let Some(ev) = demux.poll_event() {
             all_events.push(ev);

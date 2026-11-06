@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use skyfire_ts::{DemuxEvent, TrackKind, TsDemux, track_meta};
+use transmux::TrackId;
 use transmux::ts_hls::StreamingTsHlsSegmenter;
 
 /// How a session segments and windows.
@@ -57,11 +58,11 @@ pub struct HlsSession {
     seg: Option<StreamingTsHlsSegmenter>,
     // Track specs collected from TrackAdded, in arrival order.
     pending_specs: Vec<transmux::TrackSpec>,
-    known_track_ids: Vec<u32>,
-    video_track_id: Option<u32>,
+    known_track_ids: Vec<TrackId>,
+    video_track_id: Option<TrackId>,
     tracks_resolved: bool,
     // Samples buffered before the segmenter is built, in arrival order.
-    buffer: Vec<(u32, transmux::Sample)>,
+    buffer: Vec<(TrackId, transmux::Sample)>,
     buffer_capped: bool,
     // Committed segments (retained fully for VOD; trimmed to window for rolling).
     segments: VecDeque<StoredSegment>,
@@ -421,14 +422,14 @@ impl HlsSession {
         };
         self.seg = Some(seg);
 
-        let replay: Vec<(u32, transmux::Sample)> = self.buffer.split_off(rap_idx);
+        let replay: Vec<(TrackId, transmux::Sample)> = self.buffer.split_off(rap_idx);
         self.buffer.clear();
         for (tid, s) in replay {
             self.push_sample(tid, s);
         }
     }
 
-    fn push_sample(&mut self, track_id: u32, sample: transmux::Sample) {
+    fn push_sample(&mut self, track_id: TrackId, sample: transmux::Sample) {
         if let Some(seg) = self.seg.as_mut() {
             // Any segment this push cuts is queued (not returned inline) —
             // transmux 0.20 (issue R2) removed the `Result<Option<TsSegment>>`
