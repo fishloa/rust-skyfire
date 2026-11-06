@@ -104,7 +104,8 @@ jobs:
           PLAYER=$(cd packages/player && npm pack --silent)
           WS="$PWD"
           rm -rf /tmp/smoke && mkdir -p /tmp/smoke/src && cd /tmp/smoke
-          echo '{ "name":"smoke","private":true,"type":"module","version":"0.0.0" }' > package.json
+          # @swc/core >=1.16 breaks vite-plugin-top-level-await 1.6.0 ("missing field `type`").
+          echo '{ "name":"smoke","private":true,"type":"module","version":"0.0.0","overrides":{"@swc/core":"1.15.47"} }' > package.json
           printf 'import wasm from "vite-plugin-wasm";\nimport tla from "vite-plugin-top-level-await";\nexport default { plugins:[wasm(),tla()], logLevel:"warn" };\n' > vite.config.js
           printf 'import { SkyfirePlayer } from "@firemedia/skyfire-player";\nimport "@firemedia/skyfire-player/skyfire-element.js";\nimport { initSkyfire, SkyfireBridge } from "@firemedia/skyfire-core";\nif(!SkyfirePlayer||!initSkyfire||!SkyfireBridge) throw new Error("missing exports");\nif(!customElements.get("skyfire-player")) throw new Error("skyfire-player element not registered");\n' > src/main.js
           printf '<!doctype html><script type="module" src="/src/main.js"></script>\n' > index.html
