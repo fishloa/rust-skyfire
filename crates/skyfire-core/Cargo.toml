@@ -10,5 +10,5 @@ description = "Skyfire engine core — wires TS demux + AC-3 audio decode + audi
 skyfire-ts.workspace = true
 skyfire-ac3.workspace = true
 skyfire-sync.workspace = true
-broadcast-common = "10"
-transmux = "0.29"
+broadcast-common = "11"
+transmux = "0.30"

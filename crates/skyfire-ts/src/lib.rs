@@ -335,17 +335,6 @@ impl TsDemux {
         }
     }
 
-    /// Promote tracks strictly in PMT order: no track is announced until every
-    /// earlier PMT-declared PID has resolved. For callers that build a fixed
-    /// track set on `TracksResolved` (transmux's TS muxer never bumps the PMT
-    /// `version_number` on a late `add_track`, ISO/IEC 13818-1 §2.4.4.9).
-    #[must_use]
-    pub fn with_strict_pmt_order(self) -> Self {
-        Self {
-            inner: self.inner.with_strict_pmt_order(),
-        }
-    }
-
     /// Feed raw TS bytes (any chunk size, any alignment).
     pub fn feed(&mut self, data: &[u8]) {
         self.inner.feed(data);
