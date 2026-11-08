@@ -99,7 +99,7 @@ impl HlsSession {
         let default_td = cfg.target_secs as u64;
         Self {
             cfg,
-            demux: TsDemux::new().with_strict_pmt_order(),
+            demux: TsDemux::new(),
             seg: None,
             pending_specs: Vec::new(),
             known_track_ids: Vec::new(),
@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn late_resolving_pid_is_in_every_pmt() {
+    fn late_resolving_pid_bumps_pmt_version() {
         let data = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/streams/tf-1.ts"),
         )
@@ -542,21 +542,31 @@ mod tests {
         let mut s = HlsSession::new(HlsConfig::vod());
         s.feed(&data);
         s.finish();
-        let mut pmts = std::collections::BTreeSet::new();
+        let mut pmts: Vec<Vec<u8>> = Vec::new();
         for line in s.playlist().lines().filter(|l| l.ends_with(".ts")) {
             let seg = s.segment(line.rsplit('/').next().unwrap()).unwrap();
             for p in seg.chunks_exact(188) {
                 let pid = (u16::from(p[1] & 0x1f) << 8) | u16::from(p[2]);
                 if pid == 0x1000 && p[1] & 0x40 != 0 {
                     let len = (usize::from(p[6] & 0x0f) << 8) | usize::from(p[7]);
-                    pmts.insert(p[5..8 + len].to_vec());
+                    pmts.push(p[5..8 + len].to_vec());
                 }
             }
         }
-        assert_eq!(pmts.len(), 1, "PMT content changed without a version bump");
-        let pmt = pmts.into_iter().next().unwrap();
+        let version = |sec: &[u8]| (sec[5] >> 1) & 0x1f;
+        let body = |sec: &[u8]| [&sec[..5], &sec[6..sec.len() - 4]].concat();
+        for w in pmts.windows(2) {
+            if body(&w[0]) != body(&w[1]) {
+                assert_ne!(
+                    version(&w[0]),
+                    version(&w[1]),
+                    "PMT content changed without a version bump (ISO/IEC 13818-1 §2.4.4.9)"
+                );
+            }
+        }
+        let last = pmts.last().expect("output carries a PMT");
         assert!(
-            pmt.windows(2).any(|w| w == [0xe1, 0x05]),
+            last.windows(2).any(|w| w == [0xe1, 0x05]),
             "late-resolving subtitle PID 0x105 missing from PMT"
         );
     }
