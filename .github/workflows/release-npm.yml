@@ -5,6 +5,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # npm trusted publishing (OIDC): no NPM_TOKEN secret to expire.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
@@ -12,7 +16,7 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - uses: actions/setup-node@v4
-        with: { node-version: "20", registry-url: "https://registry.npmjs.org" }
+        with: { node-version: "24", registry-url: "https://registry.npmjs.org" }
       - name: Build core wasm (bundler)
         # --out-dir MUST be absolute: wasm-pack resolves a relative --out-dir
         # against the CRATE dir (→ crates/skyfire-wasm/packages/core/pkg), leaving
@@ -20,11 +24,9 @@ jobs:
         run: wasm-pack build crates/skyfire-wasm --target bundler --release --out-dir "$GITHUB_WORKSPACE/packages/core/pkg"
       - name: Strip pkg/.gitignore (else npm excludes the wasm)
         run: rm -f packages/core/pkg/.gitignore
-      - name: Publish @skyfire/core
+      - name: Publish @firemedia/skyfire-core
         run: npm publish --access public
         working-directory: packages/core
-        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
-      - name: Publish @skyfire/player
+      - name: Publish @firemedia/skyfire-player
         run: npm publish --access public
         working-directory: packages/player
-        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
