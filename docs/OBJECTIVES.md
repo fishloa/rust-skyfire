@@ -79,7 +79,7 @@ work units.
 > client epics #2–#6** below. Server transcode lives in zenith (zenith#986), not a
 > skyfire crate. Rows below are pre-pivot, retained for history.
 
-### Client build status — epic [#27](https://github.com/fishloa/rust-skyfire/issues/27) (2026-06-22)
+### Client build status — epic [#27](https://github.com/fishloa/rust-skyfire/issues/27) (2026-06-22; closed 2026-11-09)
 
 | # | Item | State |
 |---|---|---|
@@ -94,7 +94,7 @@ work units.
 | #35 | UI shell: pickers + controls + overlay | ✅ done (exercised by e2e); bitmap-sub render pending |
 | #36 | hold-open + reconnect stream loop | ✅ done (e2e); live zenith endpoint verify pending |
 | #37 | E2E Playwright spec | ✅ done — 3/3 green in Chromium (`bunx playwright test`) |
-| #38 | PsF decoder oracle (zenith gate) | harness done + PASS-proven; **open** for a real zenith PsF sample |
+| #38 | PsF decoder oracle (zenith gate) | ✅ closed 2026-07-02 |
 
 **v1 (core A/V) is browser-verified:** TS → WASM-bridge demux → WebCodecs HW video
 + WASM AC-3 audio → audio-master sync, on real 1080p deinterlaced content, 3/3 e2e
