@@ -430,16 +430,13 @@ impl SkyfireBridge {
                     // Container-neutral clock reference: convert `ticks` (in
                     // `clock_hz` Hz, 27 MHz for an MPEG-2 TS PCR — but read,
                     // never assumed) to 90 kHz ticks.
-                    if clock_hz > 0 {
-                        let ticks_90k = u128::from(ticks) * 90_000 / u128::from(clock_hz);
-                        // Assign only on success (mirrors the `clock_hz > 0`
-                        // guard above): a conversion failure must never
-                        // clobber a previously valid `latest_pcr` to `None`
-                        // (issue #101 review, item 5) — stale-but-valid beats
-                        // silently absent.
-                        if let Ok(v) = i64::try_from(ticks_90k) {
-                            self.latest_pcr = Some(v);
-                        }
+                    let ticks_90k = u128::from(ticks) * 90_000 / u128::from(clock_hz.get());
+                    // Assign only on success: a conversion failure must never
+                    // clobber a previously valid `latest_pcr` to `None`
+                    // (issue #101 review, item 5) — stale-but-valid beats
+                    // silently absent.
+                    if let Ok(v) = i64::try_from(ticks_90k) {
+                        self.latest_pcr = Some(v);
                     }
                     // `discontinuous` (issue #101 review, item 4): explicitly
                     // bound rather than dropped via `..`, so this reasoning
@@ -633,7 +630,11 @@ impl SkyfireBridge {
             // duration's `90_000`) is that separate global fragmenting
             // timescale, not this per-track one, and is unaffected.
             let ts = transmux::TrackSpec::new(track_id, track.timescale, track.config.clone());
-            if let Ok(seg) = transmux::Segmenter::new(vec![ts], 90_000, 2.0) {
+            if let Ok(seg) = transmux::Segmenter::new(
+                vec![ts],
+                broadcast_common::timescale!(90_000),
+                core::time::Duration::from_secs(2),
+            ) {
                 self.segmenter = Some(seg);
             }
         }
@@ -678,7 +679,10 @@ impl SkyfireBridge {
                 // video, whose timescale is 90 000, but the same conversion
                 // function as every other track — never a special case).
                 if self.latest_pcr.is_none()
-                    && let Some(pts) = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale)
+                    && let Some(pts) = skyfire_ts::checked_ticks_90k(
+                        sample.timing.and_then(|t| t.pts()),
+                        meta.timescale,
+                    )
                 {
                     // Checked conversion (issue #101 review, item 5): a raw
                     // `pts as i64` cast is never reachable-safe on a
@@ -689,8 +693,14 @@ impl SkyfireBridge {
                         self.latest_pcr = Some(v);
                     }
                 }
-                let pts = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
-                let dts = skyfire_ts::checked_ticks_90k(sample.dts, meta.timescale);
+                let pts = skyfire_ts::checked_ticks_90k(
+                    sample.timing.and_then(|t| t.pts()),
+                    meta.timescale,
+                );
+                let dts = skyfire_ts::checked_ticks_90k(
+                    sample.timing.and_then(|t| t.dts()),
+                    meta.timescale,
+                );
                 // transmux 0.14 (rust-broadcast#595) sets is_sync on open-GOP
                 // random-access points (IDR / recovery-point SEI / SPS-led AU),
                 // so no client-side keyframe re-derivation is needed.
@@ -714,7 +724,10 @@ impl SkyfireBridge {
                 // (transmux 0.20's absolute Sample::pts/dts are in the
                 // owning track's TrackSpec::timescale) — must rescale via
                 // `meta.timescale`, the same conversion every track uses.
-                let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
+                let pts_ticks = skyfire_ts::checked_ticks_90k(
+                    sample.timing.and_then(|t| t.pts()),
+                    meta.timescale,
+                );
                 self.decode_audio(codec, pts_ticks, &sample.data, meta.pid);
             }
             // Unselected audio PIDs are never decoded, but their frame headers
@@ -728,7 +741,10 @@ impl SkyfireBridge {
                 // Subtitle (Data) tracks already carry timescale == 90_000,
                 // so this is a no-op rescale — but the same conversion
                 // function as video/audio, never a special case.
-                let pts_ticks = skyfire_ts::checked_ticks_90k(sample.pts, meta.timescale);
+                let pts_ticks = skyfire_ts::checked_ticks_90k(
+                    sample.timing.and_then(|t| t.pts()),
+                    meta.timescale,
+                );
                 if sample.data.first() == Some(&dvb_subtitle::DATA_IDENTIFIER)
                     && let Ok(field) = dvb_subtitle::PesDataField::parse(&sample.data)
                 {
