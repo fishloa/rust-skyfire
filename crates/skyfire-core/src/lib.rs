@@ -299,11 +299,11 @@ impl Engine {
                         TrackKind::Video(_) if self.video_track_id.is_none() => {
                             self.video_track_id = Some(track.track_id);
                             self.video_codec_config = Some(track.config.clone());
-                            self.video_timescale = Some(track.timescale);
+                            self.video_timescale = Some(track.timescale.get());
                         }
                         TrackKind::Audio(_) if self.audio_track_id.is_none() => {
                             self.audio_track_id = Some(track.track_id);
-                            self.audio_timescale = Some(track.timescale);
+                            self.audio_timescale = Some(track.timescale.get());
                         }
                         _ => {}
                     }
@@ -313,7 +313,7 @@ impl Engine {
                     // Update video codec config if it has changed (e.g. SPS update).
                     if Some(track.track_id) == self.video_track_id {
                         self.video_codec_config = Some(track.config.clone());
-                        self.video_timescale = Some(track.timescale);
+                        self.video_timescale = Some(track.timescale.get());
                     }
                     // #101 review, finding 3: `video_timescale`/`audio_timescale`
                     // were only ever set on `TrackAdded`, so a `TrackUpdated`
@@ -324,7 +324,7 @@ impl Engine {
                     // re-reading `TrackMeta::timescale` from its per-track map
                     // on every sample; mirror that freshness here.
                     if Some(track.track_id) == self.audio_track_id {
-                        self.audio_timescale = Some(track.timescale);
+                        self.audio_timescale = Some(track.timescale.get());
                     }
                     // Update entry in track list.
                     if let Some(entry) = self
@@ -347,7 +347,10 @@ impl Engine {
                         // conversion function, same code path as audio, no
                         // special case that could drift (see
                         // `checked_ticks_90k`'s docs).
-                        let pts = checked_ticks_90k(sample.pts, self.video_timescale.unwrap_or(0));
+                        let pts = checked_ticks_90k(
+                            sample.timing.and_then(|t| t.pts()),
+                            self.video_timescale.unwrap_or(0),
+                        );
                         self.video_units.push(VideoUnit {
                             pts,
                             is_sync: sample.flags.is_sync,
@@ -359,8 +362,10 @@ impl Engine {
                         // (e.g. 48_000), not 90 kHz (transmux 0.20) — must be
                         // rescaled before it becomes AudioClock's anchor.
                         if self.first_audio_pts.is_none()
-                            && let Some(pts) =
-                                checked_ticks_90k(sample.pts, self.audio_timescale.unwrap_or(0))
+                            && let Some(pts) = checked_ticks_90k(
+                                sample.timing.and_then(|t| t.pts()),
+                                self.audio_timescale.unwrap_or(0),
+                            )
                         {
                             self.first_audio_pts = Some(pts);
                         }
@@ -667,7 +672,7 @@ mod tests {
                     DemuxEvent::TrackAdded(track) => {
                         let meta = track_meta(&track);
                         if matches!(meta.kind, TrackKind::Audio(_)) && audio_track.is_none() {
-                            audio_track = Some((track.track_id, track.timescale));
+                            audio_track = Some((track.track_id, track.timescale.get()));
                         }
                     }
                     DemuxEvent::Sample {
@@ -675,7 +680,7 @@ mod tests {
                     } if audio_track.is_some_and(|(id, _)| id == track_id)
                         && first_raw_pts.is_none() =>
                     {
-                        first_raw_pts = sample.pts;
+                        first_raw_pts = sample.timing.and_then(|t| t.pts());
                     }
                     _ => {}
                 }

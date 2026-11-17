@@ -286,7 +286,10 @@ fn sub_activity(data: &[u8]) -> SubActivityJson {
             DemuxEvent::TrackAdded(track) => {
                 let meta = track_meta(&track);
                 if matches!(meta.kind, TrackKind::Subtitle(_)) {
-                    sub_ids.insert(track.track_id, (meta.pid.unwrap_or(0), track.timescale));
+                    sub_ids.insert(
+                        track.track_id,
+                        (meta.pid.unwrap_or(0), track.timescale.get()),
+                    );
                 }
             }
             DemuxEvent::Sample {
@@ -294,7 +297,10 @@ fn sub_activity(data: &[u8]) -> SubActivityJson {
             } => {
                 if let Some(&(pid, timescale)) = sub_ids.get(&track_id)
                     && payload_has_page_composition(&sample.data)
-                    && let Some(pts_ticks) = skyfire_ts::checked_ticks_90k(sample.pts, timescale)
+                    && let Some(pts_ticks) = skyfire_ts::checked_ticks_90k(
+                        sample.timing.and_then(|t| t.pts()),
+                        timescale,
+                    )
                 {
                     activity.push(SubActivity { pid, pts_ticks });
                 }

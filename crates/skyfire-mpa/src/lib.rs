@@ -6,8 +6,8 @@
 //!
 //! Powered by [`symphonia`](https://crates.io/crates/symphonia) (MPL-2.0).
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_MP2, Decoder};
+use symphonia::core::codecs::audio::well_known::CODEC_ID_MP2;
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 
@@ -30,7 +30,7 @@ pub struct DecodedMpa {
 /// switching PIDs.
 pub struct IncrementalMpaDecoder {
     /// symphonia's MPA decoder (handles MPEG-1/2 Layer I/II/III).
-    decoder: Option<Box<dyn Decoder>>,
+    decoder: Option<Box<dyn AudioDecoder>>,
     /// Cached sample rate from the last decoded frame.
     sample_rate: u32,
     /// Cached channel count from the last decoded frame.
@@ -74,11 +74,11 @@ impl IncrementalMpaDecoder {
         // Lazily initialise decoder on first use.
         if self.decoder.is_none() {
             let codec_registry = symphonia::default::get_codecs();
-            let opts = symphonia::core::codecs::DecoderOptions::default();
-            let mut params = symphonia::core::codecs::CodecParameters::new();
-            params.for_codec(CODEC_TYPE_MP2);
+            let opts = AudioDecoderOptions::default();
+            let mut params = AudioCodecParameters::new();
+            params.for_codec(CODEC_ID_MP2);
             let decoder = codec_registry
-                .make(&params, &opts)
+                .make_audio_decoder(&params, &opts)
                 .map_err(|e| format!("symphonia codec init: {e}"))?;
             self.decoder = Some(decoder);
         }
@@ -95,7 +95,7 @@ impl IncrementalMpaDecoder {
             Default::default(),
         );
         let fmt_opts = FormatOptions::default();
-        let mut reader = match symphonia::default::formats::MpaReader::try_new(src, &fmt_opts) {
+        let mut reader = match symphonia::default::formats::MpaReader::try_new(src, fmt_opts) {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
@@ -105,7 +105,8 @@ impl IncrementalMpaDecoder {
 
         loop {
             let packet = match reader.next_packet() {
-                Ok(p) => p,
+                Ok(Some(p)) => p,
+                Ok(None) => break,
                 Err(symphonia::core::errors::Error::IoError(ref e))
                     if e.kind() == std::io::ErrorKind::UnexpectedEof
                         || e.kind() == std::io::ErrorKind::Interrupted =>
@@ -117,23 +118,22 @@ impl IncrementalMpaDecoder {
 
             match decoder.decode(&packet) {
                 Ok(decoded) => {
-                    let spec = *decoded.spec();
+                    let spec = decoded.spec().clone();
                     let n_frames = decoded.frames();
                     if n_frames == 0 {
                         continue;
                     }
 
-                    let sr = spec.rate;
-                    let ch = spec.channels.count() as u16;
+                    let sr = spec.rate();
+                    let ch = spec.channels().count() as u16;
 
                     self.sample_rate = sr;
                     self.channels = ch;
 
-                    let mut sample_buf = SampleBuffer::<i16>::new(n_frames as u64, spec);
-                    sample_buf.copy_interleaved_ref(decoded);
-                    let samples = sample_buf.samples();
+                    let mut samples: Vec<i16> = Vec::new();
+                    decoded.copy_to_vec_interleaved(&mut samples);
 
-                    for &s in samples {
+                    for s in samples {
                         combined_pcm.extend_from_slice(&s.to_le_bytes());
                     }
                     got_audio = true;

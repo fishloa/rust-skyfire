@@ -466,12 +466,13 @@ impl HlsSession {
     ) {
         let name = format!("{}{}.ts", cfg.uri_prefix, *next_seq);
         *next_seq += 1;
-        let dur_ceil = ts.duration.ceil() as u64;
+        let dur_secs = ts.duration.as_secs_f64();
+        let dur_ceil = dur_secs.ceil() as u64;
         *target_duration = (*target_duration).max(dur_ceil);
         segments.push_back(StoredSegment {
             name,
             bytes: Arc::new(ts.bytes),
-            duration: ts.duration,
+            duration: dur_secs,
             discontinuous: ts.discontinuous,
         });
         if let Some(window) = cfg.window {

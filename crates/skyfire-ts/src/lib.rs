@@ -256,7 +256,7 @@ pub fn track_meta(spec: &transmux::TrackSpec) -> TrackMeta {
         pid,
         kind,
         language,
-        timescale: spec.timescale,
+        timescale: spec.timescale.get(),
     }
 }
 
@@ -324,6 +324,7 @@ fn subtitle_kind_from_descriptors(descriptors: &DescriptorLoop<'_>) -> Option<Su
 /// ```
 pub struct TsDemux {
     inner: StreamingTsDemux,
+    error_count: u64,
 }
 
 impl TsDemux {
@@ -332,12 +333,28 @@ impl TsDemux {
     pub fn new() -> Self {
         Self {
             inner: StreamingTsDemux::new(),
+            error_count: 0,
+        }
+    }
+
+    /// Number of errors the underlying demuxer returned from `feed`/`finish`
+    /// since construction. Each is logged and the stream continues.
+    #[must_use]
+    pub fn error_count(&self) -> u64 {
+        self.error_count
+    }
+
+    fn note(&mut self, op: &str, r: transmux::Result<()>) {
+        if let Err(e) = r {
+            self.error_count += 1;
+            eprintln!("[skyfire-ts] demux {op} error: {e}");
         }
     }
 
     /// Feed raw TS bytes (any chunk size, any alignment).
     pub fn feed(&mut self, data: &[u8]) {
-        self.inner.feed(data);
+        let r = self.inner.feed(data);
+        self.note("feed", r);
     }
 
     /// Poll the next available [`DemuxEvent`], or `None` when the event queue
@@ -351,7 +368,8 @@ impl TsDemux {
     /// end of input.  After calling, poll until `None` to drain remaining
     /// events.
     pub fn finish(&mut self) {
-        self.inner.finish();
+        let r = self.inner.finish();
+        self.note("finish", r);
     }
 }
 
@@ -509,10 +527,10 @@ mod tests {
                 let meta = track_meta(track);
                 match meta.kind {
                     TrackKind::Video(_) if video_track.is_none() => {
-                        video_track = Some((track.track_id, track.timescale));
+                        video_track = Some((track.track_id, track.timescale.get()));
                     }
                     TrackKind::Audio(_) if audio_track.is_none() => {
-                        audio_track = Some((track.track_id, track.timescale));
+                        audio_track = Some((track.track_id, track.timescale.get()));
                     }
                     _ => {}
                 }
@@ -537,11 +555,14 @@ mod tests {
             } = ev
             {
                 if *track_id == video_id {
-                    if let Some(p) = checked_ticks_90k(sample.pts, video_timescale) {
+                    if let Some(p) =
+                        checked_ticks_90k(sample.timing.and_then(|t| t.pts()), video_timescale)
+                    {
                         video_pts_90k.push(p);
                     }
                 } else if *track_id == audio_id
-                    && let Some(p) = checked_ticks_90k(sample.pts, audio_timescale)
+                    && let Some(p) =
+                        checked_ticks_90k(sample.timing.and_then(|t| t.pts()), audio_timescale)
                 {
                     audio_pts_90k.push(p);
                 }
@@ -677,7 +698,10 @@ mod tests {
         // All video samples must carry an absolute, non-negative PTS.
         let pts_vals: Vec<u64> = video_samples
             .iter()
-            .map(|s| checked_ticks(s.pts).expect("video sample must have a non-negative pts"))
+            .map(|s| {
+                checked_ticks(s.timing.and_then(|t| t.pts()))
+                    .expect("video sample must have a non-negative pts")
+            })
             .collect();
 
         let max_pts = *pts_vals.iter().max().unwrap();
@@ -757,7 +781,8 @@ mod tests {
 
         let mut last_pts: Option<u64> = None;
         for s in &audio_samples {
-            let pts = checked_ticks(s.pts).expect("audio sample must have a non-negative pts");
+            let pts = checked_ticks(s.timing.and_then(|t| t.pts()))
+                .expect("audio sample must have a non-negative pts");
             assert!(pts < (1u64 << 33), "PTS must be under 33-bit cap");
             if let Some(last) = last_pts {
                 assert!(
@@ -1000,10 +1025,10 @@ mod tests {
                     let meta = track_meta(track);
                     match meta.kind {
                         TrackKind::Video(_) if video_track.is_none() => {
-                            video_track = Some((track.track_id, track.timescale));
+                            video_track = Some((track.track_id, track.timescale.get()));
                         }
                         TrackKind::Audio(_) if audio_track.is_none() => {
-                            audio_track = Some((track.track_id, track.timescale));
+                            audio_track = Some((track.track_id, track.timescale.get()));
                         }
                         _ => {}
                     }
@@ -1022,9 +1047,11 @@ mod tests {
                 } = ev
                 {
                     if *track_id == video_id && first_video_pts_90k.is_none() {
-                        first_video_pts_90k = checked_ticks_90k(sample.pts, video_timescale);
+                        first_video_pts_90k =
+                            checked_ticks_90k(sample.timing.and_then(|t| t.pts()), video_timescale);
                     } else if *track_id == audio_id && first_audio_pts_90k.is_none() {
-                        first_audio_pts_90k = checked_ticks_90k(sample.pts, audio_timescale);
+                        first_audio_pts_90k =
+                            checked_ticks_90k(sample.timing.and_then(|t| t.pts()), audio_timescale);
                     }
                 }
             }
